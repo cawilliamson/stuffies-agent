@@ -24,6 +24,7 @@ impl Daemon {
             .arg("daemon")
             .env("SA_SOCKET", &socket)
             .env("XDG_RUNTIME_DIR", dir.path())
+            .env("SA_STATE_DIR", dir.path().join("state"))
             .stderr(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
