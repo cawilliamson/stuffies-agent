@@ -335,3 +335,17 @@ fn scrolling_up_holds_the_view_against_new_output() {
     app.push(Role::Assistant, "streamed while scrolled up");
     assert_eq!(app.scroll, held, "new output must not yank the viewport");
 }
+
+#[test]
+fn a_slash_command_never_enters_the_transcript() {
+    let mut app = App::new("s", "m");
+    typed(&mut app, "/help");
+    let action = app.on_key(key(KeyCode::Enter));
+    assert!(matches!(action, Action::Command(_)), "{action:?}");
+    assert_eq!(
+        user_entries(&app),
+        0,
+        "a command is not chat: {:?}",
+        app.transcript
+    );
+}

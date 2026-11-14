@@ -121,6 +121,7 @@ pub fn draw<B: ratatui::backend::Backend>(
 
 /// runs the interactive terminal front end against an attached session.
 pub async fn run(client: &mut Client, session: String, model: String) -> Result<(), String> {
+    let mut session = session;
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
     let _restore = Restore;
@@ -129,7 +130,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
     terminal.clear().map_err(|e| e.to_string())?;
 
-    let mut app = App::new(session.clone(), model);
+    let mut app = App::new(session.clone(), model.clone());
     let mut keys = EventStream::new();
 
     // replay what already happened so the transcript is continuous across attaches.
@@ -224,17 +225,71 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
                     app.push(app::Role::System, "interrupting");
                 }
             }
-            Action::Command(command) => match command.as_str() {
-                "/exit" | "/quit" => break,
-                "/help" => app.push(
-                    app::Role::System,
-                    "/exit /quit leave, esc interrupts, ctrl-c quits",
-                ),
-                other => app.push(
-                    app::Role::System,
-                    format!("unknown command {other}, try /help"),
-                ),
-            },
+            Action::Command(command) => {
+                let (name, arg) = command
+                    .split_once(' ')
+                    .map_or((command.as_str(), ""), |(head, tail)| (head, tail.trim()));
+                match name {
+                    "/exit" | "/quit" => break,
+                    "/help" => app.push(
+                        app::Role::System,
+                        "esc interrupt · ctrl-c quit · /new /model <id> /cost /cancel",
+                    ),
+                    "/cancel" => {
+                        let _ = client
+                            .call("turn.cancel", json!({"session_id": session}))
+                            .await;
+                        app.push(app::Role::System, "interrupting");
+                    }
+                    "/cost" => match client
+                        .call("session.usage", json!({"session_id": session}))
+                        .await
+                    {
+                        Ok(usage) => app.push(
+                            app::Role::System,
+                            format!(
+                                "{} in / {} out",
+                                usage["prompt_tokens"], usage["completion_tokens"]
+                            ),
+                        ),
+                        Err(err) => app.push(app::Role::Error, err.to_string()),
+                    },
+                    "/new" => match client
+                        .call(
+                            "session.create",
+                            json!({"cwd": std::env::current_dir()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default(), "autonomy": "allowlisted"}),
+                        )
+                        .await
+                    {
+                        Ok(created) => {
+                            session = created["session_id"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned();
+                            app = App::new(session.clone(), model.clone());
+                            let _ = client
+                                .call(
+                                    "events.subscribe",
+                                    json!({"session_id": session, "from_seq": 0}),
+                                )
+                                .await;
+                            app.push(app::Role::System, "new session");
+                        }
+                        Err(err) => app.push(app::Role::Error, err.to_string()),
+                    },
+                    "/model" if !arg.is_empty() => {
+                        let _ = client
+                            .call("model.select", json!({"session_id": session, "model": arg}))
+                            .await;
+                        app.status.model = arg.to_owned();
+                        app.push(app::Role::System, format!("model: {arg}"));
+                    }
+                    // the command itself is not chat, so the reply does not repeat it.
+                    _ => app.push(app::Role::System, "unknown command, /help for the list"),
+                }
+            }
             Action::Submit(prompt) => {
                 app.push(app::Role::User, prompt.clone());
                 app.status.turn_running = true;
