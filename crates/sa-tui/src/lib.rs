@@ -51,7 +51,7 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 }
 
 /// a powerline-style bar: solid coloured areas joined by arrow separators. no brackets.
-fn status_bar(app: &App) -> Line<'static> {
+fn status_bar(app: &App, width: u16) -> Line<'static> {
     let short: String = app.status.session.chars().take(8).collect();
     let mut segments = vec![Segment {
         icon: ICON_TERM,
@@ -108,7 +108,8 @@ fn status_bar(app: &App) -> Line<'static> {
         icon: ICON_TOKENS,
         text: format!(
             "{} in / {} out",
-            app.status.prompt_tokens, app.status.completion_tokens
+            compact(app.status.prompt_tokens),
+            compact(app.status.completion_tokens)
         ),
         fg: rgb(0xd8, 0xd8, 0xd8),
         bg: rgb(0x2a, 0x2a, 0x2a),
@@ -131,11 +132,27 @@ fn status_bar(app: &App) -> Line<'static> {
             Style::default().fg(segment.bg).bg(next),
         ));
     }
+    // the hints sit at the far right of the bar, against the empty space.
+    let hints = " esc interrupt · ctrl-c quit ";
+    let used = Line::from(spans.clone()).width();
+    let pad = usize::from(width).saturating_sub(used + hints.chars().count());
+    spans.push(ratatui::text::Span::raw(" ".repeat(pad)));
     spans.push(ratatui::text::Span::styled(
-        " esc interrupt · ctrl-c quit",
+        hints,
         Style::default().fg(Color::DarkGray),
     ));
     Line::from(spans)
+}
+
+/// abbreviates large counts: 230000 becomes 230k.
+fn compact(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{}M", count / 1_000_000)
+    } else if count >= 1_000 {
+        format!("{}k", count / 1_000)
+    } else {
+        count.to_string()
+    }
 }
 
 #[must_use]
@@ -207,7 +224,7 @@ pub fn draw<B: ratatui::backend::Backend>(
             let limit = chunks[1].width.saturating_sub(2);
             frame.set_cursor_position((chunks[1].x + 1 + column.min(limit), chunks[1].y + 1));
 
-            frame.render_widget(Paragraph::new(status_bar(app)), chunks[2]);
+            frame.render_widget(Paragraph::new(status_bar(app, chunks[2].width)), chunks[2]);
         })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())

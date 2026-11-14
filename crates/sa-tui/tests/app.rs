@@ -578,3 +578,50 @@ fn the_running_segment_replaces_idle() {
     assert!(screen.contains("running"), "{screen}");
     assert!(!screen.contains("idle"), "{screen}");
 }
+
+#[test]
+fn large_token_counts_are_abbreviated() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.status.prompt_tokens = 230_000;
+    app.status.completion_tokens = 1_500;
+
+    let screen = screen_of(&mut app, 140, 20);
+    assert!(screen.contains("230k in"), "expected 230k:\n{screen}");
+    assert!(screen.contains("1k out"), "expected 1k:\n{screen}");
+    assert!(
+        !screen.contains("230000"),
+        "the raw count must not appear:\n{screen}"
+    );
+}
+
+#[test]
+fn small_token_counts_are_shown_in_full() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.status.prompt_tokens = 999;
+    let screen = screen_of(&mut app, 140, 20);
+    assert!(screen.contains("999 in"), "{screen}");
+}
+
+#[test]
+fn the_hints_sit_at_the_right_edge_of_the_bar() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    let width = 140u16;
+    let backend = TestBackend::new(width, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let cells = buffer.content();
+
+    let row = 19usize;
+    let start = row * usize::from(width);
+    let line: String = cells[start..start + usize::from(width)]
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+
+    let column = line.find("esc interrupt").expect("hints must render");
+    assert!(
+        column > usize::from(width) / 2,
+        "hints must be pushed to the right edge, found at column {column}:\n{line}"
+    );
+}
