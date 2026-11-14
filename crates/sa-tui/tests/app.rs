@@ -135,12 +135,36 @@ fn events_route_to_the_tab_that_owns_the_session() {
 }
 
 #[test]
-fn the_tab_strip_lists_every_session() {
+fn the_tab_bar_draws_tab_shapes() {
     let mut app = App::new("session-one", "m");
     app.add_tab("session-two", "m");
-    let screen = screen(&mut app, 120, 24);
-    assert!(screen.contains("session-"), "{screen}");
-    assert!(screen.contains('1') && screen.contains('2'), "{screen}");
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
+
+    let top = row(0);
+    let mid = row(1);
+    let bot = row(2);
+    if std::env::var("SA_PREVIEW").is_ok() {
+        println!("{top}\n{mid}\n{bot}");
+    }
+
+    assert!(
+        top.contains('\u{256d}'),
+        "the active tab needs a rounded top:\n{top}"
+    );
+    assert!(
+        top.contains('\u{250c}'),
+        "inactive tabs need square tops:\n{top}"
+    );
+    assert!(
+        mid.contains('\u{2502}') && mid.contains('1'),
+        "labels row:\n{mid}"
+    );
+    assert!(bot.contains('\u{2570}'), "tabs need bottoms:\n{bot}");
 }
 
 #[test]

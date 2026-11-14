@@ -32,33 +32,80 @@ impl Drop for Restore {
     }
 }
 
-fn tab_strip(app: &App) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+/// draws real tab shapes: rounded and lit for the active tab, square and dim for the rest.
+/// returns the three rows of the bar, plus the trailing "new tab" affordance.
+fn tab_bar(app: &App, width: u16) -> [Line<'static>; 3] {
+    let mut top: Vec<Span<'static>> = Vec::new();
+    let mut mid: Vec<Span<'static>> = Vec::new();
+    let mut bot: Vec<Span<'static>> = Vec::new();
+    let mut used: usize = 0;
+
+    top.push(Span::raw(" "));
+    mid.push(Span::styled(
         " sa ",
         Style::default()
             .fg(Color::Rgb(0x10, 0x14, 0x1a))
-            .bg(app::ACCENT),
-    )];
+            .bg(app::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    ));
+    bot.push(Span::raw(" "));
+    used += 4;
+
     for (index, tab) in app.tabs.iter().enumerate() {
+        let label = format!("{} {}", index + 1, tab.title);
+        let inner = label.chars().count() + 2;
+        let tab_width = inner + 2;
+        if used + tab_width + 1 > usize::from(width) {
+            break;
+        }
         let active = index == app.active;
-        let label = format!(" {} {} ", index + 1, tab.title);
-        spans.push(Span::styled(
-            label,
-            if active {
+        let (edge, body) = if active {
+            (
+                app::ACCENT,
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(0xd8, 0xd8, 0xd8))
-                    .add_modifier(Modifier::BOLD)
-            } else {
+                    .fg(Color::Rgb(0x10, 0x14, 0x1a))
+                    .bg(app::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
+                app::FAINT,
                 Style::default()
                     .fg(app::DIM)
-                    .bg(Color::Rgb(0x1b, 0x1f, 0x26))
-            },
+                    .bg(Color::Rgb(0x1b, 0x1f, 0x26)),
+            )
+        };
+        let style = Style::default().fg(edge);
+
+        let (tl, tr, bl, br) = if active {
+            ("\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}")
+        } else {
+            ("\u{250c}", "\u{2510}", "\u{2514}", "\u{2518}")
+        };
+
+        top.push(Span::styled(
+            format!("{tl}{}{tr}", "\u{2500}".repeat(inner)),
+            style,
         ));
-        spans.push(Span::raw(" "));
+        mid.push(Span::styled("\u{2502}", style));
+        mid.push(Span::styled(
+            format!(" {label:<width$} ", width = inner - 2),
+            body,
+        ));
+        mid.push(Span::styled("\u{2502}", style));
+        bot.push(Span::styled(
+            format!("{bl}{}{br}", "\u{2500}".repeat(inner)),
+            style,
+        ));
+        top.push(Span::raw(" "));
+        mid.push(Span::raw(" "));
+        bot.push(Span::raw(" "));
+        used += tab_width + 1;
     }
-    spans.push(Span::styled("\u{002b}", Style::default().fg(app::FAINT)));
-    Line::from(spans)
+
+    mid.push(Span::styled("\u{002b}", Style::default().fg(app::FAINT)));
+
+    [Line::from(top), Line::from(mid), Line::from(bot)]
 }
 
 fn status_bar(app: &App, width: u16) -> Line<'static> {
@@ -140,14 +187,23 @@ pub fn draw<B: ratatui::backend::Backend>(
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1),
+                    Constraint::Length(3),
                     Constraint::Min(3),
                     Constraint::Length(3),
                     Constraint::Length(1),
                 ])
                 .split(area);
 
-            frame.render_widget(Paragraph::new(tab_strip(app)), rows[0]);
+            for (offset, line) in tab_bar(app, rows[0].width).into_iter().enumerate() {
+                frame.render_widget(
+                    Paragraph::new(line),
+                    ratatui::layout::Rect {
+                        y: rows[0].y + u16::try_from(offset).unwrap_or(0),
+                        height: 1,
+                        ..rows[0]
+                    },
+                );
+            }
 
             // the transcript lives in a framed pane.
             let pane = Block::default()
