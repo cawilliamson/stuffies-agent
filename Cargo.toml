@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/sa",
+  "crates/sa-client",
+  "crates/sa-core",
+  "crates/sa-daemon",
+  "crates/sa-proto",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.89"
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+futures-util = { version = "0.3", features = ["sink", "std"] }
+nix = { version = "0.29", features = ["fs", "socket", "user"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+sa-client = { path = "crates/sa-client", version = "0.1.0" }
+sa-core = { path = "crates/sa-core", version = "0.1.0" }
+sa-daemon = { path = "crates/sa-daemon", version = "0.1.0" }
+sa-proto = { path = "crates/sa-proto", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+print_stderr = "deny"
+print_stdout = "deny"
+unwrap_used = "deny"
