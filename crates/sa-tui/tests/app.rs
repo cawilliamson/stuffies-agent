@@ -24,10 +24,13 @@ fn typed(app: &mut App, text: &str) {
 fn typing_and_enter_submits_the_prompt() {
     let mut app = App::new("s", "m");
     typed(&mut app, "hello");
-    assert_eq!(app.input, "hello");
+    assert_eq!(app.input_text(), "hello");
     let action = app.on_key(key(KeyCode::Enter));
     assert_eq!(action, Action::Submit("hello".to_owned()));
-    assert!(app.input.is_empty(), "input must be cleared on submit");
+    assert!(
+        app.input_text().is_empty(),
+        "input must be cleared on submit"
+    );
 }
 
 #[test]
@@ -41,7 +44,7 @@ fn backspace_edits_the_input() {
     let mut app = App::new("s", "m");
     typed(&mut app, "abc");
     app.on_key(key(KeyCode::Backspace));
-    assert_eq!(app.input, "ab");
+    assert_eq!(app.input_text(), "ab");
 }
 
 #[test]
@@ -472,7 +475,9 @@ fn the_flash_is_a_red_background_behind_the_figure() {
     let lit: Vec<&ratatui::buffer::Cell> = buffer
         .content()
         .iter()
-        .filter(|cell| cell.bg == Color::Red && cell.fg == Color::White)
+        .filter(|cell| {
+            cell.bg == Color::Rgb(0xc0, 0x30, 0x30) && cell.fg == Color::Rgb(0xff, 0xff, 0xff)
+        })
         .collect();
     assert!(!lit.is_empty(), "the figure must be highlighted");
     let text: String = lit.iter().map(|cell| cell.symbol()).collect();
@@ -515,4 +520,61 @@ fn a_line_feed_from_a_pipe_submits_like_enter() {
         app.on_key(key(KeyCode::Char('\n'))),
         Action::Submit("hello".to_owned())
     );
+}
+
+#[test]
+fn the_status_bar_is_split_into_labelled_segments() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    let screen = screen_of(&mut app, 120, 20);
+
+    for expected in ["session-", "idle", "deepseek", "0.0 tok/s", "0 in / 0 out"] {
+        assert!(screen.contains(expected), "missing {expected:?}:\n{screen}");
+    }
+    assert!(
+        screen.matches('\u{e0b0}').count() >= 4,
+        "segments must be joined by powerline separators:\n{screen}"
+    );
+}
+
+#[test]
+fn the_bar_is_solid_coloured_areas_not_bracketed_text() {
+    use ratatui::style::Color;
+
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.branch = Some("main".to_owned());
+
+    let backend = TestBackend::new(140, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    // each area carries its own background, so several distinct non-default fills appear.
+    let mut fills: Vec<Color> = buffer
+        .content()
+        .iter()
+        .map(|cell| cell.bg)
+        .filter(|bg| *bg != Color::Reset)
+        .collect();
+    fills.sort_by_key(|c| format!("{c:?}"));
+    fills.dedup();
+    assert!(
+        fills.len() >= 4,
+        "expected several distinct segment fills, got {fills:?}"
+    );
+
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains("main"),
+        "the branch must be shown:\n{screen}"
+    );
+    assert!(!screen.contains('['), "no bracketed text:\n{screen}");
+}
+
+#[test]
+fn the_running_segment_replaces_idle() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.status.turn_running = true;
+    let screen = screen_of(&mut app, 120, 20);
+    assert!(screen.contains("running"), "{screen}");
+    assert!(!screen.contains("idle"), "{screen}");
 }

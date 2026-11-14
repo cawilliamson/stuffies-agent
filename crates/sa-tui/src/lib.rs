@@ -30,6 +30,114 @@ impl Drop for Restore {
     }
 }
 
+/// powerline separator.
+const SEP: &str = "\u{e0b0}";
+const ICON_TERM: &str = "\u{f120}";
+const ICON_BRANCH: &str = "\u{e725}";
+const ICON_MODEL: &str = "\u{f2db}";
+const ICON_SPEED: &str = "\u{f0e4}";
+const ICON_TOKENS: &str = "\u{f0e7}";
+
+/// one coloured area of the status bar.
+struct Segment {
+    icon: &'static str,
+    text: String,
+    fg: Color,
+    bg: Color,
+}
+
+fn rgb(r: u8, g: u8, b: u8) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+/// a powerline-style bar: solid coloured areas joined by arrow separators. no brackets.
+fn status_bar(app: &App) -> Line<'static> {
+    let short: String = app.status.session.chars().take(8).collect();
+    let mut segments = vec![Segment {
+        icon: ICON_TERM,
+        text: short,
+        fg: rgb(0xd8, 0xd8, 0xd8),
+        bg: rgb(0x2a, 0x2a, 0x2a),
+    }];
+
+    if app.status.turn_running {
+        segments.push(Segment {
+            icon: "",
+            text: "running".to_owned(),
+            fg: rgb(0x1a, 0x1a, 0x1a),
+            bg: rgb(0xd7, 0xa5, 0x3f),
+        });
+    } else {
+        segments.push(Segment {
+            icon: "",
+            text: "idle".to_owned(),
+            fg: rgb(0x1a, 0x1a, 0x1a),
+            bg: rgb(0x5c, 0xa8, 0x5c),
+        });
+    }
+
+    if let Some(branch) = &app.branch {
+        segments.push(Segment {
+            icon: ICON_BRANCH,
+            text: branch.clone(),
+            fg: rgb(0xd8, 0xd8, 0xf0),
+            bg: rgb(0x3b, 0x3b, 0x5c),
+        });
+    }
+
+    segments.push(Segment {
+        icon: ICON_MODEL,
+        text: app.status.model.clone(),
+        fg: rgb(0xe0, 0xe8, 0xff),
+        bg: rgb(0x2f, 0x45, 0x66),
+    });
+
+    let (rate_fg, rate_bg) = if app.flash_highlight {
+        (rgb(0xff, 0xff, 0xff), rgb(0xc0, 0x30, 0x30))
+    } else {
+        (rgb(0xff, 0xd8, 0xd8), rgb(0x5c, 0x2f, 0x2f))
+    };
+    segments.push(Segment {
+        icon: ICON_SPEED,
+        text: format!("{:.1} tok/s", app.tok_per_sec),
+        fg: rate_fg,
+        bg: rate_bg,
+    });
+
+    segments.push(Segment {
+        icon: ICON_TOKENS,
+        text: format!(
+            "{} in / {} out",
+            app.status.prompt_tokens, app.status.completion_tokens
+        ),
+        fg: rgb(0xd8, 0xd8, 0xd8),
+        bg: rgb(0x2a, 0x2a, 0x2a),
+    });
+
+    let mut spans: Vec<ratatui::text::Span<'static>> = Vec::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let label = if segment.icon.is_empty() {
+            format!(" {} ", segment.text)
+        } else {
+            format!(" {} {} ", segment.icon, segment.text)
+        };
+        spans.push(ratatui::text::Span::styled(
+            label,
+            Style::default().fg(segment.fg).bg(segment.bg),
+        ));
+        let next = segments.get(index + 1).map_or(Color::Reset, |s| s.bg);
+        spans.push(ratatui::text::Span::styled(
+            SEP,
+            Style::default().fg(segment.bg).bg(next),
+        ));
+    }
+    spans.push(ratatui::text::Span::styled(
+        " esc interrupt · ctrl-c quit",
+        Style::default().fg(Color::DarkGray),
+    ));
+    Line::from(spans)
+}
+
 #[must_use]
 pub fn render(app: &App) -> Vec<Line<'static>> {
     app.lines()
@@ -39,94 +147,79 @@ pub fn draw<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> std::io::Result<()> {
-    terminal.draw(|frame| {
-        let area = frame.area();
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(3),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
-            .split(area);
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),
+                    Constraint::Length(3),
+                    Constraint::Length(1),
+                ])
+                .split(area);
 
-        // the scroll ceiling is measured in rendered lines: wrapped content occupies more
-        // rows than it has entries, so counting entries leaves the viewport behind.
-        let content = render(app);
-        let width = usize::from(chunks[0].width).max(1);
-        let viewport = usize::from(chunks[0].height);
-        let visual: usize = content
-            .iter()
-            .map(|line| {
-                let w = line.width();
-                if w == 0 {
-                    1
-                } else {
-                    (w / width) + 1
-                }
-            })
-            .sum();
-        let max = visual.saturating_sub(viewport);
-        app.max_scroll = u16::try_from(max).unwrap_or(u16::MAX);
-        if app.follow {
-            app.scroll = app.max_scroll;
-        } else {
-            app.scroll = app.scroll.min(app.max_scroll);
-        }
+            // the scroll ceiling is measured in rendered lines: wrapped content occupies more
+            // rows than it has entries, so counting entries leaves the viewport behind.
+            let content = render(app);
+            let width = usize::from(chunks[0].width).max(1);
+            let viewport = usize::from(chunks[0].height);
+            let visual: usize = content
+                .iter()
+                .map(|line| {
+                    let w = line.width();
+                    if w == 0 {
+                        1
+                    } else {
+                        (w / width) + 1
+                    }
+                })
+                .sum();
+            let max = visual.saturating_sub(viewport);
+            app.max_scroll = u16::try_from(max).unwrap_or(u16::MAX);
+            if app.follow {
+                app.scroll = app.max_scroll;
+            } else {
+                app.scroll = app.scroll.min(app.max_scroll);
+            }
 
-        let body = Paragraph::new(content)
-            .block(Block::default().borders(Borders::NONE))
-            .wrap(Wrap { trim: false })
-            .scroll((app.scroll, 0));
-        frame.render_widget(body, chunks[0]);
+            let body = Paragraph::new(content)
+                .block(Block::default().borders(Borders::NONE))
+                .wrap(Wrap { trim: false })
+                .scroll((app.scroll, 0));
+            frame.render_widget(body, chunks[0]);
 
-        let title = " prompt ";
-        let input = Paragraph::new(app.input.as_str()).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
-        frame.render_widget(input, chunks[1]);
+            let title = " prompt ";
+            let field_width = usize::from(chunks[1].width.saturating_sub(2));
+            let (scroll, column) = app.input_view(field_width);
+            let input = Paragraph::new(app.input_text().to_owned())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(title)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                )
+                .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX)));
+            frame.render_widget(input, chunks[1]);
 
-        // without this the terminal hides the cursor in raw mode and typing is blind.
-        let caret = u16::try_from(app.input.chars().count()).unwrap_or(u16::MAX);
-        let limit = chunks[1].width.saturating_sub(2);
-        frame.set_cursor_position((chunks[1].x + 1 + caret.min(limit), chunks[1].y + 1));
+            // without this the terminal hides the cursor in raw mode and typing is blind.
+            let column = u16::try_from(column).unwrap_or(u16::MAX);
+            let limit = chunks[1].width.saturating_sub(2);
+            frame.set_cursor_position((chunks[1].x + 1 + column.min(limit), chunks[1].y + 1));
 
-        let state = if app.status.turn_running {
-            "running"
-        } else {
-            "idle"
-        };
-        let rate_style = if app.flash_highlight {
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Red)
-                .add_modifier(ratatui::style::Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let short: String = app.status.session.chars().take(8).collect();
-        let status = Line::from(vec![
-            ratatui::text::Span::styled(
-                format!(" {short} "),
-                Style::default().fg(Color::Black).bg(Color::DarkGray),
-            ),
-            ratatui::text::Span::raw(format!(" {state}  {}  ", app.status.model)),
-            ratatui::text::Span::styled(format!("{:.1} tok/s", app.tok_per_sec), rate_style),
-            ratatui::text::Span::raw(format!(
-                "  {} in / {} out  esc interrupt  ctrl-c quit",
-                app.status.prompt_tokens, app.status.completion_tokens,
-            )),
-        ]);
-        frame.render_widget(Paragraph::new(status), chunks[2]);
-    })?;
+            frame.render_widget(Paragraph::new(status_bar(app)), chunks[2]);
+        })
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
 }
 
 /// runs the interactive terminal front end against an attached session.
-pub async fn run(client: &mut Client, session: String, model: String) -> Result<(), String> {
+pub async fn run(
+    client: &mut Client,
+    session: String,
+    model: String,
+    branch: Option<String>,
+) -> Result<(), String> {
     let mut session = session;
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
@@ -137,6 +230,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
     terminal.clear().map_err(|e| e.to_string())?;
 
     let mut app = App::new(session.clone(), model.clone());
+    app.branch = branch;
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

@@ -71,7 +71,7 @@ sa-core     sessions, event log, llm client, tools, policy. no terminal, no stdo
 sa-daemon   unix socket server, session manager, supervision, dispatcher host. library only:
             it has no binary of its own.
 sa-client   typed client library: attach, subscribe, replay, send, approve.
-sa-tui      terminal front end: transcript, input line, status bar. view only.
+sa-tui      terminal front end: transcript, input line, powerline status bar. view only.
 sa-web      http carrier, auth, embedded ui assets. no daemon, no terminal.
 sa          binary: `sa attach`, `sa run`, `sa rpc --stdio`, `sa daemon`, `sa handoff`,
             `sa init`, `sa export`, `sa knowledge`.
@@ -1044,8 +1044,13 @@ Sub-work: ratatui application in `sa-tui` (transcript, input line, status bar), 
 detection in `sa attach` with `--line` as the escape hatch, history replay on attach so a
 transcript is continuous across sessions.
 
+The status bar is powerline-style: solid coloured areas joined by arrow separators, one
+area per field (session, state, branch, model, throughput, tokens), with nerdfont glyphs.
+No bracketed text. Single-line editing — cursor movement, word deletion, history — is
+delegated to `tui-input` rather than hand-rolled.
+
 Scope limits, deliberate: no mouse, no text selection, no markdown rendering, no syntax
-highlighting, no tabs or panes. One transcript, one input, one status line.
+highlighting, no tabs or panes. One transcript, one input, one status bar.
 
 Acceptance: `sa attach` opens the TUI on a terminal and the line client under a pipe;
 streamed text accumulates into one assistant entry; tool calls and results render in the

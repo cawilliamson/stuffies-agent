@@ -34,6 +34,23 @@ fn cwd() -> Result<String> {
         .map_err(|e| format!("cannot read cwd: {e}"))
 }
 
+/// the workspace branch, for the status bar. absent outside a repository.
+fn git_branch() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if branch.is_empty() || branch == "HEAD" {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
 // ---- rendering ----------------------------------------------------------
 
 /// renders a session transcript for a terminal.
@@ -335,7 +352,7 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
             .as_str()
             .unwrap_or("default")
             .to_owned();
-        return sa_tui::run(&mut client, session_id, model).await;
+        return sa_tui::run(&mut client, session_id, model, git_branch()).await;
     }
 
     let mut renderer = Renderer::default();

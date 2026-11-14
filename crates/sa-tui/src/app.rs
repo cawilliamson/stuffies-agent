@@ -51,7 +51,10 @@ const CHARS_PER_TOKEN: f32 = 4.0;
 
 pub struct App {
     pub transcript: Vec<Entry>,
-    pub input: String,
+    /// single-line editor: cursor movement, word deletion and history are the library's job.
+    input: tui_input::Input,
+    /// the git branch of the workspace, if it is a repository.
+    pub branch: Option<String>,
     /// absolute offset into the rendered transcript lines, not into entries.
     pub scroll: u16,
     /// the largest useful offset, recomputed on every draw from the real line count and
@@ -84,7 +87,8 @@ impl App {
     pub fn new(session: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             transcript: Vec::new(),
-            input: String::new(),
+            input: tui_input::Input::default(),
+            branch: None,
             scroll: 0,
             max_scroll: 0,
             follow: true,
@@ -164,39 +168,54 @@ impl App {
         }
     }
 
+    /// the current input text.
+    #[must_use]
+    pub fn input_text(&self) -> &str {
+        self.input.value()
+    }
+
+    /// the horizontal scroll and cursor column for the given field width.
+    #[must_use]
+    pub fn input_view(&self, width: usize) -> (usize, usize) {
+        let scroll = self.input.visual_scroll(width.max(1));
+        (scroll, self.input.visual_cursor().saturating_sub(scroll))
+    }
+
+    fn edit(&mut self, key: KeyEvent) {
+        use tui_input::backend::crossterm::EventHandler;
+        self.input.handle_event(&crossterm::event::Event::Key(key));
+    }
+
+    fn submit(&mut self) -> Action {
+        let text = self.input.value().trim().to_owned();
+        if text.is_empty() {
+            return Action::None;
+        }
+        self.input.reset();
+        self.follow = true;
+        if text.starts_with('/') {
+            Action::Command(text)
+        } else {
+            Action::Submit(text)
+        }
+    }
+
     /// handles a key press. returns what the caller should do about it.
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
                 // ctrl-c always leaves.
                 KeyCode::Char('c') | KeyCode::Char('d') => Action::Quit,
-                _ => Action::None,
+                _ => {
+                    self.edit(key);
+                    Action::None
+                }
             };
         }
 
         match key.code {
             // a pty fed from a pipe sends LF rather than CR; both mean submit.
-            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
-                let text = self.input.trim().to_owned();
-                if text.is_empty() {
-                    return Action::None;
-                }
-                self.input.clear();
-                self.follow = true;
-                if text.starts_with('/') {
-                    Action::Command(text)
-                } else {
-                    Action::Submit(text)
-                }
-            }
-            KeyCode::Backspace => {
-                self.input.pop();
-                Action::None
-            }
-            KeyCode::Char(c) => {
-                self.input.push(c);
-                Action::None
-            }
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => self.submit(),
             KeyCode::Up => {
                 self.follow = false;
                 self.scroll = self.scroll.saturating_sub(1);
@@ -219,7 +238,10 @@ impl App {
             }
             // escape interrupts the turn and never leaves the client.
             KeyCode::Esc => Action::Cancel,
-            _ => Action::None,
+            _ => {
+                self.edit(key);
+                Action::None
+            }
         }
     }
 

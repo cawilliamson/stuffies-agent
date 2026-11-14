@@ -6,12 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm.workspace = true
 futures-util.workspace = true
-ratatui = "0.29"
+ratatui.workspace = true
 sa-client.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tui-input.workspace = true
 
 [lints]
 workspace = true
