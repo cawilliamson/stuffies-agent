@@ -166,7 +166,15 @@ fn the_tab_bar_draws_tab_shapes() {
         mid.contains('\u{2502}') && mid.contains('1'),
         "labels row:\n{mid}"
     );
-    assert!(bot.contains('\u{2570}'), "tabs need bottoms:\n{bot}");
+    // inactive tabs are square; the active one has no bottom edge and opens into the pane.
+    assert!(
+        bot.contains('\u{2514}'),
+        "inactive tabs need a bottom edge:\n{bot}"
+    );
+    assert!(
+        bot.contains('\u{2518}'),
+        "inactive tabs need a bottom edge:\n{bot}"
+    );
 }
 
 #[test]
