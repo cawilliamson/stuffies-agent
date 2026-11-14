@@ -48,6 +48,9 @@ macro_rules! registry {
 }
 
 registry!(
+    studio,
+    workspace,
+    focus,
     classic,
     sidebar_left,
     sidebar_right,

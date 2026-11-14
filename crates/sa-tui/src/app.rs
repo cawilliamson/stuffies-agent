@@ -9,7 +9,10 @@ use serde_json::Value;
 pub enum Role {
     User,
     Assistant,
+    /// a tool invocation: `text` is the tool name and its arguments.
     Tool,
+    /// the output of the tool above it.
+    ToolOutput,
     System,
     Error,
 }
@@ -57,6 +60,8 @@ pub struct App {
     pub branch: Option<String>,
     /// index into the compiled-in theme registry.
     pub theme: usize,
+    /// the workspace directory, shown in the status line.
+    pub workspace: Option<String>,
     /// absolute offset into the rendered transcript lines, not into entries.
     pub scroll: u16,
     /// the largest useful offset, recomputed on every draw from the real line count and
@@ -92,6 +97,7 @@ impl App {
             input: tui_input::Input::default(),
             branch: None,
             theme: crate::theme::default_index(),
+            workspace: None,
             scroll: 0,
             max_scroll: 0,
             follow: true,
@@ -175,6 +181,11 @@ impl App {
     #[must_use]
     pub fn input_text(&self) -> &str {
         self.input.value()
+    }
+
+    /// replaces the input text, e.g. to prefill a prompt.
+    pub fn set_input(&mut self, text: &str) {
+        self.input = tui_input::Input::new(text.to_owned());
     }
 
     /// the horizontal scroll and cursor column for the given field width.
@@ -275,11 +286,11 @@ impl App {
                     .and_then(Value::as_str)
                     .unwrap_or("tool");
                 let args = summarise(&payload["args"]);
-                self.push(Role::Tool, format!("→ {tool} {args}"));
+                self.push(Role::Tool, format!("{tool} {args}").trim_end().to_owned());
             }
             "tool.completed" => {
                 let output = payload.get("output").and_then(Value::as_str).unwrap_or("");
-                self.push(Role::Tool, indent(output, 8));
+                self.push(Role::ToolOutput, indent(output, 8));
             }
             "tool.failed" => {
                 let error = payload
@@ -414,6 +425,7 @@ fn gutter_for(role: Role) -> &'static str {
         Role::User => "you │ ",
         Role::Assistant => "sa  │ ",
         Role::Tool => "tool│ ",
+        Role::ToolOutput => "    │ ",
         Role::System => "sys │ ",
         Role::Error => "err │ ",
     }
@@ -424,6 +436,7 @@ fn style_for(role: Role) -> Style {
         Role::User => Style::default().fg(Color::Cyan),
         Role::Assistant => Style::default().fg(Color::Green),
         Role::Tool => Style::default().fg(Color::DarkGray),
+        Role::ToolOutput => Style::default().fg(Color::DarkGray),
         Role::System => Style::default().fg(Color::Yellow),
         Role::Error => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
     }

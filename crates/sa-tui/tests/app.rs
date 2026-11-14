@@ -6,6 +6,13 @@ use ratatui::Terminal;
 use sa_tui::app::{Action, App, Role};
 use serde_json::json;
 
+/// a client pinned to the classic theme: these tests assert its specific chrome.
+fn classic_app(session: &str, model: &str) -> App {
+    let mut app = App::new(session, model);
+    app.theme = sa_tui::theme::index_of("classic").expect("classic theme");
+    app
+}
+
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -22,7 +29,7 @@ fn typed(app: &mut App, text: &str) {
 
 #[test]
 fn typing_and_enter_submits_the_prompt() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     typed(&mut app, "hello");
     assert_eq!(app.input_text(), "hello");
     let action = app.on_key(key(KeyCode::Enter));
@@ -35,13 +42,13 @@ fn typing_and_enter_submits_the_prompt() {
 
 #[test]
 fn enter_on_an_empty_input_does_nothing() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
 }
 
 #[test]
 fn backspace_edits_the_input() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     typed(&mut app, "abc");
     app.on_key(key(KeyCode::Backspace));
     assert_eq!(app.input_text(), "ab");
@@ -49,7 +56,7 @@ fn backspace_edits_the_input() {
 
 #[test]
 fn escape_interrupts_the_turn_and_never_leaves() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.status.turn_running = true;
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Cancel);
     app.status.turn_running = false;
@@ -62,7 +69,7 @@ fn escape_interrupts_the_turn_and_never_leaves() {
 
 #[test]
 fn ctrl_c_always_quits() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.status.turn_running = true;
     assert_eq!(app.on_key(ctrl('c')), Action::Quit);
 
@@ -73,7 +80,7 @@ fn ctrl_c_always_quits() {
 #[test]
 fn slash_commands_are_not_sent_as_prompts() {
     for command in ["/exit", "/quit"] {
-        let mut app = App::new("s", "m");
+        let mut app = classic_app("s", "m");
         typed(&mut app, command);
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
@@ -85,7 +92,7 @@ fn slash_commands_are_not_sent_as_prompts() {
 
 #[test]
 fn a_normal_prompt_is_still_a_prompt() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     typed(&mut app, "read main.rs");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
@@ -95,13 +102,13 @@ fn a_normal_prompt_is_still_a_prompt() {
 
 #[test]
 fn ctrl_d_quits() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     assert_eq!(app.on_key(ctrl('d')), Action::Quit);
 }
 
 #[test]
 fn scroll_clamps_to_the_rendered_transcript() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     for n in 0..20 {
         app.push(Role::Tool, format!("line {n}"));
     }
@@ -127,7 +134,7 @@ fn scroll_clamps_to_the_rendered_transcript() {
 
 #[test]
 fn tool_events_render_as_transcript_entries() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.on_event(
         "tool.requested",
         &json!({"tool": "read", "args": {"path": "main.rs"}}),
@@ -145,13 +152,13 @@ fn tool_events_render_as_transcript_entries() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("→ read main.rs"), "{text}");
+    assert!(text.contains("read main.rs"), "{text}");
     assert!(text.contains("fn main() {}"), "{text}");
 }
 
 #[test]
 fn streamed_text_accumulates_into_one_assistant_entry() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.on_event("llm.delta", &json!({"text": "hel"}));
     app.on_event("llm.delta", &json!({"text": "lo"}));
     let assistant: Vec<&str> = app
@@ -165,7 +172,7 @@ fn streamed_text_accumulates_into_one_assistant_entry() {
 
 #[test]
 fn usage_accumulates_across_turns() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.status.turn_running = true;
     app.on_event(
         "turn.completed",
@@ -177,7 +184,7 @@ fn usage_accumulates_across_turns() {
 
 #[test]
 fn the_input_line_renders() {
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     app.push(Role::User, "what is this repo");
     typed(&mut app, "next prompt");
 
@@ -206,7 +213,7 @@ fn user_entries(app: &App) -> usize {
 fn submitting_does_not_render_the_prompt_twice() {
     // the prompt is echoed locally when submitted, and the daemon also emits turn.started.
     // only the local echo may render, or the operator sees their message duplicated.
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.push(Role::User, "hello");
     app.on_event("turn.started", &json!({"prompt": "hello"}));
     assert_eq!(user_entries(&app), 1, "{:?}", app.transcript);
@@ -214,7 +221,7 @@ fn submitting_does_not_render_the_prompt_twice() {
 
 #[test]
 fn replay_still_reconstructs_prompts_from_the_log() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.replaying = true;
     app.on_event("turn.started", &json!({"prompt": "first"}));
     app.on_event("turn.started", &json!({"prompt": "second"}));
@@ -224,7 +231,7 @@ fn replay_still_reconstructs_prompts_from_the_log() {
 
 #[test]
 fn every_role_renders_a_distinct_gutter() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.push(Role::User, "mine");
     app.push(Role::Assistant, "theirs");
     app.push(Role::Tool, "tool output");
@@ -249,7 +256,7 @@ fn every_role_renders_a_distinct_gutter() {
 #[test]
 fn the_agent_and_the_operator_use_different_colours() {
     use ratatui::style::Color;
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.push(Role::User, "mine");
     app.push(Role::Assistant, "theirs");
     let colours: Vec<Color> = app
@@ -278,7 +285,7 @@ fn screen_of(app: &mut App, width: u16, height: u16) -> String {
 fn the_newest_entry_is_visible_after_a_long_transcript() {
     // scroll is a rendered-line offset. counting entries instead leaves the viewport far
     // above the newest content, so the operator cannot see what they just typed.
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     for n in 0..40 {
         app.push(Role::Tool, format!("tool output line {n}"));
     }
@@ -297,7 +304,7 @@ fn the_newest_entry_is_visible_after_a_long_transcript() {
 
 #[test]
 fn scrolling_up_holds_the_view_against_new_output() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     for n in 0..20 {
         app.push(Role::Tool, format!("line {n}"));
     }
@@ -313,7 +320,7 @@ fn scrolling_up_holds_the_view_against_new_output() {
 
 #[test]
 fn a_slash_command_never_enters_the_transcript() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     typed(&mut app, "/help");
     let action = app.on_key(key(KeyCode::Enter));
     assert!(matches!(action, Action::Command(_)), "{action:?}");
@@ -327,7 +334,7 @@ fn a_slash_command_never_enters_the_transcript() {
 
 #[test]
 fn streaming_produces_a_live_token_rate() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.status.turn_running = true;
     app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
     app.tick();
@@ -340,7 +347,7 @@ fn streaming_produces_a_live_token_rate() {
 
 #[test]
 fn replayed_history_does_not_contribute_to_the_rate() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     app.replaying = true;
     app.on_event("llm.delta", &json!({"text": "x".repeat(4000)}));
     app.tick();
@@ -368,7 +375,7 @@ fn delivered_message(app: &mut App, t0: std::time::Instant, generation: std::tim
 fn the_average_counts_only_generation_time_not_tool_time() {
     use std::time::{Duration, Instant};
 
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     let t0 = Instant::now();
     // two seconds of generation, then twenty-eight seconds of tool execution.
     delivered_message(&mut app, t0, Duration::from_secs(2));
@@ -387,7 +394,7 @@ fn the_average_counts_only_generation_time_not_tool_time() {
 fn thinking_tokens_count_toward_the_rate() {
     use std::time::{Duration, Instant};
 
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     let t0 = Instant::now();
     app.status.turn_running = true;
     app.on_event_at("turn.started", &json!({"prompt": "go"}), t0);
@@ -412,7 +419,7 @@ fn thinking_tokens_count_toward_the_rate() {
 fn a_delivered_message_holds_its_average_while_the_highlight_flashes() {
     use std::time::{Duration, Instant};
 
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     let t0 = Instant::now();
     delivered_message(&mut app, t0, Duration::from_secs(2));
     let settled = t0 + Duration::from_secs(30);
@@ -460,7 +467,7 @@ fn the_flash_is_a_red_background_behind_the_figure() {
     use ratatui::style::Color;
     use std::time::{Duration, Instant};
 
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     let t0 = Instant::now();
     delivered_message(&mut app, t0, Duration::from_secs(2));
     let settled = t0 + Duration::from_secs(30);
@@ -489,7 +496,7 @@ fn the_flash_is_a_red_background_behind_the_figure() {
 
 #[test]
 fn the_status_bar_shows_a_number_and_never_a_dash() {
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     let screen = screen_of(&mut app, 100, 20);
     assert!(screen.contains("0.0 t/s"), "idle must read 0.0:\n{screen}");
     assert!(!screen.contains('—'), "no dash placeholder:\n{screen}");
@@ -497,7 +504,7 @@ fn the_status_bar_shows_a_number_and_never_a_dash() {
 
 #[test]
 fn the_rate_appears_in_the_status_bar_while_streaming() {
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     app.status.turn_running = true;
     app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
     app.tick();
@@ -511,7 +518,7 @@ fn the_rate_appears_in_the_status_bar_while_streaming() {
 
 #[test]
 fn a_line_feed_from_a_pipe_submits_like_enter() {
-    let mut app = App::new("s", "m");
+    let mut app = classic_app("s", "m");
     typed(&mut app, "hello");
     assert_eq!(
         app.on_key(key(KeyCode::Char('\n'))),
@@ -521,7 +528,7 @@ fn a_line_feed_from_a_pipe_submits_like_enter() {
 
 #[test]
 fn the_status_bar_is_split_into_labelled_segments() {
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     let screen = screen_of(&mut app, 120, 20);
 
     for expected in ["session-", "deepseek", "0.0 t/s", "0/0"] {
@@ -537,7 +544,7 @@ fn the_status_bar_is_split_into_labelled_segments() {
 fn the_bar_is_solid_coloured_areas_not_bracketed_text() {
     use ratatui::style::Color;
 
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     app.branch = Some("main".to_owned());
 
     let backend = TestBackend::new(140, 20);
@@ -570,7 +577,7 @@ fn the_bar_is_solid_coloured_areas_not_bracketed_text() {
 #[test]
 fn the_bar_has_no_idle_or_running_state_block() {
     for running in [false, true] {
-        let mut app = App::new("session-abcdef", "deepseek");
+        let mut app = classic_app("session-abcdef", "deepseek");
         app.status.turn_running = running;
         let screen = screen_of(&mut app, 140, 20);
         assert!(!screen.contains("idle"), "{screen}");
@@ -580,7 +587,7 @@ fn the_bar_has_no_idle_or_running_state_block() {
 
 #[test]
 fn large_token_counts_are_abbreviated() {
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     app.status.prompt_tokens = 230_000;
     app.status.completion_tokens = 1_500;
 
@@ -595,7 +602,7 @@ fn large_token_counts_are_abbreviated() {
 
 #[test]
 fn small_token_counts_are_shown_in_full() {
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     app.status.prompt_tokens = 999;
     let screen = screen_of(&mut app, 140, 20);
     assert!(screen.contains("999/"), "{screen}");
@@ -603,7 +610,7 @@ fn small_token_counts_are_shown_in_full() {
 
 #[test]
 fn the_hints_sit_at_the_right_edge_of_the_bar() {
-    let mut app = App::new("session-abcdef", "deepseek");
+    let mut app = classic_app("session-abcdef", "deepseek");
     let width = 140u16;
     let backend = TestBackend::new(width, 20);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -629,7 +636,7 @@ fn the_hints_sit_at_the_right_edge_of_the_bar() {
 fn every_theme_renders_at_several_sizes_without_panicking() {
     for (index, theme) in sa_tui::theme::THEMES.iter().enumerate() {
         for (width, height) in [(20u16, 6u16), (40, 10), (80, 24), (200, 60)] {
-            let mut app = App::new("session-abcdef", "deepseek");
+            let mut app = classic_app("session-abcdef", "deepseek");
             app.theme = index;
             app.branch = Some("main".to_owned());
             app.status.prompt_tokens = 12_345;
@@ -652,7 +659,7 @@ fn every_theme_renders_at_several_sizes_without_panicking() {
 
 #[test]
 fn themes_are_looked_up_by_name() {
-    assert_eq!(sa_tui::theme::index_of("classic"), Some(0));
+    assert!(sa_tui::theme::index_of("classic").is_some());
     assert!(sa_tui::theme::index_of("no-such-theme").is_none());
     assert!(sa_tui::theme::THEMES.len() >= 20);
 }
@@ -660,7 +667,7 @@ fn themes_are_looked_up_by_name() {
 #[test]
 fn switching_theme_changes_the_rendered_screen() {
     let render = |index: usize| {
-        let mut app = App::new("session-abcdef", "deepseek");
+        let mut app = classic_app("session-abcdef", "deepseek");
         app.theme = index;
         app.push(Role::User, "hello");
         let backend = TestBackend::new(80, 24);
@@ -680,4 +687,46 @@ fn switching_theme_changes_the_rendered_screen() {
     assert_ne!(classic, minimal, "layouts must differ");
     assert_ne!(minimal, quad, "layouts must differ");
     assert_ne!(classic, quad, "layouts must differ");
+}
+
+#[test]
+fn the_refined_themes_do_not_show_raw_role_gutters() {
+    for name in ["studio", "workspace", "focus"] {
+        let index = sa_tui::theme::index_of(name).expect(name);
+        let mut app = classic_app("session-abcdef", "deepseek");
+        app.theme = index;
+        app.branch = Some("feat/theme-engine".to_owned());
+        app.push(Role::User, "a question");
+        app.push(Role::Assistant, "an answer");
+        app.push(Role::Tool, "bash ls");
+        app.push(Role::ToolOutput, "file.txt");
+        app.push(Role::System, "a note");
+        app.push(Role::Error, "a failure");
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        sa_tui::draw(&mut terminal, &mut app).expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        for gutter in [
+            "you \u{2502}",
+            "sa  \u{2502}",
+            "tool\u{2502}",
+            "sys \u{2502}",
+            "err \u{2502}",
+        ] {
+            assert!(
+                !screen.contains(gutter),
+                "{name} still shows the raw gutter {gutter:?}:\n{screen}"
+            );
+        }
+        assert!(screen.contains("a question"), "{name} lost the prompt");
+        assert!(screen.contains("an answer"), "{name} lost the reply");
+    }
 }

@@ -80,6 +80,7 @@ pub async fn run(
     session: String,
     model: String,
     branch: Option<String>,
+    workspace: String,
 ) -> Result<(), String> {
     let mut session = session;
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
@@ -92,6 +93,7 @@ pub async fn run(
 
     let mut app = App::new(session.clone(), model.clone());
     app.branch = branch;
+    app.workspace = (!workspace.is_empty()).then_some(workspace);
 
     // the cli asks the daemon what it is serving rather than displaying a placeholder.
     if app.status.model.is_empty() {
