@@ -71,7 +71,7 @@ sa-core     sessions, event log, llm client, tools, policy. no terminal, no stdo
 sa-daemon   unix socket server, session manager, supervision, dispatcher host. library only:
             it has no binary of its own.
 sa-client   typed client library: attach, subscribe, replay, send, approve.
-sa-tui      terminal front end: transcript, input line, powerline status bar. view only.
+sa-tui      terminal front end, layout theme engine. view only.
 sa-web      http carrier, auth, embedded ui assets. no daemon, no terminal.
 sa          binary: `sa attach`, `sa run`, `sa rpc --stdio`, `sa daemon`, `sa handoff`,
             `sa init`, `sa export`, `sa knowledge`.
@@ -1056,6 +1056,22 @@ Acceptance: `sa attach` opens the TUI on a terminal and the line client under a 
 streamed text accumulates into one assistant entry; tool calls and results render in the
 transcript; `esc` interrupts a running turn and `ctrl-c` quits; attaching to a session with
 history replays it.
+
+**v1.3 — theme engine.** Layout is a pluggable concern, not a hardcoded screen.
+
+Each theme is a single file under `crates/sa-tui/src/theme/themes/` implementing a `Theme`
+trait that owns the entire screen: pane splits, borders, sidebars, top and bottom bars,
+gutters and colour. A registry macro in `theme/mod.rs` lists the compiled-in themes, so
+adding one is a file plus a line and removing one is the reverse. Nothing is loaded at
+runtime. `/theme` lists the available themes and `/theme <name>` switches.
+
+Scope limits: themes are compiled in, not discovered from disk, and there is no config file
+for the default theme. The `Theme` trait also declares how many rows the layout gives the
+transcript, so scroll pinning stays correct per layout.
+
+Acceptance: every compiled-in theme renders without panicking at 20x6 through 200x60;
+theme names are unique and each has a description; switching theme changes the rendered
+screen; at least 20 themes exist and differ in layout, not only in colour.
 
 **v2.0 — web interface.** The general surface: sessions, live transcripts, denials, cost
 and manual compaction in a browser.

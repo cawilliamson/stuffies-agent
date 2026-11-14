@@ -624,3 +624,60 @@ fn the_hints_sit_at_the_right_edge_of_the_bar() {
         "hints must be pushed to the right edge, found at column {column}:\n{line}"
     );
 }
+
+#[test]
+fn every_theme_renders_at_several_sizes_without_panicking() {
+    for (index, theme) in sa_tui::theme::THEMES.iter().enumerate() {
+        for (width, height) in [(20u16, 6u16), (40, 10), (80, 24), (200, 60)] {
+            let mut app = App::new("session-abcdef", "deepseek");
+            app.theme = index;
+            app.branch = Some("main".to_owned());
+            app.status.prompt_tokens = 12_345;
+            app.status.completion_tokens = 678;
+            app.status.turn_running = true;
+            app.push(Role::User, "hello there");
+            app.push(
+                Role::Assistant,
+                "a reply that is long enough to wrap in a narrow pane",
+            );
+            app.push(Role::Tool, "→ bash ls\nfile.txt");
+
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            sa_tui::draw(&mut terminal, &mut app)
+                .unwrap_or_else(|e| panic!("theme {} failed to draw: {e}", theme.name()));
+        }
+    }
+}
+
+#[test]
+fn themes_are_looked_up_by_name() {
+    assert_eq!(sa_tui::theme::index_of("classic"), Some(0));
+    assert!(sa_tui::theme::index_of("no-such-theme").is_none());
+    assert!(sa_tui::theme::THEMES.len() >= 20);
+}
+
+#[test]
+fn switching_theme_changes_the_rendered_screen() {
+    let render = |index: usize| {
+        let mut app = App::new("session-abcdef", "deepseek");
+        app.theme = index;
+        app.push(Role::User, "hello");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        sa_tui::draw(&mut terminal, &mut app).expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    };
+    let classic = render(0);
+    let minimal = render(sa_tui::theme::index_of("minimal").expect("minimal"));
+    let quad = render(sa_tui::theme::index_of("quad").expect("quad"));
+    assert_ne!(classic, minimal, "layouts must differ");
+    assert_ne!(minimal, quad, "layouts must differ");
+    assert_ne!(classic, quad, "layouts must differ");
+}

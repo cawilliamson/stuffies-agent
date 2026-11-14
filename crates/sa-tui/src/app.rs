@@ -55,6 +55,8 @@ pub struct App {
     input: tui_input::Input,
     /// the git branch of the workspace, if it is a repository.
     pub branch: Option<String>,
+    /// index into the compiled-in theme registry.
+    pub theme: usize,
     /// absolute offset into the rendered transcript lines, not into entries.
     pub scroll: u16,
     /// the largest useful offset, recomputed on every draw from the real line count and
@@ -89,6 +91,7 @@ impl App {
             transcript: Vec::new(),
             input: tui_input::Input::default(),
             branch: None,
+            theme: crate::theme::default_index(),
             scroll: 0,
             max_scroll: 0,
             follow: true,

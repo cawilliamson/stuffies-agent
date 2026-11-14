@@ -4,6 +4,7 @@
 //! line-mode client in the `sa` binary remains the fallback when there is no tty.
 
 pub mod app;
+pub mod theme;
 
 use std::io::Write;
 
@@ -12,10 +13,7 @@ use crossterm::event::{Event, EventStream, KeyEventKind};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 use sa_client::Client;
 use serde_json::{json, Value};
@@ -30,144 +28,25 @@ impl Drop for Restore {
     }
 }
 
-/// powerline separator.
-const SEP: &str = "\u{e0b0}";
-const ICON_TERM: &str = "\u{f120}";
-const ICON_BRANCH: &str = "\u{e725}";
-const ICON_MODEL: &str = "\u{f2db}";
-const ICON_SPEED: &str = "\u{f0e4}";
-const ICON_TOKENS: &str = "\u{f0e7}";
-
-/// one coloured area of the status bar.
-struct Segment {
-    icon: &'static str,
-    text: String,
-    fg: Color,
-    bg: Color,
-}
-
-fn rgb(r: u8, g: u8, b: u8) -> Color {
-    Color::Rgb(r, g, b)
-}
-
-/// a powerline-style bar: solid coloured areas joined by arrow separators. no brackets.
-fn status_bar(app: &App, width: u16) -> Line<'static> {
-    let short: String = app.status.session.chars().take(8).collect();
-    let mut segments = vec![Segment {
-        icon: ICON_TERM,
-        text: short,
-        fg: rgb(0xd8, 0xd8, 0xd8),
-        bg: rgb(0x2a, 0x2a, 0x2a),
-    }];
-
-    if let Some(branch) = &app.branch {
-        segments.push(Segment {
-            icon: ICON_BRANCH,
-            text: branch.clone(),
-            fg: rgb(0xd8, 0xd8, 0xf0),
-            bg: rgb(0x3b, 0x3b, 0x5c),
-        });
-    }
-
-    // never a placeholder: the area is omitted until the real id is known.
-    if !app.status.model.is_empty() {
-        segments.push(Segment {
-            icon: ICON_MODEL,
-            text: app.status.model.clone(),
-            fg: rgb(0xe0, 0xe8, 0xff),
-            bg: rgb(0x2f, 0x45, 0x66),
-        });
-    }
-
-    let (rate_fg, rate_bg) = if app.flash_highlight {
-        (rgb(0xff, 0xff, 0xff), rgb(0xc0, 0x30, 0x30))
-    } else {
-        (rgb(0xff, 0xd8, 0xd8), rgb(0x5c, 0x2f, 0x2f))
-    };
-    segments.push(Segment {
-        icon: ICON_SPEED,
-        text: format!("{:.1} t/s", app.tok_per_sec),
-        fg: rate_fg,
-        bg: rate_bg,
-    });
-
-    segments.push(Segment {
-        icon: ICON_TOKENS,
-        text: format!(
-            "{}/{}",
-            compact(app.status.prompt_tokens),
-            compact(app.status.completion_tokens)
-        ),
-        fg: rgb(0xd8, 0xd8, 0xd8),
-        bg: rgb(0x2a, 0x2a, 0x2a),
-    });
-
-    let mut spans: Vec<ratatui::text::Span<'static>> = Vec::new();
-    for (index, segment) in segments.iter().enumerate() {
-        let label = if segment.icon.is_empty() {
-            format!(" {} ", segment.text)
-        } else {
-            format!(" {} {} ", segment.icon, segment.text)
-        };
-        spans.push(ratatui::text::Span::styled(
-            label,
-            Style::default().fg(segment.fg).bg(segment.bg),
-        ));
-        let next = segments.get(index + 1).map_or(Color::Reset, |s| s.bg);
-        spans.push(ratatui::text::Span::styled(
-            SEP,
-            Style::default().fg(segment.bg).bg(next),
-        ));
-    }
-    // the hints sit at the far right of the bar, against the empty space.
-    let hints = " esc interrupt · ctrl-c quit ";
-    let used = Line::from(spans.clone()).width();
-    let pad = usize::from(width).saturating_sub(used + hints.chars().count());
-    spans.push(ratatui::text::Span::raw(" ".repeat(pad)));
-    spans.push(ratatui::text::Span::styled(
-        hints,
-        Style::default().fg(Color::DarkGray),
-    ));
-    Line::from(spans)
-}
-
-/// abbreviates large counts: 230000 becomes 230k.
-fn compact(count: u64) -> String {
-    if count >= 1_000_000 {
-        format!("{}M", count / 1_000_000)
-    } else if count >= 1_000 {
-        format!("{}k", count / 1_000)
-    } else {
-        count.to_string()
-    }
-}
-
+/// the transcript as renderable lines.
 #[must_use]
 pub fn render(app: &App) -> Vec<Line<'static>> {
     app.lines()
 }
 
+/// draws the active theme. returns where the cursor belongs.
 pub fn draw<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> std::io::Result<()> {
     terminal
         .draw(|frame| {
-            let area = frame.area();
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(3),
-                    Constraint::Length(3),
-                    Constraint::Length(1),
-                ])
-                .split(area);
-
             // the scroll ceiling is measured in rendered lines: wrapped content occupies more
             // rows than it has entries, so counting entries leaves the viewport behind.
             let content = render(app);
-            let width = usize::from(chunks[0].width).max(1);
-            let viewport = usize::from(chunks[0].height);
+            let theme = theme::at(app.theme);
+            let width = usize::from(frame.area().width).max(1);
+            let viewport = usize::from(theme.transcript_rows(frame.area()));
             let visual: usize = content
                 .iter()
                 .map(|line| {
@@ -187,31 +66,9 @@ pub fn draw<B: ratatui::backend::Backend>(
                 app.scroll = app.scroll.min(app.max_scroll);
             }
 
-            let body = Paragraph::new(content)
-                .block(Block::default().borders(Borders::NONE))
-                .wrap(Wrap { trim: false })
-                .scroll((app.scroll, 0));
-            frame.render_widget(body, chunks[0]);
-
-            let title = " prompt ";
-            let field_width = usize::from(chunks[1].width.saturating_sub(2));
-            let (scroll, column) = app.input_view(field_width);
-            let input = Paragraph::new(app.input_text().to_owned())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(title)
-                        .border_style(Style::default().fg(Color::DarkGray)),
-                )
-                .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX)));
-            frame.render_widget(input, chunks[1]);
-
-            // without this the terminal hides the cursor in raw mode and typing is blind.
-            let column = u16::try_from(column).unwrap_or(u16::MAX);
-            let limit = chunks[1].width.saturating_sub(2);
-            frame.set_cursor_position((chunks[1].x + 1 + column.min(limit), chunks[1].y + 1));
-
-            frame.render_widget(Paragraph::new(status_bar(app, chunks[2].width)), chunks[2]);
+            if let Some((x, y)) = theme.render(frame, app) {
+                frame.set_cursor_position((x, y));
+            }
         })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
@@ -391,6 +248,20 @@ pub async fn run(
                             app.push(app::Role::System, "new session");
                         }
                         Err(err) => app.push(app::Role::Error, err.to_string()),
+                    },
+                    "/theme" if arg.is_empty() => {
+                        let names: Vec<&str> = theme::THEMES.iter().map(|t| t.name()).collect();
+                        app.push(app::Role::System, format!("themes: {}", names.join(", ")));
+                    }
+                    "/theme" => match theme::index_of(arg) {
+                        Some(index) => {
+                            app.theme = index;
+                            app.push(app::Role::System, format!("theme: {arg}"));
+                        }
+                        None => app.push(
+                            app::Role::Error,
+                            format!("no theme named {arg}, try /theme"),
+                        ),
                     },
                     "/model" if !arg.is_empty() => {
                         let _ = client
