@@ -91,19 +91,29 @@ fn ctrl_d_quits() {
 }
 
 #[test]
-fn scroll_clamps_to_the_transcript() {
+fn scroll_clamps_to_the_rendered_transcript() {
     let mut app = App::new("s", "m");
-    for n in 0..3 {
-        app.push(Role::System, format!("line {n}"));
+    for n in 0..20 {
+        app.push(Role::Tool, format!("line {n}"));
     }
-    for _ in 0..50 {
+    // the ceiling is derived from rendered lines and the viewport, so it needs a draw.
+    let _ = screen_of(&mut app, 60, 12);
+    let ceiling = app.max_scroll;
+    assert!(ceiling > 0, "a long transcript must be scrollable");
+
+    for _ in 0..500 {
         app.on_key(key(KeyCode::Up));
     }
     assert_eq!(app.scroll, 0, "scrolling up must stop at the top");
-    for _ in 0..50 {
+
+    for _ in 0..500 {
         app.on_key(key(KeyCode::Down));
     }
-    assert_eq!(app.scroll, 2, "scrolling down must stop at the last entry");
+    assert_eq!(
+        app.scroll, ceiling,
+        "scrolling down must stop at the newest content"
+    );
+    assert!(app.follow, "reaching the bottom resumes following");
 }
 
 #[test]
@@ -164,7 +174,7 @@ fn the_input_line_renders() {
 
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).expect("terminal");
-    sa_tui::draw(&mut terminal, &app).expect("draw");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
 
     let buffer = terminal.backend().buffer();
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
@@ -240,4 +250,54 @@ fn the_agent_and_the_operator_use_different_colours() {
         .collect();
     assert!(colours.contains(&Color::Cyan), "{colours:?}");
     assert!(colours.contains(&Color::Green), "{colours:?}");
+}
+
+fn screen_of(app: &mut App, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, app).expect("draw");
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+#[test]
+fn the_newest_entry_is_visible_after_a_long_transcript() {
+    // scroll is a rendered-line offset. counting entries instead leaves the viewport far
+    // above the newest content, so the operator cannot see what they just typed.
+    let mut app = App::new("s", "m");
+    for n in 0..40 {
+        app.push(Role::Tool, format!("tool output line {n}"));
+    }
+    app.push(Role::User, "my newest message");
+
+    let screen = screen_of(&mut app, 60, 12);
+    assert!(
+        screen.contains("my newest message"),
+        "the newest entry must be on screen:\n{screen}"
+    );
+    assert!(
+        !screen.contains("tool output line 0"),
+        "the oldest entry must have scrolled away:\n{screen}"
+    );
+}
+
+#[test]
+fn scrolling_up_holds_the_view_against_new_output() {
+    let mut app = App::new("s", "m");
+    for n in 0..20 {
+        app.push(Role::Tool, format!("line {n}"));
+    }
+    // establish a ceiling by drawing once
+    let _ = screen_of(&mut app, 60, 12);
+    app.on_key(key(KeyCode::PageUp));
+    assert!(!app.follow, "manual scrolling must stop following");
+    let held = app.scroll;
+
+    app.push(Role::Assistant, "streamed while scrolled up");
+    assert_eq!(app.scroll, held, "new output must not yank the viewport");
 }

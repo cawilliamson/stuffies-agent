@@ -41,7 +41,11 @@ pub struct Status {
 pub struct App {
     pub transcript: Vec<Entry>,
     pub input: String,
+    /// absolute offset into the rendered transcript lines, not into entries.
     pub scroll: u16,
+    /// the largest useful offset, recomputed on every draw from the real line count and
+    /// the viewport height.
+    pub max_scroll: u16,
     pub follow: bool,
     pub status: Status,
     pub pending_approval: Option<String>,
@@ -57,6 +61,7 @@ impl App {
             transcript: Vec::new(),
             input: String::new(),
             scroll: 0,
+            max_scroll: 0,
             follow: true,
             status: Status {
                 session: session.into(),
@@ -73,13 +78,10 @@ impl App {
             role,
             text: text.into(),
         });
+        // the draw pass pins the viewport to the newest content when following.
         if self.follow {
-            self.scroll = self.max_scroll();
+            self.scroll = self.max_scroll;
         }
-    }
-
-    fn max_scroll(&self) -> u16 {
-        u16::try_from(self.transcript.len().saturating_sub(1)).unwrap_or(u16::MAX)
     }
 
     /// handles a key press. returns what the caller should do about it.
@@ -137,8 +139,8 @@ impl App {
                 Action::None
             }
             KeyCode::Down => {
-                self.scroll = (self.scroll + 1).min(self.max_scroll());
-                self.follow = self.scroll >= self.max_scroll();
+                self.scroll = (self.scroll + 1).min(self.max_scroll);
+                self.follow = self.scroll >= self.max_scroll;
                 Action::None
             }
             KeyCode::PageUp => {
@@ -147,8 +149,8 @@ impl App {
                 Action::None
             }
             KeyCode::PageDown => {
-                self.scroll = (self.scroll + 10).min(self.max_scroll());
-                self.follow = self.scroll >= self.max_scroll();
+                self.scroll = (self.scroll + 10).min(self.max_scroll);
+                self.follow = self.scroll >= self.max_scroll;
                 Action::None
             }
             KeyCode::Esc => Action::Cancel,
@@ -219,7 +221,7 @@ impl App {
             }
         }
         if self.follow {
-            self.scroll = self.max_scroll();
+            self.scroll = self.max_scroll;
         }
     }
 

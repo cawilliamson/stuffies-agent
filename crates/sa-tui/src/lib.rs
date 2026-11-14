@@ -37,7 +37,7 @@ pub fn render(app: &App) -> Vec<Line<'static>> {
 
 pub fn draw<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
-    app: &App,
+    app: &mut App,
 ) -> std::io::Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
@@ -50,7 +50,31 @@ pub fn draw<B: ratatui::backend::Backend>(
             ])
             .split(area);
 
-        let body = Paragraph::new(render(app))
+        // the scroll ceiling is measured in rendered lines: wrapped content occupies more
+        // rows than it has entries, so counting entries leaves the viewport behind.
+        let content = render(app);
+        let width = usize::from(chunks[0].width).max(1);
+        let viewport = usize::from(chunks[0].height);
+        let visual: usize = content
+            .iter()
+            .map(|line| {
+                let w = line.width();
+                if w == 0 {
+                    1
+                } else {
+                    (w / width) + 1
+                }
+            })
+            .sum();
+        let max = visual.saturating_sub(viewport);
+        app.max_scroll = u16::try_from(max).unwrap_or(u16::MAX);
+        if app.follow {
+            app.scroll = app.max_scroll;
+        } else {
+            app.scroll = app.scroll.min(app.max_scroll);
+        }
+
+        let body = Paragraph::new(content)
             .block(Block::default().borders(Borders::NONE))
             .wrap(Wrap { trim: false })
             .scroll((app.scroll, 0));
@@ -68,6 +92,11 @@ pub fn draw<B: ratatui::backend::Backend>(
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
         frame.render_widget(input, chunks[1]);
+
+        // without this the terminal hides the cursor in raw mode and typing is blind.
+        let caret = u16::try_from(app.input.chars().count()).unwrap_or(u16::MAX);
+        let limit = chunks[1].width.saturating_sub(2);
+        frame.set_cursor_position((chunks[1].x + 1 + caret.min(limit), chunks[1].y + 1));
 
         let state = if app.status.turn_running {
             "running"
@@ -129,7 +158,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
         .await
         .map_err(|e| format!("subscribe failed: {e}"))?;
 
-    draw(&mut terminal, &app).map_err(|e| e.to_string())?;
+    draw(&mut terminal, &mut app).map_err(|e| e.to_string())?;
 
     loop {
         enum Incoming {
@@ -229,7 +258,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
             }
         }
 
-        draw(&mut terminal, &app).map_err(|e| e.to_string())?;
+        draw(&mut terminal, &mut app).map_err(|e| e.to_string())?;
         let _ = std::io::stdout().flush();
     }
 
