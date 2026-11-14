@@ -527,7 +527,7 @@ fn the_status_bar_is_split_into_labelled_segments() {
     let mut app = App::new("session-abcdef", "deepseek");
     let screen = screen_of(&mut app, 120, 20);
 
-    for expected in ["session-", "idle", "deepseek", "0.0 tok/s", "0 in / 0 out"] {
+    for expected in ["session-", "deepseek", "0.0 tok/s", "0 in / 0 out"] {
         assert!(screen.contains(expected), "missing {expected:?}:\n{screen}");
     }
     assert!(
@@ -571,12 +571,35 @@ fn the_bar_is_solid_coloured_areas_not_bracketed_text() {
 }
 
 #[test]
-fn the_running_segment_replaces_idle() {
+fn the_bar_has_no_idle_or_running_state_block() {
+    for running in [false, true] {
+        let mut app = App::new("session-abcdef", "deepseek");
+        app.status.turn_running = running;
+        let screen = screen_of(&mut app, 140, 20);
+        assert!(!screen.contains("idle"), "{screen}");
+        assert!(!screen.contains("running"), "{screen}");
+    }
+}
+
+#[test]
+fn the_session_area_names_the_session_instead_of_an_opaque_id() {
     let mut app = App::new("session-abcdef", "deepseek");
-    app.status.turn_running = true;
-    let screen = screen_of(&mut app, 120, 20);
-    assert!(screen.contains("running"), "{screen}");
-    assert!(!screen.contains("idle"), "{screen}");
+    app.title = "stuffies-agent".to_owned();
+    let screen = screen_of(&mut app, 140, 20);
+    assert!(screen.contains("stuffies-agent"), "{screen}");
+    assert!(
+        !screen.contains("session-"),
+        "the raw id is not shown:\n{screen}"
+    );
+}
+
+#[test]
+fn a_long_session_title_is_truncated() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.title = "a-very-long-session-title-that-would-eat-the-bar".to_owned();
+    let screen = screen_of(&mut app, 140, 20);
+    assert!(screen.contains("a-very-long-ses"), "{screen}");
+    assert!(!screen.contains("that-would-eat"), "{screen}");
 }
 
 #[test]
