@@ -435,8 +435,21 @@ fn a_delivered_message_holds_its_average_while_the_highlight_flashes() {
     );
 
     app.tick_at(settled + Duration::from_secs(10));
-    assert_eq!(app.tok_per_sec, 0.0, "then reset to zero");
-    assert!(!app.flash_highlight);
+    assert!(
+        app.tok_per_sec > 0.0,
+        "the figure holds after the flash, got {}",
+        app.tok_per_sec
+    );
+    assert!(!app.flash_highlight, "but the highlight is off");
+
+    // and it resets only when the next message starts.
+    app.on_event_at(
+        "turn.started",
+        &json!({"prompt": "next"}),
+        settled + Duration::from_secs(11),
+    );
+    app.tick_at(settled + Duration::from_secs(11));
+    assert_eq!(app.tok_per_sec, 0.0, "a new message resets the figure");
 }
 
 #[test]

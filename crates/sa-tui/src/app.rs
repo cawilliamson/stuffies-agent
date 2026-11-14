@@ -75,6 +75,8 @@ pub struct App {
     flash: Option<(f32, std::time::Instant)>,
     /// true on the lit half of the flash, so the view can highlight the figure.
     pub flash_highlight: bool,
+    /// the last delivered average, held on screen until the next message starts.
+    frozen: Option<f32>,
 }
 
 impl App {
@@ -99,6 +101,7 @@ impl App {
             active_elapsed: std::time::Duration::ZERO,
             flash: None,
             flash_highlight: false,
+            frozen: None,
         }
     }
 
@@ -114,9 +117,11 @@ impl App {
         if let Some((rate, started)) = self.flash {
             let elapsed = now.duration_since(started);
             if elapsed >= FLASH_DURATION {
+                // the figure stays on screen until the next message starts.
                 self.flash = None;
                 self.flash_highlight = false;
-                self.tok_per_sec = 0.0;
+                self.frozen = Some(rate);
+                self.tok_per_sec = rate;
                 return;
             }
             self.tok_per_sec = rate;
@@ -134,7 +139,7 @@ impl App {
             }
         }
         if self.samples.is_empty() {
-            self.tok_per_sec = 0.0;
+            self.tok_per_sec = self.frozen.unwrap_or(0.0);
             return;
         }
         let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
@@ -274,10 +279,13 @@ impl App {
             }
             "turn.started" => {
                 if !self.replaying {
+                    // a new message resets the held figure.
                     self.turn_chars = 0;
                     self.active_started = None;
                     self.active_elapsed = std::time::Duration::ZERO;
                     self.samples.clear();
+                    self.frozen = None;
+                    self.tok_per_sec = 0.0;
                 } else if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
                     self.push(Role::User, prompt.to_owned());
                 }

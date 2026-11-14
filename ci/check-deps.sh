@@ -4,6 +4,10 @@ set -euo pipefail
 
 fail() { echo "check-deps: $*" >&2; exit 1; }
 
+# every check below shells out to cargo, and a missing cargo makes each `if ... | grep`
+# evaluate false rather than fail. refuse to report ok without a toolchain.
+command -v cargo >/dev/null 2>&1 || fail "cargo not found; run inside the devshell"
+
 # sa-core must not pull in a terminal crate. it does use reqwest (and so hyper) for the
 # model client; the ban on http *servers* belongs to sa-web at v2.0.
 if cargo tree -p sa-core | grep -qE 'ratatui|crossterm'; then
