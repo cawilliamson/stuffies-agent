@@ -42,7 +42,10 @@ impl crate::theme::Theme for Theme {
 
         // header: wordmark, then the facts that matter, quietly.
         let mut header = vec![
-            Span::styled(" sa ", Style::default().fg(Color::Rgb(0x10, 0x14, 0x1a)).bg(ACCENT)),
+            Span::styled(
+                " sa ",
+                Style::default().fg(Color::Rgb(0x10, 0x14, 0x1a)).bg(ACCENT),
+            ),
             Span::raw("  "),
         ];
         let mut facts = vec![parts::session(app)];
@@ -59,7 +62,10 @@ impl crate::theme::Theme for Theme {
             header.push(Span::styled(fact.clone(), Style::default().fg(MUTED)));
         }
         if parts::busy(app) {
-            header.push(Span::styled("   \u{25cf} working", Style::default().fg(Color::Rgb(0xe0, 0xb0, 0x60))));
+            header.push(Span::styled(
+                "   \u{25cf} working",
+                Style::default().fg(Color::Rgb(0xe0, 0xb0, 0x60)),
+            ));
         }
         frame.render_widget(Paragraph::new(Line::from(header)), rows[0]);
         frame.render_widget(
@@ -131,7 +137,10 @@ impl crate::theme::Theme for Theme {
         let pad = usize::from(rows[5].width).saturating_sub(used);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(left, Style::default().fg(Color::Rgb(0x14, 0x18, 0x1e)).bg(FAINT)),
+                Span::styled(
+                    left,
+                    Style::default().fg(Color::Rgb(0x14, 0x18, 0x1e)).bg(FAINT),
+                ),
                 Span::raw(" ".repeat(pad)),
                 Span::styled(right, Style::default().fg(MUTED)),
             ])),
