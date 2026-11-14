@@ -134,6 +134,8 @@ fn events_route_to_the_tab_that_owns_the_session() {
     assert_eq!(app.tabs[1].transcript.len(), 0);
 }
 
+// printing is opt-in here (SA_PREVIEW=1) and only for eyeballing the bar.
+#[allow(clippy::print_stdout)]
 #[test]
 fn the_tab_bar_draws_tab_shapes() {
     let mut app = App::new("session-one", "m");
