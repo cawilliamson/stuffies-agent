@@ -85,7 +85,7 @@ async fn create(framed: &mut Framed<UnixStream, LinesCodec>, cwd: &str) -> Strin
         framed,
         1,
         "session.create",
-        json!({"cwd": cwd, "autonomy": "allowlisted", "title": "t"}),
+        json!({"cwd": cwd, "title": "t"}),
     )
     .await;
     response["result"]["session_id"]
