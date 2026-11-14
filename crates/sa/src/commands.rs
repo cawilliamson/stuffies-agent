@@ -352,11 +352,7 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
             .as_str()
             .unwrap_or("default")
             .to_owned();
-        let title = attached["session"]["title"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        return sa_tui::run(&mut client, session_id, model, git_branch(), title).await;
+        return sa_tui::run(&mut client, session_id, model, git_branch()).await;
     }
 
     let mut renderer = Renderer::default();

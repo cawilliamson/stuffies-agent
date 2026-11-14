@@ -52,17 +52,10 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 
 /// a powerline-style bar: solid coloured areas joined by arrow separators. no brackets.
 fn status_bar(app: &App, width: u16) -> Line<'static> {
-    // the session area names the session rather than showing an opaque id.
-    let label = if app.title.is_empty() {
-        app.status.session.chars().take(8).collect::<String>()
-    } else if app.title.chars().count() > 16 {
-        format!("{}\u{2026}", app.title.chars().take(15).collect::<String>())
-    } else {
-        app.title.clone()
-    };
+    let short: String = app.status.session.chars().take(8).collect();
     let mut segments = vec![Segment {
         icon: ICON_TERM,
-        text: label,
+        text: short,
         fg: rgb(0xd8, 0xd8, 0xd8),
         bg: rgb(0x2a, 0x2a, 0x2a),
     }];
@@ -227,7 +220,6 @@ pub async fn run(
     session: String,
     model: String,
     branch: Option<String>,
-    title: String,
 ) -> Result<(), String> {
     let mut session = session;
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
@@ -240,7 +232,6 @@ pub async fn run(
 
     let mut app = App::new(session.clone(), model.clone());
     app.branch = branch;
-    app.title = title;
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

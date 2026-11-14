@@ -582,27 +582,6 @@ fn the_bar_has_no_idle_or_running_state_block() {
 }
 
 #[test]
-fn the_session_area_names_the_session_instead_of_an_opaque_id() {
-    let mut app = App::new("session-abcdef", "deepseek");
-    app.title = "stuffies-agent".to_owned();
-    let screen = screen_of(&mut app, 140, 20);
-    assert!(screen.contains("stuffies-agent"), "{screen}");
-    assert!(
-        !screen.contains("session-"),
-        "the raw id is not shown:\n{screen}"
-    );
-}
-
-#[test]
-fn a_long_session_title_is_truncated() {
-    let mut app = App::new("session-abcdef", "deepseek");
-    app.title = "a-very-long-session-title-that-would-eat-the-bar".to_owned();
-    let screen = screen_of(&mut app, 140, 20);
-    assert!(screen.contains("a-very-long-ses"), "{screen}");
-    assert!(!screen.contains("that-would-eat"), "{screen}");
-}
-
-#[test]
 fn large_token_counts_are_abbreviated() {
     let mut app = App::new("session-abcdef", "deepseek");
     app.status.prompt_tokens = 230_000;
