@@ -44,7 +44,6 @@ async fn main() -> ExitCode {
                 Err("only --stdio is supported".to_owned())
             }
         }
-        Command::Init => commands::init(),
         Command::Run { prompt } => commands::run_once(&prompt).await,
         Command::Attach { session } => commands::attach(session).await,
         Command::Export { session, format } => commands::export(session, &format).await,

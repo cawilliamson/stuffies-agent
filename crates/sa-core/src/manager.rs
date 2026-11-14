@@ -58,7 +58,6 @@ fn not_found(id: &str) -> RpcError {
 pub struct ManagerConfig {
     pub host_fingerprint: String,
     pub default_model: String,
-    pub allowlist_path: PathBuf,
     pub provider: Arc<dyn Provider>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
@@ -552,7 +551,9 @@ impl Manager {
             manager: Arc::clone(&self),
             session_id: session_id.clone(),
         });
-        let allowlist = Allowlist::load(&self.config.allowlist_path).unwrap_or_default();
+        // per-workspace policy, resolved outside the workspace (spec 6.1).
+        let allowlist =
+            Allowlist::load(&crate::workspace::policy_path(&workspace)).unwrap_or_default();
         let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::new(
             PathBuf::from(&row.cwd),
             row.autonomy,
@@ -607,6 +608,7 @@ impl Manager {
                     .unwrap_or_else(|| self.config.default_model.clone()),
                 history,
                 compaction_summary,
+                context: crate::workspace::context(&workspace),
                 max_tokens: self.config.max_tokens,
                 reasoning_effort: self.config.reasoning_effort.clone(),
             })

@@ -1,7 +1,6 @@
-//! the user-facing commands: init, run, attach, export.
+//! the user-facing commands: run, attach, export.
 
 use std::io::{BufRead, Write};
-use std::path::Path;
 
 use sa_client::Client;
 use serde_json::{json, Value};
@@ -28,48 +27,6 @@ fn cwd() -> Result<String> {
     std::env::current_dir()
         .map(|p| p.display().to_string())
         .map_err(|e| format!("cannot read cwd: {e}"))
-}
-
-// ---- init ---------------------------------------------------------------
-
-pub fn init() -> Result<()> {
-    let dir = Path::new(".sa");
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create .sa: {e}"))?;
-
-    let gitignore = Path::new(".gitignore");
-    let existing = std::fs::read_to_string(gitignore).unwrap_or_default();
-    if !existing.lines().any(|line| line.trim() == ".sa/") {
-        let mut handle = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(gitignore)
-            .map_err(|e| format!("cannot write .gitignore: {e}"))?;
-        writeln!(handle, ".sa/").map_err(|e| e.to_string())?;
-    }
-
-    let policy = dir.join("policy.toml");
-    if !policy.exists() {
-        std::fs::write(
-            &policy,
-            "# commands permitted under the `allowlisted` autonomy level.\n\
-             # matching is by argv prefix, not substring.\n\
-             [allowlisted]\n\
-             commands = [\n  \
-               \"cargo build\",\n  \
-               \"cargo check\",\n  \
-               \"cargo test\",\n  \
-               \"git diff\",\n  \
-               \"git status\",\n  \
-               \"ls\",\n  \
-               \"rg\",\n\
-             ]\n\
-             network = []\n",
-        )
-        .map_err(|e| format!("cannot write policy.toml: {e}"))?;
-    }
-
-    println!("sa: initialised .sa/ and added it to .gitignore");
-    Ok(())
 }
 
 // ---- session helpers ----------------------------------------------------

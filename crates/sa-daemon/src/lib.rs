@@ -21,13 +21,12 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub db_path: PathBuf,
     pub model: String,
-    pub allowlist_path: PathBuf,
     pub host_fingerprint: String,
 }
 
 impl Config {
-    /// the daemon-wide store. sessions record their own `cwd`; `.sa/` stays per-workspace
-    /// config only, because one daemon serves many workspaces.
+    /// the daemon-wide store. sessions record their own `cwd`. nothing is written into a
+    /// workspace: per-workspace config lives under `$XDG_CONFIG_HOME/sa/workspaces/`.
     #[must_use]
     pub fn from_env() -> Self {
         let runtime_dir = socket::default_runtime_dir();
@@ -39,7 +38,6 @@ impl Config {
         let state_dir = std::env::var_os("SA_STATE_DIR").map_or(state_dir, PathBuf::from);
         Self {
             db_path: state_dir.join("sa.db"),
-            allowlist_path: state_dir.join("policy.toml"),
             model: std::env::var("SA_MODEL").unwrap_or_else(|_| "default".to_owned()),
             host_fingerprint: host_fingerprint(&state_dir),
             runtime_dir,
@@ -57,7 +55,6 @@ impl Config {
             socket_path: root.join("run").join(socket::SOCKET_FILE),
             db_path: state_dir.join("sa.db"),
             model: "test-model".to_owned(),
-            allowlist_path: state_dir.join("policy.toml"),
             host_fingerprint: "test-host".to_owned(),
             state_dir,
         }
@@ -115,7 +112,6 @@ pub async fn run(
         Arc::new(ManagerConfig {
             host_fingerprint: cfg.host_fingerprint.clone(),
             default_model: cfg.model.clone(),
-            allowlist_path: cfg.allowlist_path.clone(),
             provider,
             max_tokens: std::env::var("SA_MAX_TOKENS")
                 .ok()

@@ -47,8 +47,10 @@ it are deferred.
 ### 1.2 Non-goals
 
 - A plugin/extension host. `sa` is native code; there is no third-party extension API.
-- Compatibility with pi's config layout. `sa` keeps its own naming (`SA_*`, `.sa/`,
-  `SOUL.md`/`AGENTS.md`).
+- Writing anything into the workspace. See §6.1; this is absolute.
+- Compatibility with pi's config layout. `sa` keeps its own root (`$XDG_CONFIG_HOME/sa`),
+  though it deploys per-project context with the same directory-naming scheme so one
+  dotfiles module can serve both agents.
 - Multi-tenant deployment. One daemon serves one unix user. Several *people* may share it
   through the web surface, isolated by knowledge namespaces (§11.3), not by separate
   processes or containers.
@@ -309,7 +311,8 @@ onto `from_seq`. A websocket would duplicate a reconnect protocol the daemon alr
 
 #### Binding
 
-Loopback only, `127.0.0.1:7420` by default, overridable in `.sa/web.toml`. The listener is
+Loopback only, `127.0.0.1:7420` by default, overridable in `$XDG_CONFIG_HOME/sa/web.toml`.
+The listener is
 disabled unless that file exists. TLS is terminated by a reverse proxy, never by the daemon.
 `X-Forwarded-For` is honoured only when the immediate peer is loopback.
 
@@ -500,8 +503,7 @@ when it arrives, is a separate `session.purge` method rather than a flag on `del
 
 `DECIDED`: sqlite in WAL mode at `$XDG_STATE_HOME/sa/sa.db` is the sole source of truth for
 live sessions. One daemon serves many workspaces, so the store is daemon-wide and each
-session records its own `cwd`; `.sa/` holds per-workspace config only and is still never
-transferred.
+session records its own `cwd`.
 
 ```text
 events(id INTEGER PRIMARY KEY, session_id TEXT, seq INTEGER, kind TEXT,
@@ -520,8 +522,43 @@ Rationale: a daemon with several sessions writing concurrently needs atomic comm
 crash safety. An append-only text file needs hand-rolled locking and torn-tail repair; a
 `kill -9` mid-tool-call must not require a repair pass.
 
-`DECIDED`: `.sa/` is gitignored, and `sa init` writes the ignore entry. Nothing under `.sa/`
-is ever committed, and nothing under `.sa/` ever enters a bundle.
+#### Nothing is written into the workspace
+
+`DECIDED`: `sa` never creates, modifies or deletes a file inside a workspace. Not a
+`.sa/` directory, not a `.gitignore` line, not an `AGENTS.md`, not a lock file, not a
+cache. `git status` after any `sa` operation is byte-identical to before it.
+
+Everything sa needs lives in the two XDG roots:
+
+```text
+$XDG_CONFIG_HOME/sa/                     user-authored, deployable from dotfiles
+  policy.toml                            global command allowlist (spec 8.2)
+  web.toml                               web listener config (spec 4.3)
+  workspaces/<slug>/policy.toml          per-workspace override
+  workspaces/<slug>/SOUL.md              persona, read only
+  workspaces/<slug>/AGENTS.md            project context, read only
+
+$XDG_STATE_HOME/sa/                      runtime state, never hand-edited
+  sa.db  sa.db-wal  sa.db-shm            session store
+  knowledge.db                           derived knowledge index (spec 11.2)
+  knowledge/                             knowledge content (spec 11.1)
+  machine-id                             host fingerprint fallback (spec 5.3)
+```
+
+`<slug>` is the workspace path with the leading `/` stripped and remaining `/` replaced by
+`-`, exactly as `~/.pi/agent/projects/` is named. `/home/chrisaw/.dotfiles` becomes
+`home-chrisaw-.dotfiles`. This is deliberate: one dotfiles module can deploy context for
+both agents from a single source tree, and neither agent has to know about the other.
+
+Read-only exceptions, both permitted because they predate sa:
+
+- an `AGENTS.md` or `SOUL.md` that already exists in the workspace root is read and never
+  written. If absent, sa does not create one.
+- `refs/sa/checkpoints/` is written into `.git` (spec 8.4). It is git metadata, invisible
+  to the working tree and to `git status`, and is removed with `git update-ref -d`.
+
+There is no `sa init`. There is nothing to initialise: the daemon creates its own
+directories on first use, and per-workspace config is optional.
 
 ### 6.2 Canonical bundle (handoff format)
 
@@ -655,7 +692,7 @@ divergence the lock in §7.4 exists to prevent, so it is disallowed rather than 
 
 `DECIDED`: secrets never enter the bundle, and this is enforced rather than promised.
 
-- `.sa/` is never transferred.
+- Nothing under either XDG root is transferred; only the workspace's own files are.
 - Export refuses when any path in the transfer set matches the deny list: `*.pem`, `*.key`,
   `*.p12`, `id_*`, `.env`, `.env.*`, `*credentials*`, `*secret*`.
 - `--allow-secret-paths` downgrades the refusal to a warning recorded in the
@@ -690,14 +727,17 @@ knowledge is that the root is a git repository (§11.1), not the checkpoint.
 `allowlisted` needs a concrete allowlist, so it has one:
 
 ```text
-.sa/policy.toml
+$XDG_CONFIG_HOME/sa/policy.toml                     global default
+$XDG_CONFIG_HOME/sa/workspaces/<slug>/policy.toml   per-workspace override
+
   [allowlisted]
   commands = ["cargo build", "cargo test", "git diff", "git status", "rg", "ls"]
   network  = []          # commands permitted to reach the network
 ```
 
-The file is daemon-local, lives under `.sa/`, and is never transferred. Matching is by argv
-prefix, not by substring, and the resolved binary must be on a fixed PATH.
+The file lives outside the workspace (§6.1) and is never transferred. The per-workspace
+override wins when it exists. Matching is by argv prefix, not by substring, and the resolved
+binary must be on a fixed PATH.
 
 Network denial under `allowlisted` is enforced with `unshare -n` when available. When it is
 not, the daemon records a `session.state` event at turn start carrying
@@ -806,7 +846,7 @@ is green and only if a measured turn is latency-bound on tool calls.
 
 - The daemon owns model credentials. Clients never see a key.
 - Configuration is daemon-local: environment (`OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`) and
-  a credential file under `.sa/` at mode `0600`.
+  a credential file under `$XDG_CONFIG_HOME/sa/` at mode `0600`.
 - Bundles carry no credentials. A handoff to a host without credentials fails at import
   verification, not mid-turn.
 
@@ -868,7 +908,7 @@ outside its namespaces.
 ### 11.1 Layout
 
 ```text
-$XDG_STATE_HOME/sa/knowledge/          default root, overridable in .sa/knowledge.toml
+$XDG_STATE_HOME/sa/knowledge/          default root, overridable in knowledge.toml
   shared/            read by every session
   user/<id>/         read and written by one user
   workspace/<id>/    read and written by sessions in one workspace
@@ -900,7 +940,7 @@ A session is created with a resolved namespace set, recorded in `session.created
 {"knowledge_namespaces": ["shared", "user:chris", "workspace:stuffies"]}
 ```
 
-Resolution happens at session creation from `.sa/knowledge.toml`:
+Resolution happens at session creation from `$XDG_CONFIG_HOME/sa/knowledge.toml`:
 
 ```toml
 [users.chris]
@@ -973,7 +1013,8 @@ required for the motivating workflow.
 - `sa` auto-spawns the daemon when the socket is absent, guarded by an exclusive bind lock
   so auto-spawn and systemd can never both start a daemon.
 - The daemon never exits because its last client disconnected.
-- The web listener (§4.3) starts only when `.sa/web.toml` exists. It is a carrier, not a
+- The web listener (§4.3) starts only when `$XDG_CONFIG_HOME/sa/web.toml` exists. It is a
+  carrier, not a
   supervisor: it never owns the daemon's lifetime, and stopping it does not stop a turn.
 - Graceful shutdown drains in-flight turns or marks them `interrupted`; it never truncates
   the log.
@@ -1029,7 +1070,7 @@ Sub-work, in order:
 3. OpenAI-compatible provider, streaming into the log, usage accounting.
 4. Tools, permission classes, autonomy levels, allowlist, workspace lock, checkpoint.
 5. Detached turns, `turn.resume`, automatic compaction.
-6. CLI: `sa init`, `sa run -p`, `sa attach` line mode, `sa export`.
+6. CLI: `sa run -p`, `sa attach` line mode, `sa export`. There is no `sa init` (§6.1).
 
 Acceptance: a crash test kills the daemon mid-append and asserts a consistent log on restart
 with a terminal event for every open tool call; a recorded-cassette test produces a completed
@@ -1212,7 +1253,7 @@ crates/sa/src/proxy.rs
 **A.2.1 Scaffold.** Workspace `Cargo.toml` with `[workspace.lints.clippy]
 unwrap_used = "deny"`, `print_stdout`/`print_stderr` denied at workspace level and allowed
 only in `sa` and `sa-daemon`. `flake.nix` devShell with rust toolchain, `cargo-deny`,
-`marksman`. `.gitignore` with `/target` and `.sa/`.
+`marksman`. `.gitignore` with `/target` only: `sa` writes nothing else.
 
 Dependencies, declared up front so `cargo deny` has something to check: `serde`,
 `serde_json`, `tokio`, `thiserror`, `tracing`, `tracing-subscriber`, `clap`, `nix`.

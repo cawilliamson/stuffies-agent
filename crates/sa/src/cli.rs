@@ -23,8 +23,6 @@ pub enum Command {
         #[arg(long)]
         stdio: bool,
     },
-    /// initialise .sa/ in the current directory
-    Init,
     /// run one prompt to completion and print the answer
     Run {
         /// the prompt

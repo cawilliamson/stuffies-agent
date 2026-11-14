@@ -64,6 +64,7 @@ pub struct TurnRequest {
     pub model: String,
     pub history: Vec<Event>,
     pub compaction_summary: Option<String>,
+    pub context: Option<String>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
 }
@@ -249,7 +250,12 @@ impl Agent {
     }
 
     fn build_transcript(&self, request: &TurnRequest) -> Vec<ChatMessage> {
-        let mut messages = vec![ChatMessage::system(system_prompt())];
+        let mut system = system_prompt();
+        if let Some(context) = &request.context {
+            system.push_str("\n\nProject context (read-only, deployed outside the workspace):\n");
+            system.push_str(context);
+        }
+        let mut messages = vec![ChatMessage::system(system)];
 
         if let Some(summary) = &request.compaction_summary {
             messages.push(ChatMessage::system(format!(

@@ -359,3 +359,78 @@ async fn a_restart_appends_an_interruption_for_the_open_turn() {
     let _ = stop.send(());
     let _ = handle.await;
 }
+
+#[tokio::test]
+async fn sa_writes_nothing_into_the_workspace() {
+    // spec 6.1: `git status` after any sa operation is byte-identical to before it.
+    let script = vec![vec![
+        Delta::Text("noted".to_owned()),
+        Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        },
+    ]];
+    let daemon = Harness::start(script).await;
+
+    let work = daemon.root().join("work");
+    std::fs::create_dir_all(&work).expect("workdir");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&work)
+            .args(args)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::write(work.join("main.rs"), "fn main() {}").expect("write");
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+
+    let before_status = git(&["status", "--porcelain"]);
+    let before_files: Vec<String> = std::fs::read_dir(&work)
+        .expect("readdir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+
+    let mut client = daemon.connect().await;
+    let session = create(&mut client, &work.display().to_string()).await;
+    call(
+        &mut client,
+        2,
+        "turn.start",
+        json!({"session_id": session, "prompt": "hello", "detach": true}),
+    )
+    .await;
+    wait_for_kind(&mut client, &session, "turn.completed").await;
+
+    let after_status = git(&["status", "--porcelain"]);
+    assert_eq!(before_status, after_status, "git status changed");
+
+    let mut after_files: Vec<String> = std::fs::read_dir(&work)
+        .expect("readdir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    let mut sorted_before = before_files;
+    sorted_before.sort();
+    after_files.sort();
+    assert_eq!(
+        sorted_before, after_files,
+        "the workspace gained or lost entries"
+    );
+
+    assert!(
+        !work.join(".sa").exists(),
+        "no .sa/ directory may be created"
+    );
+    assert!(
+        !work.join(".gitignore").exists(),
+        "no .gitignore may be created"
+    );
+
+    daemon.stop().await;
+}

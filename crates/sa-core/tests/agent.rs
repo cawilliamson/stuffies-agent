@@ -49,6 +49,7 @@ fn request() -> TurnRequest {
         model: "m".to_owned(),
         history: Vec::new(),
         compaction_summary: None,
+        context: None,
         max_tokens: None,
         reasoning_effort: None,
     }
