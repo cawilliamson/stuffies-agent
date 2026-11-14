@@ -25,10 +25,105 @@ pub enum LlmError {
     Truncated,
 }
 
+/// one message in the openai chat-completions shape.
+///
+/// tool results must carry the `tool_call_id` of the call they answer, and the assistant
+/// message that requested them must carry the calls verbatim, or the model cannot associate
+/// a result with a call and will re-issue it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_calls: Option<Vec<WireToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: WireFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+impl From<&ToolCall> for WireToolCall {
+    fn from(call: &ToolCall) -> Self {
+        Self {
+            id: call.id.clone(),
+            kind: "function".to_owned(),
+            function: WireFunction {
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            },
+        }
+    }
+}
+
+impl ChatMessage {
+    #[must_use]
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".to_owned(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".to_owned(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_owned(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// the assistant turn that requested tool calls. `content` may be empty.
+    #[must_use]
+    pub fn assistant_with_calls(content: &str, calls: &[ToolCall]) -> Self {
+        Self {
+            role: "assistant".to_owned(),
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content.to_owned())
+            },
+            tool_calls: Some(calls.iter().map(WireToolCall::from).collect()),
+            tool_call_id: None,
+        }
+    }
+
+    /// the result of one tool call, addressed to the call that requested it.
+    #[must_use]
+    pub fn tool(call_id: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".to_owned(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(call_id.to_owned()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -294,6 +389,7 @@ impl Provider for MissingProvider {
 /// a provider that replays a fixed script. used by every test that must not touch the network.
 pub struct ScriptedProvider {
     script: std::sync::Mutex<std::collections::VecDeque<Vec<Delta>>>,
+    seen: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
 impl ScriptedProvider {
@@ -301,13 +397,26 @@ impl ScriptedProvider {
     pub fn new(script: Vec<Vec<Delta>>) -> Self {
         Self {
             script: std::sync::Mutex::new(script.into_iter().collect()),
+            seen: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// every request the agent has made, in order.
+    #[must_use]
+    pub fn seen_requests(&self) -> Vec<ChatRequest> {
+        self.seen
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
     }
 }
 
 impl Provider for ScriptedProvider {
-    fn stream(&self, _request: ChatRequest) -> StreamFuture<'_> {
+    fn stream(&self, request: ChatRequest) -> StreamFuture<'_> {
         Box::pin(async move {
+            if let Ok(mut seen) = self.seen.lock() {
+                seen.push(request);
+            }
             let turn = self
                 .script
                 .lock()

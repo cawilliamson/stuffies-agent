@@ -876,13 +876,10 @@ impl Manager {
             .provider
             .stream(crate::llm::ChatRequest {
                 model: model.to_owned(),
-                messages: vec![crate::llm::ChatMessage {
-                    role: "user".to_owned(),
-                    content: format!(
-                        "Summarise the following work log in at most 400 words. Keep decisions, \
-                         file paths and open questions. Do not add commentary.\n{transcript}"
-                    ),
-                }],
+                messages: vec![crate::llm::ChatMessage::user(format!(
+                    "Summarise the following work log in at most 400 words. Keep decisions, \
+                     file paths and open questions. Do not add commentary.\n{transcript}"
+                ))],
                 tools: Vec::new(),
                 max_tokens: Some(1024),
                 reasoning_effort: Some("low".to_owned()),

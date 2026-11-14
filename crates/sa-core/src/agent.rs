@@ -193,10 +193,9 @@ impl Agent {
                 }),
             )?;
 
-            messages.push(ChatMessage {
-                role: "assistant".to_owned(),
-                content: text.clone(),
-            });
+            // the assistant turn must carry the calls verbatim, before any result, so the
+            // model can associate each result with the call that requested it.
+            messages.push(ChatMessage::assistant_with_calls(&text, &tool_calls));
 
             for call in &tool_calls {
                 self.sink.append(
@@ -228,10 +227,7 @@ impl Agent {
                                 "duration_ms": started.elapsed().as_millis() as u64,
                             }),
                         )?;
-                        messages.push(ChatMessage {
-                            role: "user".to_owned(),
-                            content: format!("tool {} returned:\n{}", call.name, output),
-                        });
+                        messages.push(ChatMessage::tool(&call.id, output));
                     }
                     Err(error) => {
                         self.sink.append(
@@ -243,10 +239,7 @@ impl Agent {
                                 "class": "tool_error",
                             }),
                         )?;
-                        messages.push(ChatMessage {
-                            role: "user".to_owned(),
-                            content: format!("tool {} failed: {}", call.name, error),
-                        });
+                        messages.push(ChatMessage::tool(&call.id, format!("error: {error}")));
                     }
                 }
             }
@@ -256,16 +249,12 @@ impl Agent {
     }
 
     fn build_transcript(&self, request: &TurnRequest) -> Vec<ChatMessage> {
-        let mut messages = vec![ChatMessage {
-            role: "system".to_owned(),
-            content: system_prompt(),
-        }];
+        let mut messages = vec![ChatMessage::system(system_prompt())];
 
         if let Some(summary) = &request.compaction_summary {
-            messages.push(ChatMessage {
-                role: "system".to_owned(),
-                content: format!("Summary of earlier work:\n{summary}"),
-            });
+            messages.push(ChatMessage::system(format!(
+                "Summary of earlier work:\n{summary}"
+            )));
         }
 
         for event in &request.history {
@@ -273,20 +262,14 @@ impl Agent {
                 kinds::TURN_STARTED => {
                     if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
                         if prompt != request.prompt {
-                            messages.push(ChatMessage {
-                                role: "user".to_owned(),
-                                content: prompt.to_owned(),
-                            });
+                            messages.push(ChatMessage::user(prompt));
                         }
                     }
                 }
                 kinds::LLM_COMPLETED => {
                     if let Some(text) = event.payload.get("text").and_then(Value::as_str) {
                         if !text.is_empty() {
-                            messages.push(ChatMessage {
-                                role: "assistant".to_owned(),
-                                content: text.to_owned(),
-                            });
+                            messages.push(ChatMessage::assistant(text));
                         }
                     }
                 }
@@ -294,10 +277,7 @@ impl Agent {
             }
         }
 
-        messages.push(ChatMessage {
-            role: "user".to_owned(),
-            content: request.prompt.clone(),
-        });
+        messages.push(ChatMessage::user(request.prompt.clone()));
         messages
     }
 }
