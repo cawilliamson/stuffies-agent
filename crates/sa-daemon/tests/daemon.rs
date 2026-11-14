@@ -234,3 +234,19 @@ async fn bind_creates_a_missing_socket_directory() {
         & 0o777;
     assert_eq!(mode, 0o700, "created directory must be 0700");
 }
+
+#[test]
+fn the_default_state_dir_is_absolute_and_outside_the_cwd() {
+    // an unset XDG_STATE_HOME must fall back to $HOME/.local/state, never to `./.sa`.
+    let cfg = Config::from_env();
+    assert!(
+        cfg.state_dir.is_absolute(),
+        "state dir must be absolute, got {}",
+        cfg.state_dir.display()
+    );
+    assert!(
+        !cfg.state_dir.starts_with("."),
+        "state dir must not be relative: {}",
+        cfg.state_dir.display()
+    );
+}

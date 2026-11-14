@@ -30,8 +30,17 @@ impl Config {
     #[must_use]
     pub fn from_env() -> Self {
         let runtime_dir = socket::default_runtime_dir();
+        // never a relative path: an unset XDG_STATE_HOME must not drop `.sa/` into the
+        // daemon's cwd, which is usually a workspace (spec 6.1).
         let state_dir = std::env::var_os("XDG_STATE_HOME")
-            .map_or_else(|| PathBuf::from(".sa"), PathBuf::from)
+            .map_or_else(
+                || {
+                    std::env::var_os("HOME")
+                        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+                        .join(".local/state")
+                },
+                PathBuf::from,
+            )
             .join("sa");
         let socket_path = std::env::var_os("SA_SOCKET")
             .map_or_else(|| runtime_dir.join(socket::SOCKET_FILE), PathBuf::from);
