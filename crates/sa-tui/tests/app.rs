@@ -527,7 +527,7 @@ fn the_status_bar_is_split_into_labelled_segments() {
     let mut app = App::new("session-abcdef", "deepseek");
     let screen = screen_of(&mut app, 120, 20);
 
-    for expected in ["session-", "deepseek", "0.0 tok/s", "0 in / 0 out"] {
+    for expected in ["session-", "deepseek", "0.0 tok/s", "0/0"] {
         assert!(screen.contains(expected), "missing {expected:?}:\n{screen}");
     }
     assert!(
@@ -588,8 +588,8 @@ fn large_token_counts_are_abbreviated() {
     app.status.completion_tokens = 1_500;
 
     let screen = screen_of(&mut app, 140, 20);
-    assert!(screen.contains("230k in"), "expected 230k:\n{screen}");
-    assert!(screen.contains("1k out"), "expected 1k:\n{screen}");
+    assert!(screen.contains("230k/"), "expected 230k:\n{screen}");
+    assert!(screen.contains("/1k"), "expected 1k:\n{screen}");
     assert!(
         !screen.contains("230000"),
         "the raw count must not appear:\n{screen}"
@@ -601,7 +601,7 @@ fn small_token_counts_are_shown_in_full() {
     let mut app = App::new("session-abcdef", "deepseek");
     app.status.prompt_tokens = 999;
     let screen = screen_of(&mut app, 140, 20);
-    assert!(screen.contains("999 in"), "{screen}");
+    assert!(screen.contains("999/"), "{screen}");
 }
 
 #[test]

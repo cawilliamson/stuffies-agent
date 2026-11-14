@@ -165,8 +165,17 @@ pub enum Delta {
 pub type StreamFuture<'a> =
     Pin<Box<dyn Future<Output = Result<mpsc::Receiver<Delta>, LlmError>> + Send + 'a>>;
 
+/// boxed future for model discovery.
+pub type ModelsFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<String>, LlmError>> + Send + 'a>>;
+
 pub trait Provider: Send + Sync {
     fn stream(&self, request: ChatRequest) -> StreamFuture<'_>;
+
+    /// the model ids the endpoint actually serves. empty when unknown.
+    fn list_models(&self) -> ModelsFuture<'_> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 /// talks to any openai-compatible chat completions endpoint.
@@ -197,7 +206,47 @@ impl OpenAiProvider {
     }
 }
 
+impl OpenAiProvider {
+    /// asks the endpoint what it is serving, so the daemon never has to guess.
+    pub async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        let url = format!("{}/models", self.endpoint);
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(LlmError::Status {
+                status: status.as_u16(),
+                body: response.text().await.unwrap_or_default(),
+            });
+        }
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+        Ok(body
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|m| m.get("id").and_then(Value::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+}
+
 impl Provider for OpenAiProvider {
+    fn list_models(&self) -> ModelsFuture<'_> {
+        Box::pin(async move { OpenAiProvider::list_models(self).await })
+    }
+
     fn stream(&self, request: ChatRequest) -> StreamFuture<'_> {
         Box::pin(async move {
             let url = format!("{}/chat/completions", self.endpoint);
@@ -390,6 +439,7 @@ impl Provider for MissingProvider {
 pub struct ScriptedProvider {
     script: std::sync::Mutex<std::collections::VecDeque<Vec<Delta>>>,
     seen: std::sync::Mutex<Vec<ChatRequest>>,
+    models: Vec<String>,
 }
 
 impl ScriptedProvider {
@@ -398,7 +448,15 @@ impl ScriptedProvider {
         Self {
             script: std::sync::Mutex::new(script.into_iter().collect()),
             seen: std::sync::Mutex::new(Vec::new()),
+            models: Vec::new(),
         }
+    }
+
+    /// advertises the given model ids, as a real endpoint would.
+    #[must_use]
+    pub fn with_models(mut self, models: Vec<String>) -> Self {
+        self.models = models;
+        self
     }
 
     /// every request the agent has made, in order.
@@ -412,6 +470,11 @@ impl ScriptedProvider {
 }
 
 impl Provider for ScriptedProvider {
+    fn list_models(&self) -> ModelsFuture<'_> {
+        let models = self.models.clone();
+        Box::pin(async move { Ok(models) })
+    }
+
     fn stream(&self, request: ChatRequest) -> StreamFuture<'_> {
         Box::pin(async move {
             if let Ok(mut seen) = self.seen.lock() {

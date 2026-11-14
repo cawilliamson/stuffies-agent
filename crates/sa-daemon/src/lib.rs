@@ -48,7 +48,7 @@ impl Config {
         let state_dir = std::env::var_os("SA_STATE_DIR").map_or(state_dir, PathBuf::from);
         Self {
             db_path: state_dir.join("sa.db"),
-            model: std::env::var("SA_MODEL").unwrap_or_else(|_| "default".to_owned()),
+            model: std::env::var("SA_MODEL").unwrap_or_default(),
             host_fingerprint: host_fingerprint(&state_dir),
             turn_timeout_secs: std::env::var("SA_TURN_TIMEOUT")
                 .ok()
@@ -68,7 +68,7 @@ impl Config {
             runtime_dir: root.join("run"),
             socket_path: root.join("run").join(socket::SOCKET_FILE),
             db_path: state_dir.join("sa.db"),
-            model: "test-model".to_owned(),
+            model: String::new(),
             host_fingerprint: "test-host".to_owned(),
             turn_timeout_secs: 1800,
             state_dir,
@@ -121,17 +121,35 @@ pub async fn run(
     socket::prepare_runtime_dir(&cfg.runtime_dir)?;
     std::fs::create_dir_all(&cfg.state_dir)?;
 
+    // ask the endpoint what it serves rather than inventing a name.
+    let models = provider.list_models().await.unwrap_or_default();
+    let model = if cfg.model.trim().is_empty() {
+        match models.first() {
+            Some(discovered) => {
+                tracing::info!(%discovered, "resolved model from the endpoint");
+                discovered.clone()
+            }
+            None => {
+                tracing::warn!("endpoint did not report a model");
+                "unknown".to_owned()
+            }
+        }
+    } else {
+        cfg.model.clone()
+    };
+
     let store = Store::open(&cfg.db_path)?;
     let manager = Arc::new(Manager::new(
         store,
         Arc::new(ManagerConfig {
             host_fingerprint: cfg.host_fingerprint.clone(),
-            default_model: cfg.model.clone(),
+            default_model: model.clone(),
             provider,
             max_tokens: std::env::var("SA_MAX_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok()),
             reasoning_effort: std::env::var("SA_REASONING_EFFORT").ok(),
+            models,
             lock_dir: cfg.runtime_dir.join("locks"),
             turn_timeout_secs: cfg.turn_timeout_secs,
             context_limit: std::env::var("SA_CONTEXT_LIMIT")

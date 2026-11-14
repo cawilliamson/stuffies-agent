@@ -62,6 +62,8 @@ pub struct ManagerConfig {
     pub context_limit: u64,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
+    /// model ids the endpoint reports. empty when discovery failed.
+    pub models: Vec<String>,
 }
 
 struct Attached {
@@ -198,6 +200,7 @@ impl Manager {
             title: title.unwrap_or_else(|| default_title(&canonical)),
             cwd: canonical.display().to_string(),
             repo_id: None,
+            model: Some(self.config.default_model.clone()),
             owner_host: self.config.host_fingerprint.clone(),
             owner_epoch: 0,
         })?;
@@ -221,6 +224,18 @@ impl Manager {
             session_id: id,
             seq,
         })
+    }
+
+    /// the model ids the endpoint reported at startup.
+    #[must_use]
+    pub fn models(&self) -> Vec<String> {
+        self.config.models.clone()
+    }
+
+    /// the model turns use when a session has not selected one.
+    #[must_use]
+    pub fn default_model(&self) -> &str {
+        &self.config.default_model
     }
 
     pub fn list_sessions(

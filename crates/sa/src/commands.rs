@@ -350,7 +350,7 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
     if !line && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let model = attached["session"]["model"]
             .as_str()
-            .unwrap_or("default")
+            .unwrap_or("unknown")
             .to_owned();
         return sa_tui::run(&mut client, session_id, model, git_branch()).await;
     }

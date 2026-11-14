@@ -91,7 +91,7 @@ fn status_bar(app: &App, width: u16) -> Line<'static> {
     segments.push(Segment {
         icon: ICON_TOKENS,
         text: format!(
-            "{} in / {} out",
+            "{}/{}",
             compact(app.status.prompt_tokens),
             compact(app.status.completion_tokens)
         ),

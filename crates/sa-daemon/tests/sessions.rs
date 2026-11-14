@@ -20,11 +20,16 @@ struct Harness {
 
 impl Harness {
     async fn start(script: Vec<Vec<Delta>>) -> Self {
+        Self::start_with_models(script, Vec::new()).await
+    }
+
+    async fn start_with_models(script: Vec<Vec<Delta>>, models: Vec<String>) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = Config::at(dir.path());
         let socket = cfg.socket_path.clone();
         let (stop, wait) = tokio::sync::oneshot::channel();
-        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(script));
+        let provider: Arc<dyn Provider> =
+            Arc::new(ScriptedProvider::new(script).with_models(models));
         let handle = tokio::spawn(async move {
             run(cfg, provider, async move {
                 let _ = wait.await;
@@ -590,4 +595,44 @@ async fn a_second_turn_sees_the_first_turns_context() {
 
     let _ = stop.send(());
     let _ = handle.await;
+}
+
+#[tokio::test]
+async fn the_daemon_resolves_the_real_model_from_the_endpoint() {
+    let daemon = Harness::start_with_models(
+        Vec::new(),
+        vec!["deepseek-v4-1-flash-1017-ablit".to_owned()],
+    )
+    .await;
+    let mut client = daemon.connect().await;
+    let cwd = daemon.root().display().to_string();
+
+    let created = call(
+        &mut client,
+        1,
+        "session.create",
+        json!({"cwd": cwd, "title": "t"}),
+    )
+    .await;
+    let session = created["result"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+
+    let list = call(&mut client, 2, "session.list", json!({})).await;
+    let model = list["result"][0]["model"].as_str().unwrap_or_default();
+    assert_eq!(
+        model, "deepseek-v4-1-flash-1017-ablit",
+        "the session must record the resolved model, not a placeholder: {list}"
+    );
+    assert_ne!(model, "default", "never a literal placeholder");
+
+    let models = call(&mut client, 3, "model.list", json!({})).await;
+    assert_eq!(
+        models["result"][0]["id"], "deepseek-v4-1-flash-1017-ablit",
+        "model.list must report what the endpoint serves: {models}"
+    );
+
+    let _ = session;
+    daemon.stop().await;
 }

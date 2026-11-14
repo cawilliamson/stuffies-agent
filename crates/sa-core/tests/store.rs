@@ -11,6 +11,7 @@ fn session(store: &Store, id: &str) -> sa_core::store::SessionRow {
             title: "test".to_owned(),
             cwd: "/tmp".to_owned(),
             repo_id: None,
+            model: None,
             owner_host: "host".to_owned(),
             owner_epoch: 0,
         })

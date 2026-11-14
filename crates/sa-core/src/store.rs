@@ -48,6 +48,7 @@ pub struct NewSession {
     pub title: String,
     pub cwd: String,
     pub repo_id: Option<String>,
+    pub model: Option<String>,
     pub owner_host: String,
     pub owner_epoch: u64,
 }
@@ -132,7 +133,7 @@ impl Store {
         conn.execute(
             "INSERT INTO sessions (id, title, parent_id, state, owner_host, owner_epoch, cwd,
                                    repo_id, model, created_at, updated_at)
-             VALUES (?1, ?2, NULL, 'active', ?3, ?4, ?5, ?6, NULL, ?7, ?7)",
+             VALUES (?1, ?2, NULL, 'active', ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
             params![
                 new.id,
                 new.title,
@@ -140,6 +141,7 @@ impl Store {
                 i64::try_from(new.owner_epoch).unwrap_or(i64::MAX),
                 new.cwd,
                 new.repo_id,
+                new.model,
                 now,
             ],
         )?;
