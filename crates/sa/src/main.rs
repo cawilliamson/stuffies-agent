@@ -13,15 +13,21 @@ use sa_daemon::{run, Config};
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let parsed = Cli::parse();
+
+    // the daemon is long-lived and wants its lifecycle visible; a one-shot client does not.
+    let default_level = if matches!(parsed.command, Command::Daemon) {
+        "info"
+    } else {
+        "warn"
+    };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
         )
         .init();
-
-    let parsed = Cli::parse();
 
     let result = match parsed.command {
         Command::Daemon => {

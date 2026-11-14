@@ -68,7 +68,8 @@ it are deferred.
 ```text
 sa-proto    wire types and protocol constants. serde only; no core, no tokio, no terminal.
 sa-core     sessions, event log, llm client, tools, policy. no terminal, no stdout.
-sa-daemon   unix socket server, session manager, supervision, dispatcher host.
+sa-daemon   unix socket server, session manager, supervision, dispatcher host. library only:
+            it has no binary of its own.
 sa-client   typed client library: attach, subscribe, replay, send, approve.
 sa-web      http carrier, auth, embedded ui assets. no daemon, no terminal.
 sa          binary: `sa attach`, `sa run`, `sa rpc --stdio`, `sa daemon`, `sa handoff`,
@@ -1008,8 +1009,10 @@ required for the motivating workflow.
 
 ## 12. Lifecycle and supervision
 
-- systemd user unit `sa-daemon.service`, `Restart=on-failure`, `RuntimeDirectory=sa` with
-  mode `0700`.
+- systemd user unit `sa-daemon.service`, `ExecStart=%h/.nix-profile/bin/sa daemon`,
+  `Restart=on-failure`, `RuntimeDirectory=sa` with mode `0700`.
+- There is exactly one binary. `sa daemon` is the daemon; every other subcommand is a
+  disposable client of it. `sa-daemon` is a library, not an executable.
 - `sa` auto-spawns the daemon when the socket is absent, guarded by an exclusive bind lock
   so auto-spawn and systemd can never both start a daemon.
 - The daemon never exits because its last client disconnected.
@@ -1239,7 +1242,6 @@ crates/sa-core/src/lib.rs
 crates/sa-core/src/dispatcher.rs method dispatch, hello gate
 crates/sa-core/src/peer.rs       uid check, pure
 crates/sa-daemon/src/lib.rs
-crates/sa-daemon/src/main.rs
 crates/sa-daemon/src/socket.rs   bind, perms, accept
 crates/sa-daemon/src/conn.rs     per-connection loop
 crates/sa-client/src/lib.rs      connect, handshake, call
