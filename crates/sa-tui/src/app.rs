@@ -71,6 +71,8 @@ pub struct App {
     turn_started: Option<std::time::Instant>,
     /// the average of the last delivered message, while it is being flashed.
     flash: Option<(f32, std::time::Instant)>,
+    /// true on the lit half of the flash, so the view can highlight the figure.
+    pub flash_highlight: bool,
 }
 
 impl App {
@@ -93,6 +95,7 @@ impl App {
             turn_chars: 0,
             turn_started: None,
             flash: None,
+            flash_highlight: false,
         }
     }
 
@@ -103,18 +106,22 @@ impl App {
 
     /// `tick` with an injected clock, so the flash is testable without sleeping.
     pub fn tick_at(&mut self, now: std::time::Instant) {
-        // a delivered message flashes its average before settling back to zero.
+        // a delivered message holds its average on screen and flashes the highlight around
+        // it, then clears to zero.
         if let Some((rate, started)) = self.flash {
             let elapsed = now.duration_since(started);
             if elapsed >= FLASH_DURATION {
                 self.flash = None;
+                self.flash_highlight = false;
                 self.tok_per_sec = 0.0;
                 return;
             }
+            self.tok_per_sec = rate;
             let phase = (elapsed.as_millis() / FLASH_PHASE.as_millis().max(1)) % 2;
-            self.tok_per_sec = if phase == 0 { rate } else { 0.0 };
+            self.flash_highlight = phase == 0;
             return;
         }
+        self.flash_highlight = false;
 
         while let Some((at, _)) = self.samples.front() {
             if now.duration_since(*at) > RATE_WINDOW {
@@ -285,12 +292,14 @@ impl App {
 
         if chars == 0 {
             self.flash = None;
+            self.flash_highlight = false;
             self.tok_per_sec = 0.0;
             return;
         }
         let average = (chars as f32 / CHARS_PER_TOKEN) / elapsed.max(0.05);
         self.flash = Some((average, std::time::Instant::now()));
         self.tok_per_sec = average;
+        self.flash_highlight = true;
     }
 
     /// appends streamed assistant text to the current assistant entry, starting one if needed.

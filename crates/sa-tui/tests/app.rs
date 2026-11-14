@@ -345,7 +345,7 @@ fn replayed_history_does_not_contribute_to_the_rate() {
 }
 
 #[test]
-fn a_delivered_message_flashes_three_times_then_settles_at_zero() {
+fn a_delivered_message_holds_its_average_while_the_highlight_flashes() {
     use std::time::{Duration, Instant};
 
     let mut app = App::new("s", "m");
@@ -357,25 +357,65 @@ fn a_delivered_message_flashes_three_times_then_settles_at_zero() {
         &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
     );
 
-    // drive the clock at the run loop's real cadence: the flash must survive sampling.
+    // sample at the run loop's real cadence.
     let start = Instant::now();
-    let mut on_samples = 0;
-    let mut was_on = false;
-    for step in 0..20 {
+    let mut flashes = 0;
+    let mut was_lit = false;
+    for step in 0..20u32 {
         app.tick_at(start + Duration::from_millis(250) * step);
-        let on = app.tok_per_sec > 0.0;
-        if on && !was_on {
-            on_samples += 1;
+        if step < 9 {
+            assert!(
+                app.tok_per_sec > 0.0,
+                "the figure must stay visible during the flash (step {step})"
+            );
         }
-        was_on = on;
+        if app.flash_highlight && !was_lit {
+            flashes += 1;
+        }
+        was_lit = app.flash_highlight;
     }
     assert_eq!(
-        on_samples, 3,
-        "expected three visible flashes, got {on_samples}"
+        flashes, 3,
+        "expected three highlight flashes, got {flashes}"
     );
 
     app.tick_at(start + Duration::from_secs(10));
-    assert_eq!(app.tok_per_sec, 0.0, "and settle at zero");
+    assert_eq!(app.tok_per_sec, 0.0, "then reset to zero");
+    assert!(!app.flash_highlight);
+}
+
+#[test]
+fn the_flash_is_a_red_background_behind_the_figure() {
+    use ratatui::style::Color;
+    use std::time::Instant;
+
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.status.turn_running = true;
+    app.on_event("turn.started", &json!({"prompt": "go"}));
+    app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
+    app.on_event(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
+    );
+    app.tick_at(Instant::now());
+    assert!(app.flash_highlight);
+
+    let backend = TestBackend::new(120, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let lit: Vec<&ratatui::buffer::Cell> = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.bg == Color::Red && cell.fg == Color::White)
+        .collect();
+    assert!(!lit.is_empty(), "the figure must be highlighted");
+    let text: String = lit.iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        text.contains("tok/s"),
+        "the highlighted run is the rate: {text}"
+    );
 }
 
 #[test]

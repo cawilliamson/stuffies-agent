@@ -99,16 +99,25 @@ pub fn draw<B: ratatui::backend::Backend>(
         } else {
             "idle"
         };
-        let rate = format!("{:.1} tok/s ·", app.tok_per_sec);
+        let rate_style = if app.flash_highlight {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default()
+        };
         let short: String = app.status.session.chars().take(8).collect();
         let status = Line::from(vec![
             ratatui::text::Span::styled(
                 format!(" {short} "),
                 Style::default().fg(Color::Black).bg(Color::DarkGray),
             ),
+            ratatui::text::Span::raw(format!(" {state}  {}  ", app.status.model)),
+            ratatui::text::Span::styled(format!("{:.1} tok/s", app.tok_per_sec), rate_style),
             ratatui::text::Span::raw(format!(
-                " {state}  {}  {rate} {} in / {} out  esc interrupt  ctrl-c quit",
-                app.status.model, app.status.prompt_tokens, app.status.completion_tokens,
+                "  {} in / {} out  esc interrupt  ctrl-c quit",
+                app.status.prompt_tokens, app.status.completion_tokens,
             )),
         ]);
         frame.render_widget(Paragraph::new(status), chunks[2]);
