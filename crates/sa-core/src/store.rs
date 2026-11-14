@@ -79,6 +79,7 @@ impl SessionRow {
             state: self.state,
             owner_epoch: self.owner_epoch,
             autonomy: self.autonomy,
+            model: self.model.clone(),
             updated_at: self.updated_at,
         }
     }

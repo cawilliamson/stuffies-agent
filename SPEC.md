@@ -71,6 +71,7 @@ sa-core     sessions, event log, llm client, tools, policy. no terminal, no stdo
 sa-daemon   unix socket server, session manager, supervision, dispatcher host. library only:
             it has no binary of its own.
 sa-client   typed client library: attach, subscribe, replay, send, approve.
+sa-tui      terminal front end: transcript, input line, status bar. view only.
 sa-web      http carrier, auth, embedded ui assets. no daemon, no terminal.
 sa          binary: `sa attach`, `sa run`, `sa rpc --stdio`, `sa daemon`, `sa handoff`,
             `sa init`, `sa export`, `sa knowledge`.
@@ -83,6 +84,8 @@ These are enforced by a CI check, not by convention.
 - `sa-proto` depends on `serde`/`serde_json` and nothing else in the workspace.
 - `sa-core` must not depend on `crossterm`, `ratatui`, or write to stdout. The test is
   `cargo tree -p sa-core` containing no terminal crate.
+- `sa-tui` must not depend on `sa-daemon`. It talks to `sa-client`.
+- `sa-tui` must not depend on `sa-core`. It is a view; it holds no authority.
 - `sa-web` must not depend on `sa-daemon`. It wraps the `sa-core` dispatcher and serves
   embedded assets; it holds no state of its own.
 - `sa-web` must not depend on `sa-client` or on any terminal crate.
@@ -1115,7 +1118,22 @@ same session sees the first turn's context; `sa sessions` lists sessions with st
 a turn whose provider never completes is interrupted at the timeout with the cause recorded;
 a fresh daemon writes `policy.toml` outside the workspace and `git status` stays clean.
 
-****v2.0 — web interface.** The general surface: sessions, live transcripts, approvals, cost
+****v1.2 — terminal front end.** A full-screen client, because a scrolling transcript and a
+persistent input line are the difference between reading a log and using an agent.
+
+Sub-work: ratatui application in `sa-tui` (transcript, input line, status bar), TTY
+detection in `sa attach` with `--line` as the escape hatch, history replay on attach so a
+transcript is continuous across sessions, and approval prompts rendered in the input line.
+
+Scope limits, deliberate: no mouse, no text selection, no markdown rendering, no syntax
+highlighting, no tabs or panes. One transcript, one input, one status line.
+
+Acceptance: `sa attach` opens the TUI on a terminal and the line client under a pipe;
+streamed text accumulates into one assistant entry; tool calls and results render in the
+transcript; `ctrl-c` cancels a running turn and `ctrl-d` quits; approval scopes are
+selectable from the input line; attaching to a session with history replays it.
+
+**v2.0 — web interface.** The general surface: sessions, live transcripts, approvals, cost
 and manual compaction in a browser.
 
 Sub-work: HTTP carrier and auth (§4.3), SSE with `Last-Event-ID`, embedded assets, session
@@ -1155,9 +1173,10 @@ optional `session.purge`.
 Acceptance: the daemon survives a client kill and a service restart; auto-spawn and systemd
 cannot race.
 
-`DECIDED`: no ratatui TUI is scheduled. The CLI is line-oriented, and the web surface covers
-what a TUI would have covered. If one is ever wanted it is an additional client of
-`sa-client` and changes nothing else.
+`DECIDED`: the terminal front end is a ratatui application in `sa-tui`, reached through
+`sa attach` when stdin and stdout are terminals. `sa attach --line` forces the plain
+line-oriented client, which is also what runs under a pipe and in tests. The TUI is a view
+only: it renders events and sends prompts, and holds no state the daemon does not have.
 
 ---
 
@@ -1256,7 +1275,7 @@ Scope: `sa-proto` plus a daemon serving `hello` and `ping` over the unix socket,
 `sa rpc --stdio` proxying to it. No LLM, no database, no sessions, no web listener, no
 systemd, no auto-spawn. This is the first task of v1.0 (§14), not the whole release.
 
-`sa-web` is not created at v1.0; it arrives at v2.0. The dependency-rule check in A.2.6
+`sa-tui` and `sa-web` are not created at v1.0; they arrive at v1.2 and v2.0. The dependency-rule check in A.2.6
 treats an absent crate as passing.
 
 ### A.1 File layout

@@ -37,6 +37,9 @@ pub enum Command {
         /// start a fresh session instead of resuming one
         #[arg(long)]
         new: bool,
+        /// plain line mode even when stdout is a terminal
+        #[arg(long)]
+        line: bool,
     },
     /// list sessions
     Sessions,

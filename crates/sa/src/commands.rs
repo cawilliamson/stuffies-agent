@@ -1,7 +1,7 @@
 //! the user-facing commands: run, attach, export, sessions (spec 14, v1.1).
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 
 use sa_client::Client;
 use serde_json::{json, Value};
@@ -311,7 +311,7 @@ fn help() {
     );
 }
 
-pub async fn attach(session: Option<String>, new: bool) -> Result<()> {
+pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()> {
     let mut client = connect().await?;
 
     let mut session_id = if new {
@@ -332,6 +332,15 @@ pub async fn attach(session: Option<String>, new: bool) -> Result<()> {
         )
         .await
         .map_err(|e| format!("attach failed: {e}"))?;
+
+    // a terminal gets the tui; a pipe gets plain lines, which is also what the tests drive.
+    if !line && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        let model = attached["session"]["model"]
+            .as_str()
+            .unwrap_or("default")
+            .to_owned();
+        return sa_tui::run(&mut client, session_id, model).await;
+    }
 
     let mut renderer = Renderer::default();
     if let Some(events) = attached["events"].as_array() {

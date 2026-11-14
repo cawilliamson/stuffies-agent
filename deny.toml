@@ -3,7 +3,11 @@
 [advisories]
 version = 2
 yanked = "warn"
-ignore = []
+ignore = [
+  # unmaintained, not vulnerable. a build-time proc macro pulled in by ratatui, which has
+  # no release that drops it yet. revisit when ratatui moves off it.
+  "RUSTSEC-2024-0436",
+]
 
 [bans]
 multiple-versions = "warn"

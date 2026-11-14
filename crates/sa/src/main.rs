@@ -51,7 +51,7 @@ async fn main() -> ExitCode {
             }
         }
         Command::Run { prompt } => commands::run_once(&prompt).await,
-        Command::Attach { session, new } => commands::attach(session, new).await,
+        Command::Attach { session, new, line } => commands::attach(session, new, line).await,
         Command::Sessions => commands::sessions().await,
         Command::Export { session, format } => commands::export(session, &format).await,
     };

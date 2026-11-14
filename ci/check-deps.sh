@@ -23,6 +23,13 @@ if cargo tree -p sa-daemon | grep -qE 'ratatui|crossterm'; then
   fail "sa-daemon depends on a terminal crate"
 fi
 
+# sa-tui is a view: it must not reach the daemon or the engine directly.
+if cargo metadata --no-deps --format-version 1 | grep -q '"name":"sa-tui"'; then
+  if cargo tree -p sa-tui | grep -qE 'sa-daemon|sa-core'; then
+    fail "sa-tui depends on sa-daemon or sa-core"
+  fi
+fi
+
 # sa-web is optional until v2.0.
 if cargo metadata --no-deps --format-version 1 | grep -q '"name":"sa-web"'; then
   if cargo tree -p sa-web | grep -qE 'sa-daemon|ratatui|crossterm'; then

@@ -95,6 +95,8 @@ pub struct SessionSummary {
     pub state: SessionState,
     pub owner_epoch: u64,
     pub autonomy: Autonomy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub updated_at: i64,
 }
 
