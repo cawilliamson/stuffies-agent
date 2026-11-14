@@ -344,25 +344,80 @@ fn replayed_history_does_not_contribute_to_the_rate() {
     assert_eq!(app.tok_per_sec, 0.0, "history is not a live rate");
 }
 
+/// drives one delivered message: `generation` of streaming, then a long tool run.
+fn delivered_message(app: &mut App, t0: std::time::Instant, generation: std::time::Duration) {
+    let done = t0 + generation;
+    let after_tools = done + std::time::Duration::from_secs(28);
+    app.status.turn_running = true;
+    app.on_event_at("turn.started", &json!({"prompt": "go"}), t0);
+    app.on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), t0);
+    app.on_event_at("llm.completed", &json!({}), done);
+    app.on_event_at("tool.requested", &json!({"tool": "bash"}), done);
+    app.on_event_at("tool.completed", &json!({"output": "slow"}), after_tools);
+    app.on_event_at(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 100}}),
+        after_tools,
+    );
+}
+
+#[test]
+fn the_average_counts_only_generation_time_not_tool_time() {
+    use std::time::{Duration, Instant};
+
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    // two seconds of generation, then twenty-eight seconds of tool execution.
+    delivered_message(&mut app, t0, Duration::from_secs(2));
+
+    app.tick_at(t0 + Duration::from_secs(30));
+    // 400 chars / 4 = 100 tokens over 2s of generation = 50 tok/s.
+    // counting wall time would give 100/30 = 3.3.
+    assert!(
+        (app.tok_per_sec - 50.0).abs() < 1.0,
+        "expected ~50 tok/s from generation time alone, got {}",
+        app.tok_per_sec
+    );
+}
+
+#[test]
+fn thinking_tokens_count_toward_the_rate() {
+    use std::time::{Duration, Instant};
+
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    app.status.turn_running = true;
+    app.on_event_at("turn.started", &json!({"prompt": "go"}), t0);
+    // reasoning only: no visible content at all.
+    app.on_event_at("llm.reasoning", &json!({"text": "y".repeat(400)}), t0);
+    app.on_event_at("llm.completed", &json!({}), t0 + Duration::from_secs(2));
+    app.on_event_at(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 0, "completion_tokens": 100}}),
+        t0 + Duration::from_secs(2),
+    );
+
+    app.tick_at(t0 + Duration::from_secs(2));
+    assert!(
+        (app.tok_per_sec - 50.0).abs() < 1.0,
+        "thinking must count toward throughput, got {}",
+        app.tok_per_sec
+    );
+}
+
 #[test]
 fn a_delivered_message_holds_its_average_while_the_highlight_flashes() {
     use std::time::{Duration, Instant};
 
     let mut app = App::new("s", "m");
-    app.status.turn_running = true;
-    app.on_event("turn.started", &json!({"prompt": "go"}));
-    app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
-    app.on_event(
-        "turn.completed",
-        &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
-    );
+    let t0 = Instant::now();
+    delivered_message(&mut app, t0, Duration::from_secs(2));
+    let settled = t0 + Duration::from_secs(30);
 
-    // sample at the run loop's real cadence.
-    let start = Instant::now();
     let mut flashes = 0;
     let mut was_lit = false;
     for step in 0..20u32 {
-        app.tick_at(start + Duration::from_millis(250) * step);
+        app.tick_at(settled + Duration::from_millis(250) * step);
         if step < 9 {
             assert!(
                 app.tok_per_sec > 0.0,
@@ -379,7 +434,7 @@ fn a_delivered_message_holds_its_average_while_the_highlight_flashes() {
         "expected three highlight flashes, got {flashes}"
     );
 
-    app.tick_at(start + Duration::from_secs(10));
+    app.tick_at(settled + Duration::from_secs(10));
     assert_eq!(app.tok_per_sec, 0.0, "then reset to zero");
     assert!(!app.flash_highlight);
 }
@@ -387,17 +442,13 @@ fn a_delivered_message_holds_its_average_while_the_highlight_flashes() {
 #[test]
 fn the_flash_is_a_red_background_behind_the_figure() {
     use ratatui::style::Color;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     let mut app = App::new("session-abcdef", "deepseek");
-    app.status.turn_running = true;
-    app.on_event("turn.started", &json!({"prompt": "go"}));
-    app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
-    app.on_event(
-        "turn.completed",
-        &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
-    );
-    app.tick_at(Instant::now());
+    let t0 = Instant::now();
+    delivered_message(&mut app, t0, Duration::from_secs(2));
+    let settled = t0 + Duration::from_secs(30);
+    app.tick_at(settled);
     assert!(app.flash_highlight);
 
     let backend = TestBackend::new(120, 20);

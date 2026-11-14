@@ -68,7 +68,9 @@ pub struct App {
     samples: std::collections::VecDeque<(std::time::Instant, usize)>,
     /// characters and start time of the message currently being delivered.
     turn_chars: usize,
-    turn_started: Option<std::time::Instant>,
+    /// start of the current generation span, and the total generation time this turn.
+    active_started: Option<std::time::Instant>,
+    active_elapsed: std::time::Duration,
     /// the average of the last delivered message, while it is being flashed.
     flash: Option<(f32, std::time::Instant)>,
     /// true on the lit half of the flash, so the view can highlight the figure.
@@ -93,7 +95,8 @@ impl App {
             tok_per_sec: 0.0,
             samples: std::collections::VecDeque::new(),
             turn_chars: 0,
-            turn_started: None,
+            active_started: None,
+            active_elapsed: std::time::Duration::ZERO,
             flash: None,
             flash_highlight: false,
         }
@@ -217,20 +220,26 @@ impl App {
 
     /// applies a daemon event to the transcript.
     pub fn on_event(&mut self, kind: &str, payload: &Value) {
+        self.on_event_at(kind, payload, std::time::Instant::now());
+    }
+
+    /// `on_event` with an injected clock, so generation timing is testable.
+    pub fn on_event_at(&mut self, kind: &str, payload: &Value, now: std::time::Instant) {
         match kind {
             "llm.delta" => {
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
-                // replayed history is not a live rate.
-                if !self.replaying {
-                    let chars = text.chars().count();
-                    if chars > 0 {
-                        self.turn_chars += chars;
-                        self.samples.push_back((std::time::Instant::now(), chars));
-                    }
-                }
+                self.note_generation(text, now);
                 self.append_stream(text);
             }
+            "llm.reasoning" => {
+                // thinking tokens are generation too: they count toward throughput.
+                let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
+                self.note_generation(text, now);
+            }
+            "llm.completed" => self.close_generation(now),
             "tool.requested" => {
+                // tool execution is not generation time.
+                self.close_generation(now);
                 let tool = payload
                     .get("tool")
                     .and_then(Value::as_str)
@@ -251,7 +260,7 @@ impl App {
             }
             "turn.completed" => {
                 self.status.turn_running = false;
-                self.finish_message();
+                self.finish_message(now);
                 self.status.prompt_tokens +=
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
@@ -259,19 +268,18 @@ impl App {
             }
             "turn.interrupted" => {
                 self.status.turn_running = false;
-                self.finish_message();
+                self.finish_message(now);
                 let cause = payload.get("cause").and_then(Value::as_str).unwrap_or("");
                 self.push(Role::Error, format!("[interrupted: {cause}]"));
             }
             "turn.started" => {
                 if !self.replaying {
                     self.turn_chars = 0;
-                    self.turn_started = Some(std::time::Instant::now());
-                }
-                if self.replaying {
-                    if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
-                        self.push(Role::User, prompt.to_owned());
-                    }
+                    self.active_started = None;
+                    self.active_elapsed = std::time::Duration::ZERO;
+                    self.samples.clear();
+                } else if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
+                    self.push(Role::User, prompt.to_owned());
                 }
             }
             "compaction.applied" => self.push(Role::System, "[context compacted]"),
@@ -279,25 +287,49 @@ impl App {
         }
     }
 
+    /// counts generated characters and opens a generation span if one is not already open.
+    fn note_generation(&mut self, text: &str, now: std::time::Instant) {
+        if self.replaying {
+            return;
+        }
+        if self.active_started.is_none() {
+            self.active_started = Some(now);
+        }
+        let chars = text.chars().count();
+        if chars == 0 {
+            return;
+        }
+        self.turn_chars += chars;
+        self.samples.push_back((now, chars));
+    }
+
+    /// closes the open generation span. time spent in tools is never accumulated.
+    fn close_generation(&mut self, now: std::time::Instant) {
+        if let Some(started) = self.active_started.take() {
+            if let Some(delta) = now.checked_duration_since(started) {
+                self.active_elapsed += delta;
+            }
+        }
+    }
+
     /// computes the average rate of the message that just finished and starts flashing it.
-    fn finish_message(&mut self) {
+    fn finish_message(&mut self, now: std::time::Instant) {
+        self.close_generation(now);
         let chars = self.turn_chars;
-        let elapsed = self
-            .turn_started
-            .map(|at| std::time::Instant::now().duration_since(at).as_secs_f32())
-            .unwrap_or(0.0);
+        let active = self.active_elapsed;
         self.samples.clear();
         self.turn_chars = 0;
-        self.turn_started = None;
+        self.active_started = None;
+        self.active_elapsed = std::time::Duration::ZERO;
 
-        if chars == 0 {
+        if chars == 0 || active.is_zero() {
             self.flash = None;
             self.flash_highlight = false;
             self.tok_per_sec = 0.0;
             return;
         }
-        let average = (chars as f32 / CHARS_PER_TOKEN) / elapsed.max(0.05);
-        self.flash = Some((average, std::time::Instant::now()));
+        let average = (chars as f32 / CHARS_PER_TOKEN) / active.as_secs_f32().max(0.05);
+        self.flash = Some((average, now));
         self.tok_per_sec = average;
         self.flash_highlight = true;
     }
