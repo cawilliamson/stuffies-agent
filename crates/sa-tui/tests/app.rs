@@ -321,3 +321,54 @@ fn a_slash_command_never_enters_the_transcript() {
         app.transcript
     );
 }
+
+#[test]
+fn streaming_produces_a_live_token_rate() {
+    let mut app = App::new("s", "m");
+    app.status.turn_running = true;
+    app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
+    app.tick();
+    assert!(
+        app.tok_per_sec > 0.0,
+        "a delta must produce a rate, got {}",
+        app.tok_per_sec
+    );
+}
+
+#[test]
+fn replayed_history_does_not_contribute_to_the_rate() {
+    let mut app = App::new("s", "m");
+    app.replaying = true;
+    app.on_event("llm.delta", &json!({"text": "x".repeat(4000)}));
+    app.tick();
+    assert_eq!(app.tok_per_sec, 0.0, "history is not a live rate");
+}
+
+#[test]
+fn the_rate_returns_to_zero_when_the_turn_ends() {
+    let mut app = App::new("s", "m");
+    app.status.turn_running = true;
+    app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
+    app.tick();
+    assert!(app.tok_per_sec > 0.0);
+
+    app.on_event(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
+    );
+    assert_eq!(app.tok_per_sec, 0.0);
+}
+
+#[test]
+fn the_rate_appears_in_the_status_bar_while_streaming() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.status.turn_running = true;
+    app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
+    app.tick();
+
+    let screen = screen_of(&mut app, 100, 20);
+    assert!(
+        screen.contains("tok/s"),
+        "status bar must show the rate:\n{screen}"
+    );
+}

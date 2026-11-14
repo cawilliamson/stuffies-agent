@@ -106,8 +106,15 @@ pub fn draw<B: ratatui::backend::Backend>(
                 Style::default().fg(Color::Black).bg(Color::DarkGray),
             ),
             ratatui::text::Span::raw(format!(
-                " {state}  {}  {} in / {} out  esc interrupt  ctrl-c quit",
-                app.status.model, app.status.prompt_tokens, app.status.completion_tokens
+                " {state}  {}  {rate} {} in / {} out  esc interrupt  ctrl-c quit",
+                app.status.model,
+                app.status.prompt_tokens,
+                app.status.completion_tokens,
+                rate = if app.tok_per_sec > 0.05 {
+                    format!("{:.1} tok/s ·", app.tok_per_sec)
+                } else {
+                    "—".to_owned()
+                },
             )),
         ]);
         frame.render_widget(Paragraph::new(status), chunks[2]);
@@ -128,6 +135,8 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
 
     let mut app = App::new(session.clone(), model.clone());
     let mut keys = EventStream::new();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // replay what already happened so the transcript is continuous across attaches.
     app.replaying = true;
@@ -161,6 +170,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
         enum Incoming {
             Key(crossterm::event::KeyEvent),
             Frame(Value),
+            Tick,
         }
 
         let incoming = tokio::select! {
@@ -173,10 +183,12 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
             frame = client.next_notification() => Incoming::Frame(
                 frame.map_err(|e| format!("connection lost: {e}"))?,
             ),
+            _ = ticker.tick() => Incoming::Tick,
         };
 
         let mut action = Action::None;
         match incoming {
+            Incoming::Tick => app.tick(),
             Incoming::Key(key) => action = app.on_key(key),
             Incoming::Frame(frame) => {
                 let method = frame

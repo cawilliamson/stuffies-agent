@@ -38,6 +38,11 @@ pub struct Status {
     pub completion_tokens: u64,
 }
 
+/// a sliding window of streamed characters, for the live rate.
+const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+/// characters per token, matching the daemon's compaction estimate.
+const CHARS_PER_TOKEN: f32 = 4.0;
+
 pub struct App {
     pub transcript: Vec<Entry>,
     pub input: String,
@@ -51,6 +56,9 @@ pub struct App {
     /// true while replaying stored history. `turn.started` is rendered then, but not during
     /// a live turn: the prompt was already echoed when it was submitted.
     pub replaying: bool,
+    /// tokens per second over the last few seconds of streaming. zero when idle.
+    pub tok_per_sec: f32,
+    samples: std::collections::VecDeque<(std::time::Instant, usize)>,
 }
 
 impl App {
@@ -68,7 +76,34 @@ impl App {
                 ..Status::default()
             },
             replaying: false,
+            tok_per_sec: 0.0,
+            samples: std::collections::VecDeque::new(),
         }
+    }
+
+    /// advances the live rate. called on a timer while a turn is streaming.
+    pub fn tick(&mut self) {
+        let now = std::time::Instant::now();
+        while let Some((at, _)) = self.samples.front() {
+            if now.duration_since(*at) > RATE_WINDOW {
+                self.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.samples.is_empty() {
+            self.tok_per_sec = 0.0;
+            return;
+        }
+        let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
+        let span = self
+            .samples
+            .front()
+            .map(|(at, _)| now.duration_since(*at).as_secs_f32())
+            .unwrap_or(0.0)
+            .max(0.5)
+            .min(RATE_WINDOW.as_secs_f32());
+        self.tok_per_sec = (chars as f32 / CHARS_PER_TOKEN) / span;
     }
 
     pub fn push(&mut self, role: Role, text: impl Into<String>) {
@@ -145,6 +180,13 @@ impl App {
         match kind {
             "llm.delta" => {
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
+                // replayed history is not a live rate.
+                if !self.replaying {
+                    let chars = text.chars().count();
+                    if chars > 0 {
+                        self.samples.push_back((std::time::Instant::now(), chars));
+                    }
+                }
                 self.append_stream(text);
             }
             "tool.requested" => {
@@ -168,6 +210,8 @@ impl App {
             }
             "turn.completed" => {
                 self.status.turn_running = false;
+                self.tok_per_sec = 0.0;
+                self.samples.clear();
                 self.status.prompt_tokens +=
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
@@ -175,6 +219,8 @@ impl App {
             }
             "turn.interrupted" => {
                 self.status.turn_running = false;
+                self.tok_per_sec = 0.0;
+                self.samples.clear();
                 let cause = payload.get("cause").and_then(Value::as_str).unwrap_or("");
                 self.push(Role::Error, format!("[interrupted: {cause}]"));
             }
