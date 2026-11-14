@@ -27,6 +27,7 @@ pub enum Action {
     Cancel,
     Quit,
     Answer { allow: bool, scope: &'static str },
+    Command(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -88,18 +89,8 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
-                KeyCode::Char('c') => {
-                    if let Some(id) = self.pending_approval.take() {
-                        self.push(Role::System, "denied");
-                        let _ = id;
-                        return Action::Answer {
-                            allow: false,
-                            scope: "once",
-                        };
-                    }
-                    Action::Cancel
-                }
-                KeyCode::Char('d') => Action::Quit,
+                // ctrl-c always leaves. any pending approval is denied on the way out.
+                KeyCode::Char('c') | KeyCode::Char('d') => Action::Quit,
                 _ => Action::None,
             };
         }
@@ -123,7 +114,11 @@ impl App {
                     return Action::Answer { allow, scope };
                 }
                 self.follow = true;
-                Action::Submit(text)
+                if text.starts_with('/') {
+                    Action::Command(text)
+                } else {
+                    Action::Submit(text)
+                }
             }
             KeyCode::Backspace => {
                 self.input.pop();
@@ -153,6 +148,7 @@ impl App {
                 self.follow = self.scroll >= self.max_scroll;
                 Action::None
             }
+            // escape interrupts the turn and never leaves the client.
             KeyCode::Esc => Action::Cancel,
             _ => Action::None,
         }

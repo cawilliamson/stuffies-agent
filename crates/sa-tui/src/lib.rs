@@ -110,7 +110,7 @@ pub fn draw<B: ratatui::backend::Backend>(
                 Style::default().fg(Color::Black).bg(Color::DarkGray),
             ),
             ratatui::text::Span::raw(format!(
-                " {state}  {}  {} in / {} out  ctrl-c cancel  ctrl-d quit",
+                " {state}  {}  {} in / {} out  esc interrupt  ctrl-c quit",
                 app.status.model, app.status.prompt_tokens, app.status.completion_tokens
             )),
         ]);
@@ -216,15 +216,25 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
             Action::None => {}
             Action::Quit => break,
             Action::Cancel => {
+                // escape interrupts a turn; with nothing running it does nothing.
                 if app.status.turn_running {
                     let _ = client
                         .call("turn.cancel", json!({"session_id": session}))
                         .await;
-                    app.push(app::Role::System, "cancelling");
-                } else {
-                    break;
+                    app.push(app::Role::System, "interrupting");
                 }
             }
+            Action::Command(command) => match command.as_str() {
+                "/exit" | "/quit" => break,
+                "/help" => app.push(
+                    app::Role::System,
+                    "/exit /quit leave, esc interrupts, ctrl-c quits",
+                ),
+                other => app.push(
+                    app::Role::System,
+                    format!("unknown command {other}, try /help"),
+                ),
+            },
             Action::Submit(prompt) => {
                 app.push(app::Role::User, prompt.clone());
                 app.status.turn_running = true;
@@ -262,6 +272,15 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
         let _ = std::io::stdout().flush();
     }
 
+    // deny anything still waiting so the daemon does not block until the approval timeout.
+    if let Some(approval_id) = app.pending_approval.take() {
+        let _ = client
+            .call(
+                "approval.respond",
+                json!({"approval_id": approval_id, "decision": "deny"}),
+            )
+            .await;
+    }
     let _ = client
         .call("session.detach", json!({"session_id": session}))
         .await;

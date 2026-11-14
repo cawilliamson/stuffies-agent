@@ -45,23 +45,57 @@ fn backspace_edits_the_input() {
 }
 
 #[test]
-fn ctrl_c_cancels_a_running_turn() {
+fn escape_interrupts_the_turn_and_never_leaves() {
     let mut app = App::new("s", "m");
-    assert_eq!(app.on_key(ctrl('c')), Action::Cancel);
+    app.status.turn_running = true;
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Cancel);
+    app.status.turn_running = false;
+    assert_eq!(
+        app.on_key(key(KeyCode::Esc)),
+        Action::Cancel,
+        "escape is an interrupt, not an exit, even when idle"
+    );
 }
 
 #[test]
-fn ctrl_c_denies_a_pending_approval_instead_of_cancelling() {
+fn ctrl_c_always_quits() {
+    let mut app = App::new("s", "m");
+    app.status.turn_running = true;
+    assert_eq!(app.on_key(ctrl('c')), Action::Quit);
+
+    let mut idle = App::new("s", "m");
+    assert_eq!(idle.on_key(ctrl('c')), Action::Quit);
+}
+
+#[test]
+fn ctrl_c_quits_even_with_an_approval_pending() {
+    // the approval is denied on the way out, not turned into a cancel.
     let mut app = App::new("s", "m");
     app.pending_approval = Some("a1".to_owned());
+    assert_eq!(app.on_key(ctrl('c')), Action::Quit);
+}
+
+#[test]
+fn slash_commands_are_not_sent_as_prompts() {
+    for command in ["/exit", "/quit"] {
+        let mut app = App::new("s", "m");
+        typed(&mut app, command);
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Command(command.to_owned()),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_normal_prompt_is_still_a_prompt() {
+    let mut app = App::new("s", "m");
+    typed(&mut app, "read main.rs");
     assert_eq!(
-        app.on_key(ctrl('c')),
-        Action::Answer {
-            allow: false,
-            scope: "once"
-        }
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit("read main.rs".to_owned())
     );
-    assert!(app.pending_approval.is_none());
 }
 
 #[test]
