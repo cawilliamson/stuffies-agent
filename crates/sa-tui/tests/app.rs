@@ -345,7 +345,7 @@ fn replayed_history_does_not_contribute_to_the_rate() {
 }
 
 #[test]
-fn a_delivered_message_flashes_its_average_then_settles_at_zero() {
+fn a_delivered_message_flashes_three_times_then_settles_at_zero() {
     use std::time::{Duration, Instant};
 
     let mut app = App::new("s", "m");
@@ -357,17 +357,24 @@ fn a_delivered_message_flashes_its_average_then_settles_at_zero() {
         &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
     );
 
-    let at = Instant::now();
-    app.tick_at(at);
-    assert!(app.tok_per_sec > 0.0, "the average must flash first");
+    // drive the clock at the run loop's real cadence: the flash must survive sampling.
+    let start = Instant::now();
+    let mut on_samples = 0;
+    let mut was_on = false;
+    for step in 0..20 {
+        app.tick_at(start + Duration::from_millis(250) * step);
+        let on = app.tok_per_sec > 0.0;
+        if on && !was_on {
+            on_samples += 1;
+        }
+        was_on = on;
+    }
+    assert_eq!(
+        on_samples, 3,
+        "expected three visible flashes, got {on_samples}"
+    );
 
-    app.tick_at(at + Duration::from_millis(200));
-    assert_eq!(app.tok_per_sec, 0.0, "then blink off");
-
-    app.tick_at(at + Duration::from_millis(400));
-    assert!(app.tok_per_sec > 0.0, "and blink on again");
-
-    app.tick_at(at + Duration::from_millis(2000));
+    app.tick_at(start + Duration::from_secs(10));
     assert_eq!(app.tok_per_sec, 0.0, "and settle at zero");
 }
 

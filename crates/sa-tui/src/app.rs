@@ -40,10 +40,12 @@ pub struct Status {
 
 /// a sliding window of streamed characters, for the live rate.
 const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
-/// how long the delivered-message average is flashed for.
-const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(1200);
-/// half-period of the flash, so it blinks three times.
-const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(200);
+/// how long the delivered-message average is flashed for: three on-phases of
+/// `FLASH_PHASE` with an equal gap between them.
+const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
+/// half-period of the flash. must stay comfortably longer than the redraw ticker in the
+/// run loop, or sampling aliases and the on-phases are never drawn.
+const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 /// characters per token, matching the daemon's compaction estimate.
 const CHARS_PER_TOKEN: f32 = 4.0;
 
