@@ -32,9 +32,12 @@ impl Drop for Restore {
     }
 }
 
-/// draws real tab shapes: rounded and lit for the active tab, square and dim for the rest.
-/// returns the three rows of the bar, plus the trailing "new tab" affordance.
+/// draws bookmark-style tabs: adjacent filled shapes sharing edges, so the row reads as one
+/// tab strip rather than a series of buttons. the active tab is lit and opens downward.
 fn tab_bar(app: &App, width: u16) -> [Line<'static>; 3] {
+    const MIN_W: usize = 9;
+    const MAX_W: usize = 22;
+
     let mut top: Vec<Span<'static>> = Vec::new();
     let mut mid: Vec<Span<'static>> = Vec::new();
     let mut bot: Vec<Span<'static>> = Vec::new();
@@ -52,31 +55,26 @@ fn tab_bar(app: &App, width: u16) -> [Line<'static>; 3] {
     used += 4;
 
     for (index, tab) in app.tabs.iter().enumerate() {
-        let label = format!("{} {}", index + 1, tab.title);
+        let mut label = format!("{} {}", index + 1, tab.title);
+        if label.chars().count() > MAX_W - 2 {
+            label = label.chars().take(MAX_W - 3).collect::<String>();
+            label.push('\u{2026}');
+        }
+        // the interior must be exactly the border width, or the tab shears.
         let inner = label.chars().count() + 2;
-        let tab_width = inner + 2;
-        if used + tab_width + 1 > usize::from(width) {
+        let w = (inner + 2).max(MIN_W);
+        if used + w + 1 > usize::from(width) {
             break;
         }
         let active = index == app.active;
-        let (edge, body) = if active {
-            (
-                app::ACCENT,
-                Style::default()
-                    .fg(Color::Rgb(0x10, 0x14, 0x1a))
-                    .bg(app::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            )
+        let (bg, fg, edge) = if active {
+            (app::ACCENT, Color::Rgb(0x10, 0x14, 0x1a), app::ACCENT)
         } else {
-            (
-                app::FAINT,
-                Style::default()
-                    .fg(app::DIM)
-                    .bg(Color::Rgb(0x1b, 0x1f, 0x26)),
-            )
+            (Color::Rgb(0x22, 0x27, 0x30), app::DIM, app::FAINT)
         };
-        let style = Style::default().fg(edge);
+        let style = Style::default().fg(edge).bg(bg);
 
+        // adjacent tabs share edges: no gap between them.
         let (tl, tr, bl, br) = if active {
             ("\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}")
         } else {
@@ -90,21 +88,26 @@ fn tab_bar(app: &App, width: u16) -> [Line<'static>; 3] {
         mid.push(Span::styled("\u{2502}", style));
         mid.push(Span::styled(
             format!(" {label:<width$} ", width = inner - 2),
-            body,
+            Style::default().fg(fg).bg(bg).add_modifier(if active {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
         ));
         mid.push(Span::styled("\u{2502}", style));
-        bot.push(Span::styled(
-            format!("{bl}{}{br}", "\u{2500}".repeat(inner)),
-            style,
-        ));
-        top.push(Span::raw(" "));
-        mid.push(Span::raw(" "));
-        bot.push(Span::raw(" "));
-        used += tab_width + 1;
+        // the active tab has no bottom edge: it opens into the pane beneath.
+        if active {
+            bot.push(Span::styled(" ".repeat(inner + 2), Style::default().bg(bg)));
+        } else {
+            bot.push(Span::styled(
+                format!("{bl}{}{br}", "\u{2500}".repeat(inner)),
+                style,
+            ));
+        }
+        used += w;
     }
 
-    mid.push(Span::styled("\u{002b}", Style::default().fg(app::FAINT)));
-
+    mid.push(Span::styled(" \u{002b}", Style::default().fg(app::FAINT)));
     [Line::from(top), Line::from(mid), Line::from(bot)]
 }
 
