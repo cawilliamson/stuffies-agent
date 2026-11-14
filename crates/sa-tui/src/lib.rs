@@ -1,12 +1,13 @@
-//! terminal front end: session tabs, framed transcript windows, prompt and status bar.
+//! terminal front end: session tabs, a framed transcript pane, prompt and status bar.
 //!
-//! deliberately one visual. no theming layer.
+//! one visual, no theming layer. the renderer is dirty-gated: a frame is only built when
+//! something visible changed, so an idle session costs nothing.
 
 pub mod app;
 
 use std::io::Write;
 
-use app::{Action, App, Tab};
+use app::{Action, App};
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use futures_util::StreamExt;
@@ -14,18 +15,14 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 use sa_client::Client;
 use serde_json::{json, Value};
 
-const RULE: Color = Color::Rgb(0x24, 0x28, 0x30);
-const MUTED: Color = Color::Rgb(0x64, 0x6d, 0x7c);
-const FAINT: Color = Color::Rgb(0x3a, 0x40, 0x4b);
-const ACCENT: Color = Color::Rgb(0x8a, 0xc8, 0xff);
+const RULE: Color = Color::Rgb(0x2a, 0x30, 0x3a);
 const SEP: &str = "\u{e0b0}";
 
-/// restores the terminal however the app exits, including on panic.
 struct Restore;
 
 impl Drop for Restore {
@@ -38,11 +35,13 @@ impl Drop for Restore {
 fn tab_strip(app: &App) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         " sa ",
-        Style::default().fg(Color::Rgb(0x10, 0x14, 0x1a)).bg(ACCENT),
+        Style::default()
+            .fg(Color::Rgb(0x10, 0x14, 0x1a))
+            .bg(app::ACCENT),
     )];
     for (index, tab) in app.tabs.iter().enumerate() {
         let active = index == app.active;
-        let label = format!(" {} {} \u{2715} ", index + 1, tab.title);
+        let label = format!(" {} {} ", index + 1, tab.title);
         spans.push(Span::styled(
             label,
             if active {
@@ -51,15 +50,14 @@ fn tab_strip(app: &App) -> Line<'static> {
                     .bg(Color::Rgb(0xd8, 0xd8, 0xd8))
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(MUTED).bg(Color::Rgb(0x1b, 0x1f, 0x26))
+                Style::default()
+                    .fg(app::DIM)
+                    .bg(Color::Rgb(0x1b, 0x1f, 0x26))
             },
         ));
-        spans.push(Span::styled(" ", Style::default()));
+        spans.push(Span::raw(" "));
     }
-    spans.push(Span::styled(
-        "\u{002b}",
-        Style::default().fg(FAINT).bg(Color::Rgb(0x1b, 0x1f, 0x26)),
-    ));
+    spans.push(Span::styled("\u{002b}", Style::default().fg(app::FAINT)));
     Line::from(spans)
 }
 
@@ -67,7 +65,7 @@ fn status_bar(app: &App, width: u16) -> Line<'static> {
     let tab = app.tab();
     let short: String = tab.session.chars().take(8).collect();
     let mut segments: Vec<(String, Color, Color)> = vec![(
-        format!(" {} ", short),
+        format!(" {short} "),
         Color::Rgb(0xd8, 0xd8, 0xd8),
         Color::Rgb(0x2a, 0x2a, 0x2a),
     )];
@@ -115,10 +113,10 @@ fn status_bar(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(SEP, Style::default().fg(*bg).bg(next)));
     }
     let used = Line::from(spans.clone()).width();
-    let hints = " shift+tab tab \u{00b7} \u{21e7}ctrl+n new \u{00b7} \u{21e7}ctrl+w close ";
+    let hints = " ctrl+n new \u{00b7} ctrl+w close \u{00b7} shift+tab switch ";
     let pad = usize::from(width).saturating_sub(used + hints.chars().count());
     spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(hints, Style::default().fg(FAINT)));
+    spans.push(Span::styled(hints, Style::default().fg(app::FAINT)));
     Line::from(spans)
 }
 
@@ -151,10 +149,24 @@ pub fn draw<B: ratatui::backend::Backend>(
 
             frame.render_widget(Paragraph::new(tab_strip(app)), rows[0]);
 
-            // pin the viewport to the newest content when following.
-            let content = app::windows(app, rows[1].width);
-            let width = usize::from(rows[1].width).max(1);
-            let viewport = usize::from(rows[1].height);
+            // the transcript lives in a framed pane.
+            let pane = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(RULE))
+                .title(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        app.tab().session.chars().take(8).collect::<String>(),
+                        Style::default().fg(app::DIM),
+                    ),
+                    Span::raw(" "),
+                ]));
+            let inner = pane.inner(rows[1]);
+            frame.render_widget(pane, rows[1]);
+
+            let content = app::transcript_lines(app.tab(), inner.width);
+            let width = usize::from(inner.width).max(1);
             let visual: usize = content
                 .iter()
                 .map(|line| {
@@ -167,7 +179,8 @@ pub fn draw<B: ratatui::backend::Backend>(
                 })
                 .sum();
             let tab = app.tab_mut();
-            tab.max_scroll = u16::try_from(visual.saturating_sub(viewport)).unwrap_or(u16::MAX);
+            tab.max_scroll =
+                u16::try_from(visual.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
             if tab.follow {
                 tab.scroll = tab.max_scroll;
             } else {
@@ -179,7 +192,7 @@ pub fn draw<B: ratatui::backend::Backend>(
                 Paragraph::new(content)
                     .wrap(Wrap { trim: false })
                     .scroll((scroll, 0)),
-                rows[1],
+                inner,
             );
 
             let tab = app.tab();
@@ -187,14 +200,14 @@ pub fn draw<B: ratatui::backend::Backend>(
             let (hscroll, column) = tab.input_view(field_width);
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("\u{276f} ", Style::default().fg(ACCENT)),
+                    Span::styled("\u{276f} ", Style::default().fg(app::ACCENT)),
                     Span::raw(tab.input_text().to_owned()),
                 ]))
                 .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_type(ratatui::widgets::BorderType::Rounded)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(RULE))
                         .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
                 ),
@@ -242,7 +255,6 @@ pub async fn run(
         }
     }
 
-    // replay history into the first tab, then subscribe.
     if let Ok(replay) = client
         .call(
             "events.replay",
@@ -268,7 +280,18 @@ pub async fn run(
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    draw(&mut terminal, &mut app).map_err(|e| e.to_string())?;
+
+    // only build a frame when something visible changed.
+    let mut drawn = 0u64;
+    let mut render = |terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App| {
+        let revision = app.revision();
+        if revision == drawn {
+            return Ok(());
+        }
+        drawn = revision;
+        draw(terminal, app)
+    };
+    render(&mut terminal, &mut app).map_err(|e| e.to_string())?;
 
     loop {
         enum Incoming {
@@ -360,6 +383,7 @@ pub async fn run(
             Action::Submit(prompt) => {
                 let sid = app.tab().session.clone();
                 app.tab_mut().status.turn_running = true;
+                app.touch();
                 match client
                     .call(
                         "turn.start",
@@ -384,7 +408,7 @@ pub async fn run(
                     "/exit" | "/quit" => break,
                     "/help" => app.tab_mut().push(
                         app::Role::System,
-                        "shift+tab next tab · shift+ctrl+n new tab · shift+ctrl+w close tab · esc interrupt · ctrl-c quit",
+                        "ctrl+n new tab · ctrl+w close tab · shift+tab switch · esc interrupt · ctrl-c quit",
                     ),
                     "/new" => {
                         let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
@@ -402,6 +426,7 @@ pub async fn run(
                             .call("model.select", json!({"session_id": sid, "model": arg}))
                             .await;
                         app.tab_mut().status.model = arg.to_owned();
+                        app.touch();
                     }
                     "/cost" => {
                         let tab = app.tab();
@@ -419,7 +444,7 @@ pub async fn run(
             }
         }
 
-        draw(&mut terminal, &mut app).map_err(|e| e.to_string())?;
+        render(&mut terminal, &mut app).map_err(|e| e.to_string())?;
         let _ = std::io::stdout().flush();
     }
 
@@ -434,11 +459,5 @@ pub async fn run(
 /// the transcript of the active tab as renderable lines, for tests.
 #[must_use]
 pub fn render(app: &App, width: u16) -> Vec<Line<'static>> {
-    app::windows(app, width)
-}
-
-/// a tab with sample content, for tests and previews.
-#[must_use]
-pub fn sample_tab(session: &str, model: &str) -> Tab {
-    Tab::new(session, String::new(), model)
+    app::transcript_lines(app.tab(), width)
 }

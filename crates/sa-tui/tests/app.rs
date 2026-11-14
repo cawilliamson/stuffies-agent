@@ -144,7 +144,7 @@ fn the_tab_strip_lists_every_session() {
 }
 
 #[test]
-fn the_transcript_is_framed_as_separate_windows() {
+fn prose_is_plain_and_only_tool_output_is_boxed() {
     let mut app = App::new("s", "m");
     app.tab_mut().push(Role::User, "a question");
     app.tab_mut().push(Role::Assistant, "an answer");
@@ -152,19 +152,48 @@ fn the_transcript_is_framed_as_separate_windows() {
     app.tab_mut().push(Role::ToolOutput, "file.txt");
 
     let screen = screen(&mut app, 100, 30);
-    for label in [
-        "\u{256d}\u{2500} you",
-        "\u{256d}\u{2500} sa",
-        "\u{256d}\u{2500} tool",
-        "\u{256d}\u{2500} output",
-    ] {
-        assert!(
-            screen.contains(label),
-            "missing window {label:?}:\n{screen}"
-        );
-    }
-    assert!(screen.contains("a question"), "{screen}");
+    assert!(
+        screen.contains("\u{276f} a question"),
+        "user turn must be marked:\n{screen}"
+    );
+    assert!(screen.contains("an answer"), "{screen}");
+    assert!(
+        screen.contains("\u{25be} bash ls"),
+        "tool call must be marked:\n{screen}"
+    );
     assert!(screen.contains("file.txt"), "{screen}");
+
+    // prose is prose: boxing every message made the transcript unreadable.
+    assert!(
+        !screen.contains("\u{256d}\u{2500} you"),
+        "prose must not be boxed:\n{screen}"
+    );
+    assert!(
+        !screen.contains("\u{256d}\u{2500} sa"),
+        "prose must not be boxed:\n{screen}"
+    );
+    // but the tool output is in a well.
+    assert!(
+        screen.contains("\u{2502} file.txt"),
+        "tool output must be framed:\n{screen}"
+    );
+}
+
+#[test]
+fn an_idle_tick_does_not_dirty_the_frame() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new("s", "m");
+    let before = app.revision();
+    app.tab_mut()
+        .tick_at(Instant::now() + Duration::from_secs(10));
+    assert_eq!(
+        app.revision(),
+        before,
+        "an idle tick must not force a redraw"
+    );
+
+    app.tab_mut().push(Role::Assistant, "new text");
+    assert_ne!(app.revision(), before, "new content must dirty the frame");
 }
 
 #[test]

@@ -1,28 +1,27 @@
 //! the tui state machine, independent of any terminal so it can be tested.
-//!
-//! state is per tab: each tab is one session with its own transcript, input and counters.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-/// a sliding window of streamed characters, for the live rate.
 const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
-/// how long the delivered-message average is flashed for.
 const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
-/// half-period of the flash.
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
-/// characters per token, matching the daemon's compaction estimate.
 const CHARS_PER_TOKEN: f32 = 4.0;
+
+pub const INK: Color = Color::Rgb(0xc8, 0xd0, 0xdc);
+pub const DIM: Color = Color::Rgb(0x6c, 0x76, 0x86);
+pub const FAINT: Color = Color::Rgb(0x44, 0x4c, 0x58);
+pub const ACCENT: Color = Color::Rgb(0x8a, 0xc8, 0xff);
+pub const OK: Color = Color::Rgb(0x7f, 0xc7, 0x9a);
+pub const BAD: Color = Color::Rgb(0xe8, 0x7c, 0x7c);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
     Assistant,
-    /// a tool invocation: `text` is the tool name and its arguments.
     Tool,
-    /// the output of the tool above it.
     ToolOutput,
     System,
     Error,
@@ -60,6 +59,8 @@ pub struct Tab {
     active_elapsed: std::time::Duration,
     flash: Option<(f32, std::time::Instant)>,
     frozen: Option<f32>,
+    /// bumped on every visible change so the renderer can skip clean frames.
+    pub revision: u64,
 }
 
 impl Tab {
@@ -92,7 +93,12 @@ impl Tab {
             active_elapsed: std::time::Duration::ZERO,
             flash: None,
             frozen: None,
+            revision: 1,
         }
+    }
+
+    pub fn touch(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn push(&mut self, role: Role, text: impl Into<String>) {
@@ -103,6 +109,7 @@ impl Tab {
         if self.follow {
             self.scroll = self.max_scroll;
         }
+        self.touch();
     }
 
     #[must_use]
@@ -112,6 +119,7 @@ impl Tab {
 
     pub fn set_input(&mut self, text: &str) {
         self.input = tui_input::Input::new(text.to_owned());
+        self.touch();
     }
 
     #[must_use]
@@ -123,6 +131,7 @@ impl Tab {
     fn edit(&mut self, key: KeyEvent) {
         use tui_input::backend::crossterm::EventHandler;
         self.input.handle_event(&crossterm::event::Event::Key(key));
+        self.touch();
     }
 
     fn submit(&mut self) -> Action {
@@ -132,6 +141,7 @@ impl Tab {
         }
         self.input.reset();
         self.follow = true;
+        self.touch();
         if text.starts_with('/') {
             Action::Command(text)
         } else {
@@ -172,12 +182,14 @@ impl Tab {
             self.flash = None;
             self.flash_highlight = false;
             self.tok_per_sec = 0.0;
+            self.touch();
             return;
         }
         let average = (chars as f32 / CHARS_PER_TOKEN) / active.as_secs_f32().max(0.05);
         self.flash = Some((average, now));
         self.tok_per_sec = average;
         self.flash_highlight = true;
+        self.touch();
     }
 
     pub fn tick(&mut self) {
@@ -185,6 +197,9 @@ impl Tab {
     }
 
     pub fn tick_at(&mut self, now: std::time::Instant) {
+        let before = (self.tok_per_sec * 10.0) as i64;
+        let lit_before = self.flash_highlight;
+
         if let Some((rate, started)) = self.flash {
             let elapsed = now.duration_since(started);
             if elapsed >= FLASH_DURATION {
@@ -192,37 +207,41 @@ impl Tab {
                 self.flash_highlight = false;
                 self.frozen = Some(rate);
                 self.tok_per_sec = rate;
-                return;
-            }
-            self.tok_per_sec = rate;
-            let phase = (elapsed.as_millis() / FLASH_PHASE.as_millis().max(1)) % 2;
-            self.flash_highlight = phase == 0;
-            return;
-        }
-        self.flash_highlight = false;
-        while let Some((at, _)) = self.samples.front() {
-            if now.duration_since(*at) > RATE_WINDOW {
-                self.samples.pop_front();
             } else {
-                break;
+                self.tok_per_sec = rate;
+                let phase = (elapsed.as_millis() / FLASH_PHASE.as_millis().max(1)) % 2;
+                self.flash_highlight = phase == 0;
+            }
+        } else {
+            self.flash_highlight = false;
+            while let Some((at, _)) = self.samples.front() {
+                if now.duration_since(*at) > RATE_WINDOW {
+                    self.samples.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if self.samples.is_empty() {
+                self.tok_per_sec = self.frozen.unwrap_or(0.0);
+            } else {
+                let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
+                let span = self
+                    .samples
+                    .front()
+                    .map(|(at, _)| now.duration_since(*at).as_secs_f32())
+                    .unwrap_or(0.0)
+                    .max(0.5)
+                    .min(RATE_WINDOW.as_secs_f32());
+                self.tok_per_sec = (chars as f32 / CHARS_PER_TOKEN) / span;
             }
         }
-        if self.samples.is_empty() {
-            self.tok_per_sec = self.frozen.unwrap_or(0.0);
-            return;
+
+        // only dirty the frame when the displayed figure actually changes.
+        if (self.tok_per_sec * 10.0) as i64 != before || self.flash_highlight != lit_before {
+            self.touch();
         }
-        let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
-        let span = self
-            .samples
-            .front()
-            .map(|(at, _)| now.duration_since(*at).as_secs_f32())
-            .unwrap_or(0.0)
-            .max(0.5)
-            .min(RATE_WINDOW.as_secs_f32());
-        self.tok_per_sec = (chars as f32 / CHARS_PER_TOKEN) / span;
     }
 
-    /// applies a daemon event to this tab.
     pub fn on_event(&mut self, kind: &str, payload: &Value) {
         self.on_event_at(kind, payload, std::time::Instant::now());
     }
@@ -266,6 +285,7 @@ impl Tab {
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
                     payload["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+                self.touch();
             }
             "turn.interrupted" => {
                 self.status.turn_running = false;
@@ -285,6 +305,7 @@ impl Tab {
                 self.samples.clear();
                 self.frozen = None;
                 self.tok_per_sec = 0.0;
+                self.touch();
             }
             "compaction.applied" => self.push(Role::System, "context compacted"),
             _ => {}
@@ -298,13 +319,17 @@ impl Tab {
             }
             _ => {
                 if !text.is_empty() {
-                    self.push(Role::Assistant, text.to_owned());
+                    self.transcript.push(Entry {
+                        role: Role::Assistant,
+                        text: text.to_owned(),
+                    });
                 }
             }
         }
         if self.follow {
             self.scroll = self.max_scroll;
         }
+        self.touch();
     }
 }
 
@@ -325,6 +350,7 @@ pub struct App {
     pub active: usize,
     pub branch: Option<String>,
     pub workspace: Option<String>,
+    pub revision: u64,
 }
 
 impl App {
@@ -336,7 +362,23 @@ impl App {
             active: 0,
             branch: None,
             workspace: None,
+            revision: 1,
         }
+    }
+
+    pub fn touch(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        let active = self.active.min(self.tabs.len().saturating_sub(1));
+        if let Some(tab) = self.tabs.get_mut(active) {
+            tab.touch();
+        }
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
+            .wrapping_mul(31)
+            .wrapping_add(self.tab().revision)
     }
 
     #[must_use]
@@ -349,7 +391,6 @@ impl App {
         &mut self.tabs[index]
     }
 
-    /// the tab showing a given session, if any.
     pub fn tab_for(&mut self, session: &str) -> Option<&mut Tab> {
         self.tabs.iter_mut().find(|t| t.session == session)
     }
@@ -357,10 +398,10 @@ impl App {
     pub fn add_tab(&mut self, session: impl Into<String>, model: impl Into<String>) -> usize {
         self.tabs.push(Tab::new(session, String::new(), model));
         self.active = self.tabs.len() - 1;
+        self.touch();
         self.active
     }
 
-    /// closes the active tab. returns the session that was closed, if it closed.
     pub fn close_tab(&mut self) -> Option<String> {
         if self.tabs.len() <= 1 {
             return None;
@@ -369,16 +410,17 @@ impl App {
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
         }
+        self.touch();
         Some(removed.session)
     }
 
     pub fn next_tab(&mut self) {
         if self.tabs.len() > 1 {
             self.active = (self.active + 1) % self.tabs.len();
+            self.touch();
         }
     }
 
-    /// handles a key press. returns what the caller should do about it.
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -386,9 +428,11 @@ impl App {
         if ctrl {
             return match key.code {
                 KeyCode::Char('c') | KeyCode::Char('d') => Action::Quit,
-                KeyCode::Char('N') | KeyCode::Char('n') if shift => Action::NewTab,
-                KeyCode::Char('W') | KeyCode::Char('w') if shift => Action::CloseTab,
+                // plain ctrl+n / ctrl+w, with the shifted forms accepted as aliases.
+                KeyCode::Char('n') | KeyCode::Char('N') => Action::NewTab,
+                KeyCode::Char('w') | KeyCode::Char('W') => Action::CloseTab,
                 _ => {
+                    let _ = shift;
                     self.tab_mut().edit(key);
                     Action::None
                 }
@@ -402,24 +446,28 @@ impl App {
                 let tab = self.tab_mut();
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(1);
+                tab.touch();
                 Action::None
             }
             KeyCode::Down => {
                 let tab = self.tab_mut();
                 tab.scroll = (tab.scroll + 1).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
+                tab.touch();
                 Action::None
             }
             KeyCode::PageUp => {
                 let tab = self.tab_mut();
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(10);
+                tab.touch();
                 Action::None
             }
             KeyCode::PageDown => {
                 let tab = self.tab_mut();
                 tab.scroll = (tab.scroll + 10).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
+                tab.touch();
                 Action::None
             }
             KeyCode::Esc => Action::Cancel,
@@ -448,82 +496,95 @@ fn indent(text: &str, max_lines: usize) -> String {
     lines.join("\n")
 }
 
-/// styles for one transcript entry, used by the renderer.
+/// the transcript of a tab as renderable lines.
+///
+/// prose is prose: only tool output is boxed, so the transcript reads as a conversation
+/// rather than a wall of frames.
 #[must_use]
-pub fn entry_style(role: Role) -> (Style, &'static str, Color) {
-    match role {
-        Role::User => (
-            Style::default().fg(Color::Rgb(0x8a, 0xc8, 0xff)),
-            "you",
-            Color::Rgb(0x8a, 0xc8, 0xff),
-        ),
-        Role::Assistant => (Style::default(), "sa", Color::Rgb(0x7f, 0xc7, 0x9a)),
-        Role::Tool => (
-            Style::default().fg(Color::Rgb(0x7a, 0x84, 0x94)),
-            "tool",
-            Color::Rgb(0x7a, 0x84, 0x94),
-        ),
-        Role::ToolOutput => (
-            Style::default().fg(Color::Rgb(0x5f, 0x68, 0x74)),
-            "output",
-            Color::Rgb(0x4a, 0x52, 0x5c),
-        ),
-        Role::System => (
-            Style::default().fg(Color::Rgb(0x6c, 0x76, 0x86)),
-            "system",
-            Color::Rgb(0x6c, 0x76, 0x86),
-        ),
-        Role::Error => (
-            Style::default()
-                .fg(Color::Rgb(0xe8, 0x7c, 0x7c))
-                .add_modifier(Modifier::BOLD),
-            "error",
-            Color::Rgb(0xe8, 0x7c, 0x7c),
-        ),
-    }
-}
-
-/// renders the transcript as a stack of framed windows, one per entry.
-#[must_use]
-pub fn windows(app: &App, width: u16) -> Vec<Line<'static>> {
-    let tab = app.tab();
-    let inner = usize::from(width).saturating_sub(4).clamp(16, 160);
+pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
+    let inner = usize::from(width).saturating_sub(6).clamp(12, 160);
     let mut out: Vec<Line<'static>> = Vec::new();
 
     for entry in &tab.transcript {
-        let (style, label, edge) = entry_style(entry.role);
-        let head = format!("\u{256d}\u{2500} {label} ");
-        let fill = inner.saturating_sub(head.chars().count().saturating_sub(1));
-        out.push(Line::from(vec![
-            Span::styled(head, Style::default().fg(edge)),
-            Span::styled("\u{2500}".repeat(fill), Style::default().fg(edge)),
-            Span::styled("\u{256e}", Style::default().fg(edge)),
-        ]));
-        for raw in entry.text.lines() {
-            let mut text = raw.to_owned();
-            if text.chars().count() > inner {
-                text = text
-                    .chars()
-                    .take(inner.saturating_sub(1))
-                    .collect::<String>();
-                text.push('\u{2026}');
+        match entry.role {
+            Role::User => {
+                if !out.is_empty() {
+                    out.push(Line::from(""));
+                }
+                for (index, raw) in entry.text.lines().enumerate() {
+                    let head = if index == 0 {
+                        Span::styled("\u{276f} ", Style::default().fg(ACCENT))
+                    } else {
+                        Span::styled("  ", Style::default())
+                    };
+                    out.push(Line::from(vec![
+                        head,
+                        Span::styled(
+                            raw.to_owned(),
+                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
             }
-            let pad = inner.saturating_sub(text.chars().count());
-            out.push(Line::from(vec![
-                Span::styled("\u{2502} ", Style::default().fg(edge)),
-                Span::styled(text, style),
-                Span::styled(
-                    format!("{} \u{2502}", " ".repeat(pad)),
-                    Style::default().fg(edge),
-                ),
-            ]));
+            Role::Assistant => {
+                if !out.is_empty() {
+                    out.push(Line::from(""));
+                }
+                for raw in entry.text.lines() {
+                    out.push(Line::from(Span::styled(
+                        raw.to_owned(),
+                        Style::default().fg(INK),
+                    )));
+                }
+            }
+            Role::Tool => {
+                out.push(Line::from(vec![
+                    Span::styled("\u{25be} ", Style::default().fg(FAINT)),
+                    Span::styled(entry.text.clone(), Style::default().fg(DIM)),
+                ]));
+            }
+            Role::ToolOutput => {
+                out.push(Line::from(Span::styled(
+                    format!("  \u{256d}{}\u{256e}", "\u{2500}".repeat(inner)),
+                    Style::default().fg(FAINT),
+                )));
+                for raw in entry.text.lines() {
+                    let mut text = raw.to_owned();
+                    if text.chars().count() > inner {
+                        text = text
+                            .chars()
+                            .take(inner.saturating_sub(1))
+                            .collect::<String>();
+                        text.push('\u{2026}');
+                    }
+                    let pad = inner.saturating_sub(text.chars().count());
+                    out.push(Line::from(vec![
+                        Span::styled("  \u{2502} ", Style::default().fg(FAINT)),
+                        Span::styled(text, Style::default().fg(DIM)),
+                        Span::styled(
+                            format!("{} \u{2502}", " ".repeat(pad)),
+                            Style::default().fg(FAINT),
+                        ),
+                    ]));
+                }
+                out.push(Line::from(Span::styled(
+                    format!("  \u{2570}{}\u{256f}", "\u{2500}".repeat(inner)),
+                    Style::default().fg(FAINT),
+                )));
+            }
+            Role::System => {
+                out.push(Line::from(vec![
+                    Span::styled("\u{00b7} ", Style::default().fg(FAINT)),
+                    Span::styled(entry.text.clone(), Style::default().fg(DIM)),
+                ]));
+            }
+            Role::Error => {
+                out.push(Line::from(vec![
+                    Span::styled("\u{2717} ", Style::default().fg(BAD)),
+                    Span::styled(entry.text.clone(), Style::default().fg(BAD)),
+                ]));
+            }
         }
-        out.push(Line::from(vec![
-            Span::styled("\u{2570}", Style::default().fg(edge)),
-            Span::styled("\u{2500}".repeat(inner + 1), Style::default().fg(edge)),
-            Span::styled("\u{256f}", Style::default().fg(edge)),
-        ]));
-        out.push(Line::from(""));
     }
     out
 }
