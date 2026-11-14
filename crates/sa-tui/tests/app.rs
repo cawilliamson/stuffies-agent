@@ -175,3 +175,69 @@ fn the_input_line_renders() {
         "status bar must show the model"
     );
 }
+
+fn user_entries(app: &App) -> usize {
+    app.transcript
+        .iter()
+        .filter(|e| e.role == Role::User)
+        .count()
+}
+
+#[test]
+fn submitting_does_not_render_the_prompt_twice() {
+    // the prompt is echoed locally when submitted, and the daemon also emits turn.started.
+    // only the local echo may render, or the operator sees their message duplicated.
+    let mut app = App::new("s", "m");
+    app.push(Role::User, "hello");
+    app.on_event("turn.started", &json!({"prompt": "hello"}));
+    assert_eq!(user_entries(&app), 1, "{:?}", app.transcript);
+}
+
+#[test]
+fn replay_still_reconstructs_prompts_from_the_log() {
+    let mut app = App::new("s", "m");
+    app.replaying = true;
+    app.on_event("turn.started", &json!({"prompt": "first"}));
+    app.on_event("turn.started", &json!({"prompt": "second"}));
+    app.replaying = false;
+    assert_eq!(user_entries(&app), 2);
+}
+
+#[test]
+fn every_role_renders_a_distinct_gutter() {
+    let mut app = App::new("s", "m");
+    app.push(Role::User, "mine");
+    app.push(Role::Assistant, "theirs");
+    app.push(Role::Tool, "tool output");
+
+    let screen: String = app
+        .lines()
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(screen.contains("you │ mine"), "{screen}");
+    assert!(screen.contains("sa  │ theirs"), "{screen}");
+    assert!(screen.contains("tool│ tool output"), "{screen}");
+}
+
+#[test]
+fn the_agent_and_the_operator_use_different_colours() {
+    use ratatui::style::Color;
+    let mut app = App::new("s", "m");
+    app.push(Role::User, "mine");
+    app.push(Role::Assistant, "theirs");
+    let colours: Vec<Color> = app
+        .lines()
+        .iter()
+        .filter_map(|line| line.spans.first().and_then(|s| s.style.fg))
+        .collect();
+    assert!(colours.contains(&Color::Cyan), "{colours:?}");
+    assert!(colours.contains(&Color::Green), "{colours:?}");
+}

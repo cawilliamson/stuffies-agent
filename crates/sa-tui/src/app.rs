@@ -45,6 +45,9 @@ pub struct App {
     pub follow: bool,
     pub status: Status,
     pub pending_approval: Option<String>,
+    /// true while replaying stored history. `turn.started` is rendered then, but not during
+    /// a live turn: the prompt was already echoed when it was submitted.
+    pub replaying: bool,
 }
 
 impl App {
@@ -61,6 +64,7 @@ impl App {
                 ..Status::default()
             },
             pending_approval: None,
+            replaying: false,
         }
     }
 
@@ -191,8 +195,10 @@ impl App {
                 self.push(Role::Error, format!("[interrupted: {cause}]"));
             }
             "turn.started" => {
-                if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
-                    self.push(Role::User, prompt.to_owned());
+                if self.replaying {
+                    if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
+                        self.push(Role::User, prompt.to_owned());
+                    }
                 }
             }
             "compaction.applied" => self.push(Role::System, "[context compacted]"),
@@ -218,25 +224,22 @@ impl App {
     }
 
     /// the transcript as renderable lines.
+    ///
+    /// every entry carries an explicit role gutter so the operator can tell their own turns
+    /// from the agent's and from tool output without relying on colour.
     #[must_use]
     pub fn lines(&self) -> Vec<Line<'static>> {
         let mut out = Vec::new();
-        for entry in &self.transcript {
+        for (index, entry) in self.transcript.iter().enumerate() {
+            if index > 0 {
+                out.push(Line::from(""));
+            }
             let style = style_for(entry.role);
-            for (index, raw) in entry.text.lines().enumerate() {
-                let prefix = if index == 0 {
-                    match entry.role {
-                        Role::User => "› ",
-                        Role::Assistant => "  ",
-                        Role::Tool => "  ",
-                        Role::System => "· ",
-                        Role::Error => "! ",
-                    }
-                } else {
-                    "  "
-                };
+            let gutter = gutter_for(entry.role);
+            for (line_index, raw) in entry.text.lines().enumerate() {
+                let head = if line_index == 0 { gutter } else { "    │ " };
                 out.push(Line::from(vec![
-                    Span::styled(prefix, style),
+                    Span::styled(head, style),
                     Span::styled(raw.to_owned(), style),
                 ]));
             }
@@ -245,10 +248,20 @@ impl App {
     }
 }
 
+fn gutter_for(role: Role) -> &'static str {
+    match role {
+        Role::User => "you │ ",
+        Role::Assistant => "sa  │ ",
+        Role::Tool => "tool│ ",
+        Role::System => "sys │ ",
+        Role::Error => "err │ ",
+    }
+}
+
 fn style_for(role: Role) -> Style {
     match role {
         Role::User => Style::default().fg(Color::Cyan),
-        Role::Assistant => Style::default(),
+        Role::Assistant => Style::default().fg(Color::Green),
         Role::Tool => Style::default().fg(Color::DarkGray),
         Role::System => Style::default().fg(Color::Yellow),
         Role::Error => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

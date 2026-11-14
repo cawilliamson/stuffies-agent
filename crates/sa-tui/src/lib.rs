@@ -104,6 +104,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
     let mut keys = EventStream::new();
 
     // replay what already happened so the transcript is continuous across attaches.
+    app.replaying = true;
     if let Ok(replay) = client
         .call(
             "events.replay",
@@ -118,6 +119,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
             }
         }
     }
+    app.replaying = false;
 
     client
         .call(
