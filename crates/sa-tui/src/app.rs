@@ -160,7 +160,8 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Enter => {
+            // a pty fed from a pipe sends LF rather than CR; both mean submit.
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
                 let text = self.input.trim().to_owned();
                 if text.is_empty() {
                     return Action::None;

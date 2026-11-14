@@ -402,3 +402,13 @@ fn the_rate_appears_in_the_status_bar_while_streaming() {
         "status bar must show the rate:\n{screen}"
     );
 }
+
+#[test]
+fn a_line_feed_from_a_pipe_submits_like_enter() {
+    let mut app = App::new("s", "m");
+    typed(&mut app, "hello");
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('\n'))),
+        Action::Submit("hello".to_owned())
+    );
+}
