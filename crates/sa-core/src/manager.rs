@@ -412,7 +412,17 @@ impl Manager {
         let Some(row) = self.store.get_session(session_id)? else {
             return Err(ManagerError::Rpc(not_found(session_id)));
         };
-        if !row.state.is_writable() {
+        // `interrupted` is resumable by definition (spec 5.4): a turn died with the daemon
+        // and the operator may simply carry on.
+        if row.state == SessionState::Interrupted {
+            self.store
+                .set_session_state(session_id, SessionState::Active)?;
+            self.append(
+                session_id,
+                kinds::SESSION_STATE,
+                &json!({"state": "active", "reason": "turn resumed after interruption"}),
+            )?;
+        } else if !row.state.is_writable() {
             return Err(ManagerError::Rpc(RpcError::new(
                 code::STALE_OWNER,
                 format!(

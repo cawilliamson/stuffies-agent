@@ -472,6 +472,10 @@ Where a turn had an in-flight tool call, recovery also appends `tool.failed` wit
 `class: interrupted` for that `call_id`. The model therefore sees a definite answer rather
 than a dangling call, and the log satisfies the pairing rule in §5.2.
 
+`interrupted` is resumable, so `turn.start` is accepted on such a session and transitions it
+back to `active` with a recorded `session.state`. Anything else that is not `active` —
+`relocated`, `relocating`, `quiescing`, `deleted` — still refuses.
+
 `turn.resume {session_id, turn_id}` re-enters the loop for an interrupted turn. It appends a
 new `turn.started` with `resumed_from` set to the interrupted turn id and re-issues the model
 call with the log as context. It is an explicit client action; nothing resumes on its own.
