@@ -434,3 +434,160 @@ async fn sa_writes_nothing_into_the_workspace() {
 
     daemon.stop().await;
 }
+
+/// a provider that accepts a request and never answers. simulates a stalled stream.
+struct HangingProvider;
+
+impl Provider for HangingProvider {
+    fn stream(&self, _request: sa_core::llm::ChatRequest) -> sa_core::llm::StreamFuture<'_> {
+        Box::pin(async {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            // the sender is leaked so the channel never closes: the stream simply stalls.
+            std::mem::forget(tx);
+            Ok(rx)
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_stalled_stream_is_interrupted_by_the_turn_timeout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = Config::at(dir.path());
+    cfg.turn_timeout_secs = 1;
+    let socket = cfg.socket_path.clone();
+
+    let (stop, wait) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        run(cfg, Arc::new(HangingProvider), async move {
+            let _ = wait.await;
+        })
+        .await
+        .expect("daemon");
+    });
+    for _ in 0..500 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let stream = UnixStream::connect(&socket).await.expect("connect");
+    let mut client = Framed::new(stream, LinesCodec::new_with_max_length(1024 * 1024));
+    let hello = json!({"jsonrpc":"2.0","id":0,"method":"hello",
+                       "params":{"protocol":1,"client":"t","client_version":"0"}});
+    client.send(hello.to_string()).await.expect("hello");
+    let _ = client.next().await.expect("hello response").expect("frame");
+
+    let session = create(&mut client, &dir.path().display().to_string()).await;
+    call(
+        &mut client,
+        2,
+        "turn.start",
+        json!({"session_id": session, "prompt": "hang", "detach": true}),
+    )
+    .await;
+
+    let interrupted = wait_for_kind(&mut client, &session, "turn.interrupted").await;
+    let cause = interrupted["payload"]["cause"]
+        .as_str()
+        .expect("cause")
+        .to_owned();
+    assert!(cause.contains("timeout"), "unexpected cause: {cause}");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn a_second_turn_sees_the_first_turns_context() {
+    let script = vec![
+        vec![
+            Delta::Text("first answer".to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ],
+        vec![
+            Delta::Text("second answer".to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ],
+    ];
+    let provider = Arc::new(ScriptedProvider::new(script));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg = Config::at(dir.path());
+    let socket = cfg.socket_path.clone();
+    let (stop, wait) = tokio::sync::oneshot::channel();
+    let handle = {
+        let provider: Arc<dyn Provider> = Arc::clone(&provider) as Arc<dyn Provider>;
+        tokio::spawn(async move {
+            run(cfg, provider, async move {
+                let _ = wait.await;
+            })
+            .await
+            .expect("daemon");
+        })
+    };
+    for _ in 0..500 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let stream = UnixStream::connect(&socket).await.expect("connect");
+    let mut client = Framed::new(stream, LinesCodec::new_with_max_length(1024 * 1024));
+    let hello = json!({"jsonrpc":"2.0","id":0,"method":"hello",
+                       "params":{"protocol":1,"client":"t","client_version":"0"}});
+    client.send(hello.to_string()).await.expect("hello");
+    let _ = client.next().await.expect("hello response").expect("frame");
+
+    let session = create(&mut client, &dir.path().display().to_string()).await;
+    call(
+        &mut client,
+        2,
+        "turn.start",
+        json!({"session_id": session, "prompt": "first prompt", "detach": true}),
+    )
+    .await;
+    wait_for_kind(&mut client, &session, "turn.completed").await;
+
+    call(
+        &mut client,
+        3,
+        "turn.start",
+        json!({"session_id": session, "prompt": "second prompt", "detach": true}),
+    )
+    .await;
+    for _ in 0..300 {
+        if provider.seen_requests().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let seen = provider.seen_requests();
+    assert!(seen.len() >= 2, "the second turn must reach the provider");
+    let second = &seen[1];
+    let carried = second
+        .messages
+        .iter()
+        .any(|m| m.role == "user" && m.content.as_deref() == Some("first prompt"));
+    assert!(
+        carried,
+        "the second turn must carry the first prompt: {:?}",
+        second
+            .messages
+            .iter()
+            .map(|m| (m.role.clone(), m.content.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}

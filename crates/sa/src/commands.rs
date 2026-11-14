@@ -1,11 +1,16 @@
-//! the user-facing commands: run, attach, export.
+//! the user-facing commands: run, attach, export, sessions (spec 14, v1.1).
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 
 use sa_client::Client;
 use serde_json::{json, Value};
 
 type Result<T> = std::result::Result<T, String>;
+
+/// how much of a tool result is shown before it is elided.
+const TOOL_PREVIEW_LINES: usize = 8;
+const TOOL_PREVIEW_CHARS: usize = 1200;
 
 fn socket() -> std::path::PathBuf {
     crate::cli::socket_path()
@@ -29,6 +34,152 @@ fn cwd() -> Result<String> {
         .map_err(|e| format!("cannot read cwd: {e}"))
 }
 
+// ---- rendering ----------------------------------------------------------
+
+/// renders a session transcript for a terminal.
+#[derive(Default)]
+struct Renderer {
+    tool_names: HashMap<String, String>,
+    show_reasoning: bool,
+}
+
+impl Renderer {
+    fn event(&mut self, kind: &str, payload: &Value) {
+        match kind {
+            "llm.delta" => {
+                if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                    print!("{text}");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            "llm.reasoning" => {
+                if self.show_reasoning {
+                    if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                        print!("\x1b[2m{text}\x1b[0m");
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+            }
+            "tool.requested" => self.tool_requested(payload),
+            "tool.completed" => self.tool_completed(payload),
+            "tool.failed" => {
+                let error = payload
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed");
+                println!("\n  \x1b[31m✗ {error}\x1b[0m");
+            }
+            "turn.completed" => {
+                println!();
+                let usage = &payload["usage"];
+                let prompt = usage
+                    .get("prompt_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let completion = usage
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                println!("\x1b[2m[{prompt} in / {completion} out]\x1b[0m");
+            }
+            "turn.interrupted" => {
+                let cause = payload
+                    .get("cause")
+                    .and_then(Value::as_str)
+                    .unwrap_or("interrupted");
+                println!("\n\x1b[31m[turn interrupted: {cause}]\x1b[0m");
+            }
+            "compaction.applied" => {
+                println!("\x1b[2m[compacted: context summarised]\x1b[0m");
+            }
+            _ => {}
+        }
+    }
+
+    fn tool_requested(&mut self, payload: &Value) {
+        let tool = payload
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or("tool");
+        if let Some(call_id) = payload.get("call_id").and_then(Value::as_str) {
+            self.tool_names.insert(call_id.to_owned(), tool.to_owned());
+        }
+        println!(
+            "\n  \x1b[36m→ {tool}\x1b[0m {}",
+            summarise_args(&payload["args"])
+        );
+    }
+
+    fn tool_completed(&mut self, payload: &Value) {
+        let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+        let tool = self.tool_names.get(call_id).cloned().unwrap_or_default();
+        let output = payload.get("output").and_then(Value::as_str).unwrap_or("");
+        for line in preview(output, &tool) {
+            println!("    {line}");
+        }
+        if payload.get("truncated").and_then(Value::as_bool) == Some(true) {
+            println!("    \x1b[2m[truncated by the daemon]\x1b[0m");
+        }
+    }
+}
+
+/// a one-line summary of tool arguments.
+fn summarise_args(args: &Value) -> String {
+    let pick = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default()
+    };
+    for key in ["path", "command", "pattern"] {
+        let value = pick(key);
+        if !value.is_empty() {
+            return truncate_chars(&value, 100);
+        }
+    }
+    if let Some(content) = args.get("content").and_then(Value::as_str) {
+        return format!("{} bytes", content.len());
+    }
+    String::new()
+}
+
+/// the readable window of a tool result.
+fn preview(output: &str, tool: &str) -> Vec<String> {
+    if output.trim().is_empty() {
+        return vec!["(no output)".to_owned()];
+    }
+    let mut lines: Vec<String> = output
+        .lines()
+        .take(TOOL_PREVIEW_LINES)
+        .map(|line| truncate_chars(line, 160))
+        .collect();
+    let total = output.lines().count();
+    if total > TOOL_PREVIEW_LINES {
+        lines.push(format!(
+            "\x1b[2m… {total} lines, showing {TOOL_PREVIEW_LINES}\x1b[0m"
+        ));
+    }
+    if let Some(last) = lines.last_mut() {
+        if last.len() > TOOL_PREVIEW_CHARS {
+            *last = truncate_chars(last, TOOL_PREVIEW_CHARS);
+        }
+    }
+    if tool == "bash" {
+        // the exit code is the first line of a bash result and the most useful part.
+        return lines;
+    }
+    lines
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(limit).collect();
+    out.push('…');
+    out
+}
+
 // ---- session helpers ----------------------------------------------------
 
 async fn create_session(client: &mut Client) -> Result<String> {
@@ -50,52 +201,51 @@ async fn most_recent_session(client: &mut Client) -> Result<Option<String>> {
         .call("session.list", json!({}))
         .await
         .map_err(|e| format!("session.list failed: {e}"))?;
+    Ok(response
+        .as_array()
+        .and_then(|sessions| sessions.first())
+        .and_then(|s| s["id"].as_str())
+        .map(str::to_owned))
+}
+
+fn render_history(renderer: &mut Renderer, events: &[Value]) {
+    for event in events {
+        let kind = event["kind"].as_str().unwrap_or_default();
+        // history is replayed as a flat transcript, not a live stream.
+        if kind == "llm.delta" {
+            continue;
+        }
+        renderer.event(kind, &event["payload"]);
+    }
+}
+
+// ---- sessions -----------------------------------------------------------
+
+pub async fn sessions() -> Result<()> {
+    let mut client = connect().await?;
+    let response = client
+        .call("session.list", json!({}))
+        .await
+        .map_err(|e| format!("session.list failed: {e}"))?;
     let Some(sessions) = response.as_array() else {
-        return Ok(None);
+        println!("no sessions");
+        return Ok(());
     };
-    let active = sessions
-        .iter()
-        .find(|s| s["state"].as_str() == Some("active"))
-        .or_else(|| sessions.first());
-    Ok(active.and_then(|s| s["id"].as_str()).map(str::to_owned))
-}
-
-/// prints an assistant text delta.
-fn render_delta(payload: &Value) {
-    if let Some(text) = payload.get("text").and_then(Value::as_str) {
-        print!("{text}");
-        let _ = std::io::stdout().flush();
+    if sessions.is_empty() {
+        println!("no sessions");
+        return Ok(());
     }
-}
-
-fn render_event(kind: &str, payload: &Value) {
-    match kind {
-        "llm.delta" => render_delta(payload),
-        "llm.reasoning" => {}
-        "turn.completed" => println!(),
-        "turn.interrupted" => {
-            let cause = payload
-                .get("cause")
-                .and_then(Value::as_str)
-                .unwrap_or("interrupted");
-            println!("\n[turn interrupted: {cause}]");
-        }
-        "tool.requested" => {
-            let tool = payload
-                .get("tool")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
-            println!("\n  → {tool}");
-        }
-        "tool.failed" => {
-            let error = payload
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("failed");
-            println!("  ✗ {error}");
-        }
-        _ => {}
+    println!("{:<38} {:<12} {:<10} TITLE", "ID", "STATE", "AUTONOMY");
+    for session in sessions {
+        println!(
+            "{:<38} {:<12} {:<10} {}",
+            session["id"].as_str().unwrap_or("-"),
+            session["state"].as_str().unwrap_or("-"),
+            session["autonomy"].as_str().unwrap_or("-"),
+            session["title"].as_str().unwrap_or("-"),
+        );
     }
+    Ok(())
 }
 
 // ---- run ----------------------------------------------------------------
@@ -121,15 +271,13 @@ pub async fn run_once(prompt: &str) -> Result<()> {
         .map_err(|e| format!("turn.start failed: {e}"))?;
     let turn_id = started["turn_id"].as_str().unwrap_or_default().to_owned();
 
+    let mut renderer = Renderer::default();
     loop {
         let frame = client
             .next_notification()
             .await
             .map_err(|e| format!("connection lost: {e}"))?;
-        let Some(method) = frame.get("method").and_then(Value::as_str) else {
-            continue;
-        };
-        if method != "event" {
+        if frame.get("method").and_then(Value::as_str) != Some("event") {
             continue;
         }
         let params = &frame["params"];
@@ -137,7 +285,7 @@ pub async fn run_once(prompt: &str) -> Result<()> {
             .get("kind")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        render_event(kind, &params["payload"]);
+        renderer.event(kind, &params["payload"]);
         if kind == "turn.completed" || kind == "turn.interrupted" {
             let matches = params["payload"]["turn_id"].as_str() == Some(turn_id.as_str());
             if matches || turn_id.is_empty() {
@@ -148,22 +296,33 @@ pub async fn run_once(prompt: &str) -> Result<()> {
     }
 }
 
-// ---- attach (interactive) ----------------------------------------------
+// ---- attach -------------------------------------------------------------
 
 enum Incoming {
     Line(String),
     Frame(Value),
+    Interrupt,
 }
 
-pub async fn attach(session: Option<String>) -> Result<()> {
+fn help() {
+    println!(
+        "\x1b[2mcommands: /new /sessions /model <id> /cancel /cost /reasoning /help /exit\n\
+         ctrl-c cancels the running turn; at an idle prompt it exits.\x1b[0m"
+    );
+}
+
+pub async fn attach(session: Option<String>, new: bool) -> Result<()> {
     let mut client = connect().await?;
 
-    let session_id = match session {
-        Some(id) => id,
-        None => match most_recent_session(&mut client).await? {
+    let mut session_id = if new {
+        create_session(&mut client).await?
+    } else if let Some(id) = session {
+        id
+    } else {
+        match most_recent_session(&mut client).await? {
             Some(id) => id,
             None => create_session(&mut client).await?,
-        },
+        }
     };
 
     let attached = client
@@ -174,11 +333,9 @@ pub async fn attach(session: Option<String>) -> Result<()> {
         .await
         .map_err(|e| format!("attach failed: {e}"))?;
 
+    let mut renderer = Renderer::default();
     if let Some(events) = attached["events"].as_array() {
-        for event in events {
-            let kind = event["kind"].as_str().unwrap_or_default();
-            render_event(kind, &event["payload"]);
-        }
+        render_history(&mut renderer, events);
     }
 
     client
@@ -190,7 +347,7 @@ pub async fn attach(session: Option<String>) -> Result<()> {
         .map_err(|e| format!("subscribe failed: {e}"))?;
 
     println!(
-        "sa: attached to {session_id}. type a prompt, `exit` to leave, `!cancel` to stop a turn."
+        "sa: attached to {session_id}. /help for commands, ctrl-c to interrupt, /exit to leave."
     );
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -210,7 +367,6 @@ pub async fn attach(session: Option<String>) -> Result<()> {
 
     let mut pending_approval: Option<String> = None;
     let mut turn_running = false;
-    // leaving mid-turn would truncate the transcript, so `exit` waits for the turn.
     let mut quit_after_turn = false;
 
     loop {
@@ -222,63 +378,134 @@ pub async fn attach(session: Option<String>) -> Result<()> {
             frame = client.next_notification() => Incoming::Frame(
                 frame.map_err(|e| format!("connection lost: {e}"))?,
             ),
+            _ = tokio::signal::ctrl_c() => Incoming::Interrupt,
         };
 
         match incoming {
+            Incoming::Interrupt => {
+                if turn_running {
+                    client
+                        .call("turn.cancel", json!({"session_id": session_id}))
+                        .await
+                        .map_err(|e| format!("turn.cancel failed: {e}"))?;
+                    println!("\n\x1b[2m[cancelling]\x1b[0m");
+                } else if pending_approval.is_some() {
+                    let approval_id = pending_approval.take().unwrap_or_default();
+                    let _ = client
+                        .call(
+                            "approval.respond",
+                            json!({"approval_id": approval_id, "decision": "deny"}),
+                        )
+                        .await;
+                    println!("\n\x1b[2m[denied]\x1b[0m");
+                } else {
+                    break;
+                }
+            }
             Incoming::Line(line) => {
                 let text = line.trim();
                 if text.is_empty() {
                     continue;
                 }
                 if let Some(approval_id) = pending_approval.take() {
-                    let allow = matches!(text, "y" | "yes" | "Y" | "YES");
+                    let (decision, scope) = match text {
+                        "y" | "yes" => ("allow", "once"),
+                        "t" => ("allow", "turn"),
+                        "s" => ("allow", "session"),
+                        "c" => ("allow", "class"),
+                        _ => ("deny", "once"),
+                    };
                     client
                         .call(
                             "approval.respond",
                             json!({
                                 "approval_id": approval_id,
-                                "decision": if allow { "allow" } else { "deny" },
-                                "scope": "once",
+                                "decision": decision,
+                                "scope": scope,
                             }),
                         )
                         .await
                         .map_err(|e| format!("approval.respond failed: {e}"))?;
                     continue;
                 }
-                match text {
-                    "exit" | "quit" | ":q" => {
-                        if turn_running {
-                            println!("[leaving after the current turn]");
-                            quit_after_turn = true;
-                        } else {
-                            break;
+                if let Some(command) = text.strip_prefix('/') {
+                    match command
+                        .split_once(' ')
+                        .map_or((command, ""), |(a, b)| (a, b.trim()))
+                    {
+                        ("exit" | "quit" | "q", _) => {
+                            if turn_running {
+                                quit_after_turn = true;
+                            } else {
+                                break;
+                            }
                         }
-                    }
-                    "!cancel" => {
-                        client
-                            .call("turn.cancel", json!({"session_id": session_id}))
-                            .await
-                            .map_err(|e| format!("turn.cancel failed: {e}"))?;
-                    }
-                    prompt => {
-                        if turn_running {
-                            println!("[busy: waiting for the current turn]");
-                            continue;
+                        ("help", _) => help(),
+                        ("new", _) => {
+                            session_id = create_session(&mut client).await?;
+                            client
+                                .call(
+                                    "events.subscribe",
+                                    json!({"session_id": session_id, "from_seq": 0}),
+                                )
+                                .await
+                                .map_err(|e| format!("subscribe failed: {e}"))?;
+                            println!("sa: new session {session_id}");
                         }
-                        client
-                            .call(
-                                "turn.start",
-                                json!({
-                                    "session_id": session_id,
-                                    "prompt": prompt,
-                                    "detach": false,
-                                }),
-                            )
-                            .await
-                            .map_err(|e| format!("turn.start failed: {e}"))?;
-                        turn_running = true;
+                        ("sessions", _) => sessions().await?,
+                        ("model", model) if !model.is_empty() => {
+                            client
+                                .call(
+                                    "model.select",
+                                    json!({"session_id": session_id, "model": model}),
+                                )
+                                .await
+                                .map_err(|e| format!("model.select failed: {e}"))?;
+                            println!("sa: model set to {model}");
+                        }
+                        ("cancel", _) => {
+                            client
+                                .call("turn.cancel", json!({"session_id": session_id}))
+                                .await
+                                .map_err(|e| format!("turn.cancel failed: {e}"))?;
+                        }
+                        ("cost", _) => {
+                            let usage = client
+                                .call("session.usage", json!({"session_id": session_id}))
+                                .await
+                                .map_err(|e| format!("session.usage failed: {e}"))?;
+                            println!(
+                                "{} in / {} out",
+                                usage["prompt_tokens"], usage["completion_tokens"]
+                            );
+                        }
+                        ("reasoning", arg) => {
+                            renderer.show_reasoning = matches!(arg, "on" | "true" | "1");
+                            println!(
+                                "sa: reasoning {}",
+                                if renderer.show_reasoning { "on" } else { "off" }
+                            );
+                        }
+                        (other, _) => println!("sa: unknown command /{other}, try /help"),
                     }
+                    continue;
                 }
+                if turn_running {
+                    println!("\x1b[2m[busy: /cancel or ctrl-c to stop the turn]\x1b[0m");
+                    continue;
+                }
+                client
+                    .call(
+                        "turn.start",
+                        json!({
+                            "session_id": session_id,
+                            "prompt": text,
+                            "detach": false,
+                        }),
+                    )
+                    .await
+                    .map_err(|e| format!("turn.start failed: {e}"))?;
+                turn_running = true;
             }
             Incoming::Frame(frame) => {
                 let method = frame
@@ -292,14 +519,12 @@ pub async fn attach(session: Option<String>) -> Result<()> {
                             .get("kind")
                             .and_then(Value::as_str)
                             .unwrap_or_default();
-                        render_event(kind, &params["payload"]);
+                        renderer.event(kind, &params["payload"]);
                         if kind == "turn.completed" || kind == "turn.interrupted" {
                             turn_running = false;
                             if quit_after_turn {
                                 break;
                             }
-                            print!("sa> ");
-                            let _ = std::io::stdout().flush();
                         }
                     }
                     "approval.request" => {
@@ -308,7 +533,9 @@ pub async fn attach(session: Option<String>) -> Result<()> {
                             .get("detail")
                             .and_then(Value::as_str)
                             .unwrap_or("operation");
-                        println!("\n[approval] {detail}  (y/n)");
+                        println!(
+                            "\n\x1b[33m[approval] {detail}\x1b[0m\n  y=once t=turn s=session c=class n=deny"
+                        );
                         pending_approval = params
                             .get("approval_id")
                             .and_then(Value::as_str)
@@ -350,38 +577,36 @@ pub async fn export(session: Option<String>, format: &str) -> Result<()> {
         .map_err(|e| format!("replay failed: {e}"))?;
     let events = replay["events"].as_array().cloned().unwrap_or_default();
 
-    match format {
-        "markdown" => {
-            println!("# session {session_id}\n");
-            for event in &events {
-                let kind = event["kind"].as_str().unwrap_or_default();
-                let payload = &event["payload"];
-                match kind {
-                    "turn.started" => {
-                        let prompt = payload["prompt"].as_str().unwrap_or_default();
-                        println!("## you\n\n{prompt}\n");
-                    }
-                    "llm.completed" => {
-                        let text = payload["text"].as_str().unwrap_or_default();
-                        if !text.is_empty() {
-                            println!("## sa\n\n{text}\n");
-                        }
-                    }
-                    "tool.requested" => {
-                        let tool = payload["tool"].as_str().unwrap_or_default();
-                        println!("> tool: {tool}");
-                    }
-                    _ => {}
+    if format == "markdown" {
+        println!("# session {session_id}\n");
+        for event in &events {
+            let kind = event["kind"].as_str().unwrap_or_default();
+            let payload = &event["payload"];
+            match kind {
+                "turn.started" => {
+                    println!(
+                        "## you\n\n{}\n",
+                        payload["prompt"].as_str().unwrap_or_default()
+                    );
                 }
+                "llm.completed" => {
+                    let text = payload["text"].as_str().unwrap_or_default();
+                    if !text.is_empty() {
+                        println!("## sa\n\n{text}\n");
+                    }
+                }
+                "tool.requested" => {
+                    println!("> tool: {}", payload["tool"].as_str().unwrap_or_default());
+                }
+                _ => {}
             }
         }
-        _ => {
-            for event in &events {
-                println!(
-                    "{}",
-                    serde_json::to_string(event).map_err(|e| e.to_string())?
-                );
-            }
+    } else {
+        for event in &events {
+            println!(
+                "{}",
+                serde_json::to_string(event).map_err(|e| e.to_string())?
+            );
         }
     }
     Ok(())

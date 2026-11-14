@@ -34,7 +34,12 @@ pub enum Command {
         /// session id; defaults to the most recent session
         #[arg(long)]
         session: Option<String>,
+        /// start a fresh session instead of resuming one
+        #[arg(long)]
+        new: bool,
     },
+    /// list sessions
+    Sessions,
     /// dump a session as jsonl or markdown
     Export {
         #[arg(long)]

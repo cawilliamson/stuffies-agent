@@ -63,6 +63,7 @@ pub struct ManagerConfig {
     pub reasoning_effort: Option<String>,
     pub context_limit: u64,
     pub lock_dir: PathBuf,
+    pub turn_timeout_secs: u64,
 }
 
 struct Attached {
@@ -599,20 +600,42 @@ impl Manager {
             None => (all, None),
         };
 
-        let outcome = agent
-            .run_turn(TurnRequest {
-                turn_id: turn_id.clone(),
-                prompt,
-                model: row
-                    .model
-                    .unwrap_or_else(|| self.config.default_model.clone()),
-                history,
-                compaction_summary,
-                context: crate::workspace::context(&workspace),
-                max_tokens: self.config.max_tokens,
-                reasoning_effort: self.config.reasoning_effort.clone(),
-            })
-            .await;
+        let request = TurnRequest {
+            turn_id: turn_id.clone(),
+            prompt,
+            model: row
+                .model
+                .unwrap_or_else(|| self.config.default_model.clone()),
+            history,
+            compaction_summary,
+            context: crate::workspace::context(&workspace),
+            max_tokens: self.config.max_tokens,
+            reasoning_effort: self.config.reasoning_effort.clone(),
+        };
+
+        // a stalled model stream must not hang the session forever (spec 14, v1.1).
+        let outcome = match tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.turn_timeout_secs.max(1)),
+            agent.run_turn(request),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                let _ = self.append(
+                    &session_id,
+                    kinds::TURN_INTERRUPTED,
+                    &json!({
+                        "turn_id": turn_id,
+                        "cause": format!("timeout after {}s", self.config.turn_timeout_secs),
+                    }),
+                );
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.turns.remove(&session_id);
+                }
+                return;
+            }
+        };
 
         match outcome {
             Ok(outcome) => {

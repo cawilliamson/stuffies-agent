@@ -22,6 +22,7 @@ pub struct Config {
     pub db_path: PathBuf,
     pub model: String,
     pub host_fingerprint: String,
+    pub turn_timeout_secs: u64,
 }
 
 impl Config {
@@ -49,6 +50,10 @@ impl Config {
             db_path: state_dir.join("sa.db"),
             model: std::env::var("SA_MODEL").unwrap_or_else(|_| "default".to_owned()),
             host_fingerprint: host_fingerprint(&state_dir),
+            turn_timeout_secs: std::env::var("SA_TURN_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1800),
             runtime_dir,
             socket_path,
             state_dir,
@@ -65,9 +70,45 @@ impl Config {
             db_path: state_dir.join("sa.db"),
             model: "test-model".to_owned(),
             host_fingerprint: "test-host".to_owned(),
+            turn_timeout_secs: 1800,
             state_dir,
         }
     }
+}
+
+/// written on first daemon start when no policy exists. it lives outside every workspace
+/// (spec 6.1), so nothing is created in a repository.
+const DEFAULT_POLICY: &str = "\
+# commands permitted under the `allowlisted` autonomy level.
+# matching is by argv prefix, not substring.
+[allowlisted]
+commands = [
+  \"cargo build\",
+  \"cargo check\",
+  \"cargo clippy\",
+  \"cargo fmt\",
+  \"cargo run\",
+  \"cargo test\",
+  \"git diff\",
+  \"git log\",
+  \"git show\",
+  \"git status\",
+  \"ls\",
+  \"rg\",
+]
+network = []
+";
+
+/// seeds `$XDG_CONFIG_HOME/sa/policy.toml` if it does not exist yet.
+pub fn seed_policy() -> Result<PathBuf, std::io::Error> {
+    let dir = sa_core::workspace::config_dir();
+    let path = dir.join("policy.toml");
+    if path.exists() {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, DEFAULT_POLICY)?;
+    Ok(path)
 }
 
 /// stable local identifier, never a hostname or address (spec 5.3).
@@ -115,6 +156,11 @@ pub async fn run(
     socket::prepare_runtime_dir(&cfg.runtime_dir)?;
     std::fs::create_dir_all(&cfg.state_dir)?;
 
+    match seed_policy() {
+        Ok(path) => tracing::debug!(path = %path.display(), "policy"),
+        Err(err) => tracing::warn!(%err, "cannot seed policy"),
+    }
+
     let store = Store::open(&cfg.db_path)?;
     let manager = Arc::new(Manager::new(
         store,
@@ -127,6 +173,7 @@ pub async fn run(
                 .and_then(|v| v.parse().ok()),
             reasoning_effort: std::env::var("SA_REASONING_EFFORT").ok(),
             lock_dir: cfg.runtime_dir.join("locks"),
+            turn_timeout_secs: cfg.turn_timeout_secs,
             context_limit: std::env::var("SA_CONTEXT_LIMIT")
                 .ok()
                 .and_then(|v| v.parse().ok())

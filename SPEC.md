@@ -1083,7 +1083,39 @@ approval is recorded and fails the turn; two sessions in one repository serialis
 workspace lock; a long session compacts and the post-compaction view is within the limit
 while the log stays complete.
 
-**v2.0 — web interface.** The general surface: sessions, live transcripts, approvals, cost
+**v1.1 — daily driver.** The point at which `sa attach` replaces a general-purpose coding
+agent for real work. v1.0 executes tools correctly but shows almost nothing, so the operator
+cannot see what the agent did or stop it.
+
+Sub-work:
+
+1. **Transcript rendering.** Tool calls are shown with their arguments; tool results are
+   shown truncated to a readable window with an explicit `[truncated]` marker; reasoning
+   deltas are rendered dimmed; each turn ends with its token usage. Seeing the tool result is
+   the difference between trusting the agent and re-running everything by hand.
+2. **Interactive control.** `Ctrl-C` cancels the running turn and leaves the client alive; a
+   second `Ctrl-C` at an idle prompt exits. Slash commands: `/new`, `/sessions`, `/model`,
+   `/cancel`, `/cost`, `/help`, `/exit`.
+3. **Session management.** `sa sessions` lists them, `sa attach --new` starts a fresh one,
+   `sa attach --session <id>` picks a specific one. Attaching must never silently pick a
+   session the operator did not choose.
+4. **Turn timeout.** A turn that produces no terminal event within `SA_TURN_TIMEOUT`
+   (default 1800 s) is interrupted with `cause: timeout` and the client told. A stalled
+   model stream must not hang the session forever.
+5. **Default policy.** On first daemon start, if no `$XDG_CONFIG_HOME/sa/policy.toml`
+   exists, write a conservative default there — outside every workspace (§6.1). Without one,
+   every `bash` call under `allowlisted` prompts, which makes the agent unusable.
+6. **Approval scopes in the UI.** The prompt offers `y` (once), `t` (this turn), `s` (this
+   session), `c` (this class), `n` (deny). The dispatcher already enforces these; v1.0 could
+   not select them.
+
+Acceptance: a turn that calls `read` and `bash` shows both arguments and results in the
+transcript; `Ctrl-C` during a turn cancels it and the prompt returns; a second turn on the
+same session sees the first turn's context; `sa sessions` lists sessions with state and age;
+a turn whose provider never completes is interrupted at the timeout with the cause recorded;
+a fresh daemon writes `policy.toml` outside the workspace and `git status` stays clean.
+
+****v2.0 — web interface.** The general surface: sessions, live transcripts, approvals, cost
 and manual compaction in a browser.
 
 Sub-work: HTTP carrier and auth (§4.3), SSE with `Last-Event-ID`, embedded assets, session
