@@ -1,6 +1,6 @@
 //! session manager: the only writer of session state (spec 2.4).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use sa_proto::error::{code, RpcError};
 use sa_proto::session::kinds;
 use sa_proto::session::{
-    ApprovalDecision, ApprovalEntry, ApprovalScope, AttachResult, Autonomy, CreateSessionResult,
-    Event, ReplayResult, SessionState, SessionSummary, TurnStartResult, TurnStatus, Usage,
+    AttachResult, Autonomy, CreateSessionResult, Event, ReplayResult, SessionState, SessionSummary,
+    TurnStartResult, TurnStatus, Usage,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -17,12 +17,10 @@ use tokio::sync::mpsc;
 use crate::agent::{Agent, EventSink, ToolExecutor, TurnRequest};
 use crate::llm::Provider;
 use crate::store::{NewSession, SessionRow, Store, StoreError};
-use crate::tools::{Allowlist, PermissionClass, ToolRegistry};
+use crate::tools::{Allowlist, ToolRegistry};
 
 /// live queue bound for one client (spec 3.3).
 pub const CLIENT_QUEUE: usize = 4096;
-/// approval timeout when nobody answers (spec 8.3).
-pub const APPROVAL_TIMEOUT_SECS: u64 = 300;
 /// compaction fires at this fraction of the model context limit (spec 10.4).
 pub const COMPACTION_TRIGGER: f64 = 0.80;
 /// turns kept verbatim across a compaction.
@@ -83,11 +81,6 @@ struct RunningTurn {
     cancel: Arc<AtomicBool>,
 }
 
-struct PendingApproval {
-    entry: ApprovalEntry,
-    notify: tokio::sync::oneshot::Sender<bool>,
-}
-
 #[derive(Default)]
 struct Inner {
     next_conn: u64,
@@ -96,8 +89,6 @@ struct Inner {
     subs: HashMap<u64, Subscription>,
     attached: HashMap<String, Attached>,
     turns: HashMap<String, RunningTurn>,
-    approvals: HashMap<String, PendingApproval>,
-    scopes: HashMap<String, HashSet<String>>,
 }
 
 pub struct Manager {
@@ -548,10 +539,6 @@ impl Manager {
             session_id: session_id.clone(),
             cancel: Arc::clone(&cancel),
         });
-        let approver = Arc::new(ManagerApprover {
-            manager: Arc::clone(&self),
-            session_id: session_id.clone(),
-        });
         // per-workspace policy, resolved outside the workspace (spec 6.1).
         let allowlist =
             Allowlist::load(&crate::workspace::policy_path(&workspace)).unwrap_or_default();
@@ -559,7 +546,6 @@ impl Manager {
             PathBuf::from(&row.cwd),
             row.autonomy,
             allowlist,
-            approver,
         ));
 
         let model = row
@@ -685,153 +671,6 @@ impl Manager {
             since: crate::store::now_seconds(),
             turn_id,
         }
-    }
-
-    // ---- approvals ---------------------------------------------------
-
-    async fn request_approval(
-        &self,
-        session_id: &str,
-        class: PermissionClass,
-        detail: String,
-    ) -> Result<bool, String> {
-        // a session- or class-scoped allowance is honoured without asking again.
-        {
-            let inner = self.inner.lock().map_err(|_| "manager lock".to_owned())?;
-            if let Some(scopes) = inner.scopes.get(session_id) {
-                let class = class.as_str();
-                if scopes.contains(&format!("Session:{class}"))
-                    || scopes.contains(&format!("Class:{class}"))
-                {
-                    return Ok(true);
-                }
-            }
-        }
-
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = crate::store::now_seconds();
-        let entry = ApprovalEntry {
-            approval_id: id.clone(),
-            session_id: session_id.to_owned(),
-            class: class.as_str().to_owned(),
-            detail: detail.clone(),
-            requested_at: now,
-            expires_at: now + i64::try_from(APPROVAL_TIMEOUT_SECS).unwrap_or(300),
-        };
-
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        {
-            let mut inner = self.inner.lock().map_err(|_| "manager lock".to_owned())?;
-            inner.approvals.insert(
-                id.clone(),
-                PendingApproval {
-                    entry: entry.clone(),
-                    notify: tx,
-                },
-            );
-            let request = json!({
-                "jsonrpc": "2.0",
-                "method": "approval.request",
-                "params": {
-                    "approval_id": id,
-                    "session_id": session_id,
-                    "class": entry.class,
-                    "detail": detail,
-                    "expires_at": entry.expires_at,
-                }
-            });
-            for attached in inner.attached.values() {
-                self.push(&inner, attached.conn, request.clone());
-            }
-        }
-
-        let _ = self.append(
-            session_id,
-            kinds::APPROVAL_REQUESTED,
-            &json!({
-                "approval_id": entry.approval_id,
-                "class": entry.class,
-                "detail": entry.detail,
-                "expires_at": entry.expires_at,
-            }),
-        );
-
-        match tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await
-        {
-            Ok(Ok(decision)) => Ok(decision),
-            _ => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.approvals.remove(&id);
-                }
-                let _ = self.append(
-                    session_id,
-                    kinds::APPROVAL_RESOLVED,
-                    &json!({
-                        "approval_id": id,
-                        "decision": "deny",
-                        "scope": "once",
-                        "resolved_by": "timeout",
-                    }),
-                );
-                Ok(false)
-            }
-        }
-    }
-
-    pub fn respond_approval(
-        &self,
-        approval_id: &str,
-        decision: ApprovalDecision,
-        scope: ApprovalScope,
-    ) -> Result<String, ManagerError> {
-        let mut inner = self.lock()?;
-        let Some(pending) = inner.approvals.remove(approval_id) else {
-            return Err(ManagerError::Rpc(RpcError::new(
-                code::INVALID_PARAMS,
-                format!("unknown approval: {approval_id}"),
-            )));
-        };
-        let allowed = decision == ApprovalDecision::Allow;
-        let session_id = pending.entry.session_id.clone();
-        let class = pending.entry.class.clone();
-
-        if allowed && matches!(scope, ApprovalScope::Session | ApprovalScope::Class) {
-            inner
-                .scopes
-                .entry(session_id.clone())
-                .or_default()
-                .insert(format!("{scope:?}:{class}"));
-        }
-
-        let _ = pending.notify.send(allowed);
-        drop(inner);
-
-        self.append(
-            &session_id,
-            kinds::APPROVAL_RESOLVED,
-            &json!({
-                "approval_id": approval_id,
-                "decision": decision,
-                "scope": scope,
-                "resolved_by": "client",
-            }),
-        )?;
-
-        Ok(if allowed { "allowed" } else { "denied" }.to_owned())
-    }
-
-    pub fn list_approvals(&self, session_id: &str) -> Vec<ApprovalEntry> {
-        self.inner
-            .lock()
-            .map(|inner| {
-                inner
-                    .approvals
-                    .values()
-                    .filter(|p| p.entry.session_id == session_id)
-                    .map(|p| p.entry.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     // ---- compaction --------------------------------------------------
@@ -1043,25 +882,6 @@ impl EventSink for TurnSink {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
-    }
-}
-
-struct ManagerApprover {
-    manager: Arc<Manager>,
-    session_id: String,
-}
-
-impl crate::tools::Approver for ManagerApprover {
-    fn approve(
-        &self,
-        class: PermissionClass,
-        detail: String,
-    ) -> crate::agent::BoxFuture<'_, Result<bool, String>> {
-        Box::pin(async move {
-            self.manager
-                .request_approval(&self.session_id, class, detail)
-                .await
-        })
     }
 }
 

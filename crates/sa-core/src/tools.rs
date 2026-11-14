@@ -3,7 +3,6 @@
 //! every tool declares a permission class. the daemon enforces it; the ui never decides.
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 use sa_proto::session::Autonomy;
 use serde::Deserialize;
@@ -50,41 +49,6 @@ pub enum ToolError {
     Unknown(String),
 }
 
-/// decides whether an operation may proceed.
-pub trait Approver: Send + Sync {
-    fn approve(
-        &self,
-        class: PermissionClass,
-        detail: String,
-    ) -> BoxFuture<'_, Result<bool, String>>;
-}
-
-/// approves everything. used where a policy already decided.
-pub struct AlwaysAllow;
-
-impl Approver for AlwaysAllow {
-    fn approve(
-        &self,
-        _class: PermissionClass,
-        _detail: String,
-    ) -> BoxFuture<'_, Result<bool, String>> {
-        Box::pin(async { Ok(true) })
-    }
-}
-
-/// approves nothing.
-pub struct AlwaysDeny;
-
-impl Approver for AlwaysDeny {
-    fn approve(
-        &self,
-        _class: PermissionClass,
-        _detail: String,
-    ) -> BoxFuture<'_, Result<bool, String>> {
-        Box::pin(async { Ok(false) })
-    }
-}
-
 /// `.sa/policy.toml` (spec 8.2). daemon-local, never transferred.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Allowlist {
@@ -128,21 +92,15 @@ pub struct ToolRegistry {
     workspace: PathBuf,
     autonomy: Autonomy,
     allowlist: Allowlist,
-    approver: Arc<dyn Approver>,
 }
 
 impl ToolRegistry {
-    pub fn new(
-        workspace: PathBuf,
-        autonomy: Autonomy,
-        allowlist: Allowlist,
-        approver: Arc<dyn Approver>,
-    ) -> Self {
+    #[must_use]
+    pub fn new(workspace: PathBuf, autonomy: Autonomy, allowlist: Allowlist) -> Self {
         Self {
             workspace,
             autonomy,
             allowlist,
-            approver,
         }
     }
 
@@ -178,16 +136,12 @@ impl ToolRegistry {
                 if self.autonomy.is_unrestricted() || self.allowlist.permits(detail) {
                     return Ok(());
                 }
-                let approved = self
-                    .approver
-                    .approve(class, detail.to_owned())
-                    .await
-                    .map_err(ToolError::Denied)?;
-                if approved {
-                    Ok(())
-                } else {
-                    Err(ToolError::Denied(format!("denied by policy: {detail}")))
-                }
+                // no prompting: the policy is static config. a denial is a normal tool
+                // failure the model can read and work around.
+                Err(ToolError::Denied(format!(
+                    "`{detail}` is not on the allowlist; add it to {}",
+                    crate::workspace::policy_path(&self.workspace).display()
+                )))
             }
         }
     }
@@ -475,7 +429,6 @@ mod tests {
             PathBuf::from("/workspace"),
             Autonomy::Full,
             Allowlist::default(),
-            Arc::new(AlwaysAllow),
         );
         assert!(registry.resolve("sub/file.rs").is_ok());
         assert!(matches!(

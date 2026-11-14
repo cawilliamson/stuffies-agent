@@ -1,4 +1,4 @@
-//! session, turn, approval and event wire types (spec 3.2, 5.2).
+//! session, turn and event wire types (spec 3.2, 5.2).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -186,43 +186,6 @@ pub struct TurnStatus {
     pub since: i64,
 }
 
-/// approval decision (spec 8.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApprovalDecision {
-    Allow,
-    Deny,
-}
-
-/// how far an allowance reaches. ignored on deny.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApprovalScope {
-    #[default]
-    Once,
-    Turn,
-    Session,
-    Class,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApprovalRespondParams {
-    pub approval_id: String,
-    pub decision: ApprovalDecision,
-    #[serde(default)]
-    pub scope: ApprovalScope,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApprovalEntry {
-    pub approval_id: String,
-    pub session_id: String,
-    pub class: String,
-    pub detail: String,
-    pub requested_at: i64,
-    pub expires_at: i64,
-}
-
 /// event kind names, so the daemon and clients cannot drift on spelling.
 pub mod kinds {
     pub const SESSION_CREATED: &str = "session.created";
@@ -237,8 +200,6 @@ pub mod kinds {
     pub const TOOL_REQUESTED: &str = "tool.requested";
     pub const TOOL_COMPLETED: &str = "tool.completed";
     pub const TOOL_FAILED: &str = "tool.failed";
-    pub const APPROVAL_REQUESTED: &str = "approval.requested";
-    pub const APPROVAL_RESOLVED: &str = "approval.resolved";
     pub const MODEL_CHANGED: &str = "model.changed";
     pub const CHECKPOINT: &str = "checkpoint";
     pub const COMPACTION_APPLIED: &str = "compaction.applied";
@@ -290,13 +251,5 @@ mod tests {
         assert!(SessionState::Active.is_writable());
         assert!(!SessionState::Relocated.is_writable());
         assert!(!SessionState::Deleted.is_writable());
-    }
-
-    #[test]
-    fn approval_scope_defaults_to_once() {
-        assert_eq!(ApprovalScope::default(), ApprovalScope::Once);
-        let parsed: ApprovalRespondParams =
-            serde_json::from_str(r#"{"approval_id":"a","decision":"allow"}"#).expect("de");
-        assert_eq!(parsed.scope, ApprovalScope::Once);
     }
 }

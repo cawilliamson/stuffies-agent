@@ -611,16 +611,6 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
              created_at INTEGER NOT NULL,
              updated_at INTEGER NOT NULL
          );
-         CREATE TABLE IF NOT EXISTS approvals (
-             id TEXT PRIMARY KEY,
-             session_id TEXT NOT NULL,
-             seq INTEGER NOT NULL,
-             state TEXT NOT NULL,
-             request TEXT NOT NULL,
-             resolution TEXT,
-             requested_at INTEGER NOT NULL,
-             resolved_at INTEGER
-         );
          CREATE TABLE IF NOT EXISTS blobs (
              hash TEXT PRIMARY KEY,
              bytes INTEGER NOT NULL,

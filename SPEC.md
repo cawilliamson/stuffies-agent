@@ -29,7 +29,7 @@ There are two workloads, and they are served by different surfaces:
   served by the embedded web interface (§4.3) over the knowledge store (§11).
 
 Both share one daemon because both need the same things: a durable event log, tool execution
-under a policy, approvals, and the ability to keep working after the client goes away.
+under a policy, and the ability to keep working after the client goes away.
 
 ### 1.1 Motivating workflow
 
@@ -165,14 +165,6 @@ events.replay    {session_id, from_seq, to_seq?,  -> {events[], more, next_seq}
                   limit?}
 ```
 
-Approvals:
-
-```text
-approval.list    {session_id}                     -> [{approval_id, class, detail,
-                                                      requested_at, expires_at}]
-approval.respond {approval_id, decision, scope?}  -> {resolved_as}
-```
-
 Handoff:
 
 ```text
@@ -212,7 +204,6 @@ Server to client, never acknowledged:
 ```text
 event            {session_id, seq, kind, payload}
 gap              {session_id, from_seq, to_seq}   -- client fell behind, re-sync required
-approval.request {approval_id, session_id, class, detail, expires_at}
 turn.state       {session_id, turn_id, state}
 evicted          {session_id, reason}             -- another client took over (§3.6)
 log              {level, message}                 -- daemon diagnostics
@@ -255,7 +246,6 @@ of attachment.
   authority, and may re-attach to regain it. Takeover does not interrupt a running turn.
 - Detached turns are unaffected. `turn.start {detach: true}` runs with no client attached;
   that is the point of the design, not an exception to this rule.
-- Approvals with no attached client queue per §8.2.
 
 Presence is therefore a single field, not a set: a session is either attended or not.
 
@@ -341,7 +331,7 @@ leaked URL is not a leak.
 
 The web surface does not weaken §1.2. A browser is an untrusted client speaking JSON-RPC over
 a different carrier; it has exactly the authority any other client has, which is none.
-Authorisation — autonomy, knowledge namespaces, approvals — is decided in the dispatcher,
+Authorisation — autonomy and knowledge namespaces — is decided in the dispatcher,
 never in the UI.
 
 #### Assets
@@ -366,7 +356,6 @@ session.created     session.renamed      session.state
 turn.started        turn.completed       turn.interrupted
 llm.delta           llm.reasoning        llm.completed
 tool.requested      tool.completed       tool.failed
-approval.requested  approval.resolved
 model.changed       checkpoint
 handoff.exported    handoff.imported
 compaction.applied  review.completed     error
@@ -401,8 +390,6 @@ llm.completed       {v, turn_id, stop_reason, usage:{...}, purpose}
 tool.requested      {v, turn_id, call_id, tool, args}
 tool.completed      {v, turn_id, call_id, output, truncated, duration_ms}
 tool.failed         {v, turn_id, call_id, error, class}
-approval.requested  {v, approval_id, class, detail, expires_at}
-approval.resolved   {v, approval_id, decision, scope, resolved_by}
 model.changed       {v, from, to}
 checkpoint          {v, ref, base_commit, tree, includes_untracked}
 handoff.exported    {v, mode, epoch, sha256, seq_range}
@@ -515,8 +502,6 @@ events(id INTEGER PRIMARY KEY, session_id TEXT, seq INTEGER, kind TEXT,
 sessions(id TEXT PRIMARY KEY, title TEXT, parent_id TEXT, state TEXT,
          owner_host TEXT, owner_epoch INTEGER, cwd TEXT, repo_id TEXT,
          autonomy TEXT, model TEXT, created_at INTEGER, updated_at INTEGER)
-approvals(id TEXT PRIMARY KEY, session_id TEXT, seq INTEGER, state TEXT,
-          request TEXT, resolution TEXT, requested_at INTEGER, resolved_at INTEGER)
 blobs(hash TEXT PRIMARY KEY, bytes INTEGER, data BLOB)
 web_sessions(id TEXT PRIMARY KEY, created_at INTEGER, expires_at INTEGER, peer TEXT)
 schema_version(version INTEGER)
@@ -707,7 +692,7 @@ A bundle is data, never code. Import never executes anything from it.
 
 ---
 
-## 8. Autonomy and approvals
+## 8. Autonomy and policy
 
 ### 8.1 Levels
 
@@ -751,28 +736,23 @@ that turn. The downgrade is visible in history rather than assumed away.
 `DECIDED`: the checkpoint in §8.4 is the real guarantee. Network isolation is defence in
 depth, not the contract.
 
-### 8.3 Approval routing
+### 8.3 Enforcement
 
-`PermissionClass` is enforced by the daemon, not the UI. When an operation needs approval:
+`DECIDED`: there is no interactive approval. The policy is static configuration and the
+daemon applies it without asking.
 
-- the attached client receives `approval.request` and may answer;
-- with no client attached, the request is queued and the turn blocks until
-  `expires_at` (default 300 s), then resolves as denied and the turn fails with an explicit
-  reason;
-- queued approvals surface in `approval.list` on the next attach.
+- `read-only` refuses every write and every command.
+- `allowlisted` permits writes inside the workspace, and commands whose argv prefix matches
+  `policy.toml` (§8.2). Anything else is refused.
+- `full` permits everything.
 
-`approval.respond` takes `decision: allow | deny` and `scope`:
+A refusal is an ordinary `tool.failed` with `class: denied`, carrying the command and the
+path of the policy file that would permit it. The model sees the refusal and works around
+it, the same way it would a missing file. A denial never blocks a turn and never expires.
 
-```text
-once      this request only (default)
-turn      every remaining request in this turn
-session   every remaining request in this session
-class     every future request of this PermissionClass in this session
-```
-
-`scope` is ignored when `decision` is `deny`; a denial always resolves exactly one request.
-
-`DECIDED`: deny on timeout. Never auto-approve because nobody was watching.
+This replaces the earlier approval queue, which needed a live client to answer, blocked
+unattended turns until a timeout, and could not resume a turn once answered. Nothing in the
+agent loop now waits on a human.
 
 ### 8.4 Unattended safety net
 
@@ -1041,7 +1021,7 @@ Each of these has a required behaviour and a test in the milestone that introduc
 | two hosts claim the session | lower epoch loses; its writes are rejected, not merged |
 | two sessions, one repository | second turn waits on the workspace lock; reported as `waiting_workspace` |
 | disk full | turn aborts inside a transaction; log stays consistent |
-| approval timeout while detached | denied, recorded, turn fails with reason |
+| command outside the allowlist under `allowlisted` | `tool.failed` with `class: denied`, naming the policy path; the turn continues |
 | model endpoint unavailable | turn fails, recorded, session remains resumable |
 | partial bundle write | impossible: temp file plus rename, verified by hash before acceptance |
 | unknown event kind or payload version on import | hard rejection, no partial import |
@@ -1066,7 +1046,7 @@ Each is independently testable and leaves the tree green.
 
 **v1.0 — daemon and CLI coding agent.** The coding surface: a line-oriented CLI driving an
 agent against a working tree, with the daemon, event log, model client, tools, policy,
-approvals, detached turns and compaction underneath it.
+detached turns and compaction underneath it.
 
 Sub-work, in order:
 
@@ -1082,7 +1062,7 @@ Acceptance: a crash test kills the daemon mid-append and asserts a consistent lo
 with a terminal event for every open tool call; a recorded-cassette test produces a completed
 turn with contiguous events and populated usage, touching no network; a detached turn
 completes with no client attached; a `read-only` session performs zero writes; a denied
-approval is recorded and fails the turn; two sessions in one repository serialise on the
+denial is recorded and the turn continues; two sessions in one repository serialise on the
 workspace lock; a long session compacts and the post-compaction view is within the limit
 while the log stays complete.
 
@@ -1108,9 +1088,6 @@ Sub-work:
 5. **Default policy.** On first daemon start, if no `$XDG_CONFIG_HOME/sa/policy.toml`
    exists, write a conservative default there — outside every workspace (§6.1). Without one,
    every `bash` call under `allowlisted` prompts, which makes the agent unusable.
-6. **Approval scopes in the UI.** The prompt offers `y` (once), `t` (this turn), `s` (this
-   session), `c` (this class), `n` (deny). The dispatcher already enforces these; v1.0 could
-   not select them.
 
 Acceptance: a turn that calls `read` and `bash` shows both arguments and results in the
 transcript; `Ctrl-C` during a turn cancels it and the prompt returns; a second turn on the
@@ -1123,25 +1100,25 @@ persistent input line are the difference between reading a log and using an agen
 
 Sub-work: ratatui application in `sa-tui` (transcript, input line, status bar), TTY
 detection in `sa attach` with `--line` as the escape hatch, history replay on attach so a
-transcript is continuous across sessions, and approval prompts rendered in the input line.
+transcript is continuous across sessions.
 
 Scope limits, deliberate: no mouse, no text selection, no markdown rendering, no syntax
 highlighting, no tabs or panes. One transcript, one input, one status line.
 
 Acceptance: `sa attach` opens the TUI on a terminal and the line client under a pipe;
 streamed text accumulates into one assistant entry; tool calls and results render in the
-transcript; `ctrl-c` cancels a running turn and `ctrl-d` quits; approval scopes are
-selectable from the input line; attaching to a session with history replays it.
+transcript; `esc` interrupts a running turn and `ctrl-c` quits; attaching to a session with
+history replays it.
 
-**v2.0 — web interface.** The general surface: sessions, live transcripts, approvals, cost
+**v2.0 — web interface.** The general surface: sessions, live transcripts, denials, cost
 and manual compaction in a browser.
 
 Sub-work: HTTP carrier and auth (§4.3), SSE with `Last-Event-ID`, embedded assets, session
-list and creation, live transcript rendering, approval queue, usage display.
+list and creation, live transcript rendering, usage display.
 
 Acceptance: a wrong token is rejected and rate limited; a cross-origin POST without
 `X-SA-Token` is 403 and changes nothing; an SSE reconnect with `Last-Event-ID` replays
-exactly the missed events; the UI renders a running session, answers an approval and cancels
+exactly the missed events; the UI renders a running session and cancels
 a turn; the daemon serves the UI with no network egress.
 
 **v3.0 — knowledge and memory.** The Hermes-type surface: durable memory, skills and
@@ -1241,7 +1218,7 @@ normative text is in the sections above.
 | 4 | SSH stdio is a carrier; systemd owns daemon lifetime | §4.2, §12 |
 | 5 | single protocol version integer, no negotiation | §3.1 |
 | 6 | move by default, fork requires an explicit workspace | §5.5, §7.5 |
-| 7 | deny on approval timeout | §8.3 |
+| 7 | no interactive approval; the static policy decides | §8.3 |
 | 8 | unattended handoff defaults to `allowlisted` | §8.1 |
 | 9 | checkpoint before every unattended turn | §8.4 |
 | 10 | at most one attached client per session; takeover evicts | §3.6 |
@@ -1320,7 +1297,7 @@ Error codes: standard range `-32700` parse, `-32600` invalid request, `-32601` m
 found, `-32602` invalid params, `-32603` internal. Application range from `-32000`:
 `version_mismatch`, `peer_uid_mismatch`, `line_too_long`, `handshake_required`. The remaining
 application codes (`session_busy`, `stale_owner`, `workspace_diverged`,
-`workspace_unreachable`, `context_exhausted`, `approval_timeout`, `bundle_invalid`) are
+`workspace_unreachable`, `context_exhausted`, `bundle_invalid`) are
 declared now and unused until their milestone, because adding a variant later is a churn
 across every match arm.
 

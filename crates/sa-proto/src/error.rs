@@ -21,7 +21,6 @@ pub mod code {
     pub const WORKSPACE_DIVERGED: i32 = -32007;
     pub const WORKSPACE_UNREACHABLE: i32 = -32008;
     pub const CONTEXT_EXHAUSTED: i32 = -32009;
-    pub const APPROVAL_TIMEOUT: i32 = -32010;
     pub const BUNDLE_INVALID: i32 = -32011;
     pub const KNOWLEDGE_DENIED: i32 = -32012;
     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;
@@ -109,7 +108,6 @@ mod tests {
             code::WORKSPACE_DIVERGED,
             code::WORKSPACE_UNREACHABLE,
             code::CONTEXT_EXHAUSTED,
-            code::APPROVAL_TIMEOUT,
             code::BUNDLE_INVALID,
             code::KNOWLEDGE_DENIED,
             code::KNOWLEDGE_UNAVAILABLE,

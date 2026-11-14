@@ -11,8 +11,7 @@ use sa_proto::rpc::{
     HelloParams, HelloResult, PingResult, Request, Response, DAEMON_VERSION, PROTOCOL_VERSION,
 };
 use sa_proto::session::{
-    ApprovalDecision, ApprovalRespondParams, ApprovalScope, AttachParams, CreateSessionParams,
-    ListSessionsParams, ReplayParams, TurnStartParams,
+    AttachParams, CreateSessionParams, ListSessionsParams, ReplayParams, TurnStartParams,
 };
 use serde_json::{json, Value};
 
@@ -117,8 +116,6 @@ impl Dispatcher {
             "events.replay" => self.events_replay(params),
             "events.subscribe" => self.events_subscribe(conn, params),
             "events.unsubscribe" => self.events_unsubscribe(params),
-            "approval.list" => self.approval_list(params),
-            "approval.respond" => self.approval_respond(params),
             "model.list" => self.model_list(),
             "model.select" => self.model_select(params),
             "handoff.export" | "handoff.import" | "handoff.accept" => Err(RpcError::new(
@@ -325,20 +322,6 @@ impl Dispatcher {
         Ok(json!({}))
     }
 
-    fn approval_list(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
-        Ok(json!(self.manager.list_approvals(&session_id)))
-    }
-
-    fn approval_respond(&self, params: Value) -> Result<Value, RpcError> {
-        let params: ApprovalRespondParams = parse(params)?;
-        let resolved = self
-            .manager
-            .respond_approval(&params.approval_id, params.decision, params.scope)
-            .map_err(crate::manager::ManagerError::into_rpc)?;
-        Ok(json!({"resolved_as": resolved}))
-    }
-
     fn model_list(&self) -> Result<Value, RpcError> {
         Ok(json!([{
             "id": "default",
@@ -370,6 +353,3 @@ fn string_field(params: &Value, key: &str) -> Result<String, RpcError> {
         .map(str::to_owned)
         .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, format!("{key} required")))
 }
-
-/// the decision and scope are carried through untouched; this exists so the import is used.
-const _: fn(ApprovalDecision, ApprovalScope) = |_, _| {};

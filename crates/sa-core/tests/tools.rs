@@ -1,11 +1,10 @@
 //! tool execution against a real filesystem (spec 9).
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use sa_core::agent::ToolExecutor;
 use sa_core::llm::ToolCall;
-use sa_core::tools::{Allowlist, AllowlistedPolicy, AlwaysAllow, AlwaysDeny, ToolRegistry};
+use sa_core::tools::{Allowlist, AllowlistedPolicy, ToolRegistry};
 use sa_proto::session::Autonomy;
 use serde_json::json;
 
@@ -19,7 +18,6 @@ fn registry(workspace: &std::path::Path, autonomy: Autonomy) -> ToolRegistry {
                 network: Vec::new(),
             },
         },
-        Arc::new(AlwaysAllow),
     )
 }
 
@@ -198,18 +196,24 @@ async fn read_only_refuses_commands() {
 }
 
 #[tokio::test]
-async fn an_unlisted_command_is_denied_when_the_approver_says_no() {
+async fn an_unlisted_command_is_denied_by_policy_without_prompting() {
     let dir = workspace();
     let reg = ToolRegistry::new(
         dir.path().to_path_buf(),
         Autonomy::Allowlisted,
         Allowlist::default(),
-        Arc::new(AlwaysDeny),
     );
     let err = run(&reg, "bash", json!({"command": "echo hi"}))
         .await
         .expect_err("must be denied");
-    assert!(err.contains("denied"), "{err}");
+    assert!(
+        err.contains("allowlist"),
+        "the denial must name the allowlist: {err}"
+    );
+    assert!(
+        err.contains("policy.toml"),
+        "it must say where to fix it: {err}"
+    );
 }
 
 #[tokio::test]

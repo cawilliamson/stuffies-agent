@@ -26,7 +26,6 @@ pub enum Action {
     Submit(String),
     Cancel,
     Quit,
-    Answer { allow: bool, scope: &'static str },
     Command(String),
 }
 
@@ -49,7 +48,6 @@ pub struct App {
     pub max_scroll: u16,
     pub follow: bool,
     pub status: Status,
-    pub pending_approval: Option<String>,
     /// true while replaying stored history. `turn.started` is rendered then, but not during
     /// a live turn: the prompt was already echoed when it was submitted.
     pub replaying: bool,
@@ -69,7 +67,6 @@ impl App {
                 model: model.into(),
                 ..Status::default()
             },
-            pending_approval: None,
             replaying: false,
         }
     }
@@ -89,7 +86,7 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
-                // ctrl-c always leaves. any pending approval is denied on the way out.
+                // ctrl-c always leaves.
                 KeyCode::Char('c') | KeyCode::Char('d') => Action::Quit,
                 _ => Action::None,
             };
@@ -102,17 +99,6 @@ impl App {
                     return Action::None;
                 }
                 self.input.clear();
-                if let Some(_id) = self.pending_approval.take() {
-                    let (allow, scope) = match text.as_str() {
-                        "y" | "yes" => (true, "once"),
-                        "t" => (true, "turn"),
-                        "s" => (true, "session"),
-                        "c" => (true, "class"),
-                        _ => (false, "once"),
-                    };
-                    self.push(Role::System, if allow { "allowed" } else { "denied" });
-                    return Action::Answer { allow, scope };
-                }
                 self.follow = true;
                 if text.starts_with('/') {
                     Action::Command(text)

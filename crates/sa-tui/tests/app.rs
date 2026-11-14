@@ -68,14 +68,6 @@ fn ctrl_c_always_quits() {
 }
 
 #[test]
-fn ctrl_c_quits_even_with_an_approval_pending() {
-    // the approval is denied on the way out, not turned into a cancel.
-    let mut app = App::new("s", "m");
-    app.pending_approval = Some("a1".to_owned());
-    assert_eq!(app.on_key(ctrl('c')), Action::Quit);
-}
-
-#[test]
 fn slash_commands_are_not_sent_as_prompts() {
     for command in ["/exit", "/quit"] {
         let mut app = App::new("s", "m");
@@ -96,26 +88,6 @@ fn a_normal_prompt_is_still_a_prompt() {
         app.on_key(key(KeyCode::Enter)),
         Action::Submit("read main.rs".to_owned())
     );
-}
-
-#[test]
-fn approval_scopes_are_selectable() {
-    for (typed_answer, allow, scope) in [
-        ("y", true, "once"),
-        ("t", true, "turn"),
-        ("s", true, "session"),
-        ("c", true, "class"),
-        ("n", false, "once"),
-    ] {
-        let mut app = App::new("s", "m");
-        app.pending_approval = Some("a1".to_owned());
-        typed(&mut app, typed_answer);
-        assert_eq!(
-            app.on_key(key(KeyCode::Enter)),
-            Action::Answer { allow, scope },
-            "answer {typed_answer:?}"
-        );
-    }
 }
 
 #[test]

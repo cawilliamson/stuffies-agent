@@ -374,7 +374,6 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
         }
     });
 
-    let mut pending_approval: Option<String> = None;
     let mut turn_running = false;
     let mut quit_after_turn = false;
 
@@ -398,15 +397,6 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
                         .await
                         .map_err(|e| format!("turn.cancel failed: {e}"))?;
                     println!("\n\x1b[2m[cancelling]\x1b[0m");
-                } else if pending_approval.is_some() {
-                    let approval_id = pending_approval.take().unwrap_or_default();
-                    let _ = client
-                        .call(
-                            "approval.respond",
-                            json!({"approval_id": approval_id, "decision": "deny"}),
-                        )
-                        .await;
-                    println!("\n\x1b[2m[denied]\x1b[0m");
                 } else {
                     break;
                 }
@@ -414,27 +404,6 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
             Incoming::Line(line) => {
                 let text = line.trim();
                 if text.is_empty() {
-                    continue;
-                }
-                if let Some(approval_id) = pending_approval.take() {
-                    let (decision, scope) = match text {
-                        "y" | "yes" => ("allow", "once"),
-                        "t" => ("allow", "turn"),
-                        "s" => ("allow", "session"),
-                        "c" => ("allow", "class"),
-                        _ => ("deny", "once"),
-                    };
-                    client
-                        .call(
-                            "approval.respond",
-                            json!({
-                                "approval_id": approval_id,
-                                "decision": decision,
-                                "scope": scope,
-                            }),
-                        )
-                        .await
-                        .map_err(|e| format!("approval.respond failed: {e}"))?;
                     continue;
                 }
                 if let Some(command) = text.strip_prefix('/') {
@@ -535,20 +504,6 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
                                 break;
                             }
                         }
-                    }
-                    "approval.request" => {
-                        let params = &frame["params"];
-                        let detail = params
-                            .get("detail")
-                            .and_then(Value::as_str)
-                            .unwrap_or("operation");
-                        println!(
-                            "\n\x1b[33m[approval] {detail}\x1b[0m\n  y=once t=turn s=session c=class n=deny"
-                        );
-                        pending_approval = params
-                            .get("approval_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned);
                     }
                     "evicted" => {
                         println!("\n[evicted: another client took this session]");

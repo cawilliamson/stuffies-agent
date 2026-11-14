@@ -80,11 +80,7 @@ pub fn draw<B: ratatui::backend::Backend>(
             .scroll((app.scroll, 0));
         frame.render_widget(body, chunks[0]);
 
-        let title = if app.pending_approval.is_some() {
-            " approval: y=once t=turn s=session c=class n=deny "
-        } else {
-            " prompt "
-        };
+        let title = " prompt ";
         let input = Paragraph::new(app.input.as_str()).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -192,15 +188,6 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
                         let kind = frame["params"]["kind"].as_str().unwrap_or_default();
                         app.on_event(kind, &frame["params"]["payload"]);
                     }
-                    "approval.request" => {
-                        let detail = frame["params"]["detail"]
-                            .as_str()
-                            .unwrap_or("operation")
-                            .to_owned();
-                        app.push(app::Role::System, format!("approval needed: {detail}"));
-                        app.pending_approval =
-                            frame["params"]["approval_id"].as_str().map(str::to_owned);
-                    }
                     "evicted" => {
                         app.push(
                             app::Role::System,
@@ -307,35 +294,12 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
                     }
                 }
             }
-            Action::Answer { allow, scope } => {
-                if let Some(id) = app.pending_approval.take() {
-                    let _ = client
-                        .call(
-                            "approval.respond",
-                            json!({
-                                "approval_id": id,
-                                "decision": if allow { "allow" } else { "deny" },
-                                "scope": scope,
-                            }),
-                        )
-                        .await;
-                }
-            }
         }
 
         draw(&mut terminal, &mut app).map_err(|e| e.to_string())?;
         let _ = std::io::stdout().flush();
     }
 
-    // deny anything still waiting so the daemon does not block until the approval timeout.
-    if let Some(approval_id) = app.pending_approval.take() {
-        let _ = client
-            .call(
-                "approval.respond",
-                json!({"approval_id": approval_id, "decision": "deny"}),
-            )
-            .await;
-    }
     let _ = client
         .call("session.detach", json!({"session_id": session}))
         .await;
