@@ -99,6 +99,7 @@ pub fn draw<B: ratatui::backend::Backend>(
         } else {
             "idle"
         };
+        let rate = format!("{:.1} tok/s ·", app.tok_per_sec);
         let short: String = app.status.session.chars().take(8).collect();
         let status = Line::from(vec![
             ratatui::text::Span::styled(
@@ -107,14 +108,7 @@ pub fn draw<B: ratatui::backend::Backend>(
             ),
             ratatui::text::Span::raw(format!(
                 " {state}  {}  {rate} {} in / {} out  esc interrupt  ctrl-c quit",
-                app.status.model,
-                app.status.prompt_tokens,
-                app.status.completion_tokens,
-                rate = if app.tok_per_sec > 0.05 {
-                    format!("{:.1} tok/s ·", app.tok_per_sec)
-                } else {
-                    "—".to_owned()
-                },
+                app.status.model, app.status.prompt_tokens, app.status.completion_tokens,
             )),
         ]);
         frame.render_widget(Paragraph::new(status), chunks[2]);

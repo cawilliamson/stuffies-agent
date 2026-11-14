@@ -40,6 +40,10 @@ pub struct Status {
 
 /// a sliding window of streamed characters, for the live rate.
 const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+/// how long the delivered-message average is flashed for.
+const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(1200);
+/// half-period of the flash, so it blinks three times.
+const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(200);
 /// characters per token, matching the daemon's compaction estimate.
 const CHARS_PER_TOKEN: f32 = 4.0;
 
@@ -56,9 +60,15 @@ pub struct App {
     /// true while replaying stored history. `turn.started` is rendered then, but not during
     /// a live turn: the prompt was already echoed when it was submitted.
     pub replaying: bool,
-    /// tokens per second over the last few seconds of streaming. zero when idle.
+    /// tokens per second. always a number: the live rate while streaming, the flashing
+    /// average of the last delivered message just after one lands, and zero otherwise.
     pub tok_per_sec: f32,
     samples: std::collections::VecDeque<(std::time::Instant, usize)>,
+    /// characters and start time of the message currently being delivered.
+    turn_chars: usize,
+    turn_started: Option<std::time::Instant>,
+    /// the average of the last delivered message, while it is being flashed.
+    flash: Option<(f32, std::time::Instant)>,
 }
 
 impl App {
@@ -78,12 +88,32 @@ impl App {
             replaying: false,
             tok_per_sec: 0.0,
             samples: std::collections::VecDeque::new(),
+            turn_chars: 0,
+            turn_started: None,
+            flash: None,
         }
     }
 
     /// advances the live rate. called on a timer while a turn is streaming.
     pub fn tick(&mut self) {
-        let now = std::time::Instant::now();
+        self.tick_at(std::time::Instant::now());
+    }
+
+    /// `tick` with an injected clock, so the flash is testable without sleeping.
+    pub fn tick_at(&mut self, now: std::time::Instant) {
+        // a delivered message flashes its average before settling back to zero.
+        if let Some((rate, started)) = self.flash {
+            let elapsed = now.duration_since(started);
+            if elapsed >= FLASH_DURATION {
+                self.flash = None;
+                self.tok_per_sec = 0.0;
+                return;
+            }
+            let phase = (elapsed.as_millis() / FLASH_PHASE.as_millis().max(1)) % 2;
+            self.tok_per_sec = if phase == 0 { rate } else { 0.0 };
+            return;
+        }
+
         while let Some((at, _)) = self.samples.front() {
             if now.duration_since(*at) > RATE_WINDOW {
                 self.samples.pop_front();
@@ -184,6 +214,7 @@ impl App {
                 if !self.replaying {
                     let chars = text.chars().count();
                     if chars > 0 {
+                        self.turn_chars += chars;
                         self.samples.push_back((std::time::Instant::now(), chars));
                     }
                 }
@@ -210,8 +241,7 @@ impl App {
             }
             "turn.completed" => {
                 self.status.turn_running = false;
-                self.tok_per_sec = 0.0;
-                self.samples.clear();
+                self.finish_message();
                 self.status.prompt_tokens +=
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
@@ -219,12 +249,15 @@ impl App {
             }
             "turn.interrupted" => {
                 self.status.turn_running = false;
-                self.tok_per_sec = 0.0;
-                self.samples.clear();
+                self.finish_message();
                 let cause = payload.get("cause").and_then(Value::as_str).unwrap_or("");
                 self.push(Role::Error, format!("[interrupted: {cause}]"));
             }
             "turn.started" => {
+                if !self.replaying {
+                    self.turn_chars = 0;
+                    self.turn_started = Some(std::time::Instant::now());
+                }
                 if self.replaying {
                     if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
                         self.push(Role::User, prompt.to_owned());
@@ -234,6 +267,27 @@ impl App {
             "compaction.applied" => self.push(Role::System, "[context compacted]"),
             _ => {}
         }
+    }
+
+    /// computes the average rate of the message that just finished and starts flashing it.
+    fn finish_message(&mut self) {
+        let chars = self.turn_chars;
+        let elapsed = self
+            .turn_started
+            .map(|at| std::time::Instant::now().duration_since(at).as_secs_f32())
+            .unwrap_or(0.0);
+        self.samples.clear();
+        self.turn_chars = 0;
+        self.turn_started = None;
+
+        if chars == 0 {
+            self.flash = None;
+            self.tok_per_sec = 0.0;
+            return;
+        }
+        let average = (chars as f32 / CHARS_PER_TOKEN) / elapsed.max(0.05);
+        self.flash = Some((average, std::time::Instant::now()));
+        self.tok_per_sec = average;
     }
 
     /// appends streamed assistant text to the current assistant entry, starting one if needed.

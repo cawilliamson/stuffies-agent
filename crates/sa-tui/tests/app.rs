@@ -345,18 +345,41 @@ fn replayed_history_does_not_contribute_to_the_rate() {
 }
 
 #[test]
-fn the_rate_returns_to_zero_when_the_turn_ends() {
+fn a_delivered_message_flashes_its_average_then_settles_at_zero() {
+    use std::time::{Duration, Instant};
+
     let mut app = App::new("s", "m");
     app.status.turn_running = true;
+    app.on_event("turn.started", &json!({"prompt": "go"}));
     app.on_event("llm.delta", &json!({"text": "x".repeat(400)}));
-    app.tick();
-    assert!(app.tok_per_sec > 0.0);
-
     app.on_event(
         "turn.completed",
         &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
     );
-    assert_eq!(app.tok_per_sec, 0.0);
+
+    let at = Instant::now();
+    app.tick_at(at);
+    assert!(app.tok_per_sec > 0.0, "the average must flash first");
+
+    app.tick_at(at + Duration::from_millis(200));
+    assert_eq!(app.tok_per_sec, 0.0, "then blink off");
+
+    app.tick_at(at + Duration::from_millis(400));
+    assert!(app.tok_per_sec > 0.0, "and blink on again");
+
+    app.tick_at(at + Duration::from_millis(2000));
+    assert_eq!(app.tok_per_sec, 0.0, "and settle at zero");
+}
+
+#[test]
+fn the_status_bar_shows_a_number_and_never_a_dash() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    let screen = screen_of(&mut app, 100, 20);
+    assert!(
+        screen.contains("0.0 tok/s"),
+        "idle must read 0.0:\n{screen}"
+    );
+    assert!(!screen.contains('—'), "no dash placeholder:\n{screen}");
 }
 
 #[test]
