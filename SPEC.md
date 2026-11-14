@@ -71,7 +71,7 @@ sa-core     sessions, event log, llm client, tools, policy. no terminal, no stdo
 sa-daemon   unix socket server, session manager, supervision, dispatcher host. library only:
             it has no binary of its own.
 sa-client   typed client library: attach, subscribe, replay, send, approve.
-sa-tui      terminal front end, layout theme engine. view only.
+sa-tui      terminal front end: session tabs, framed transcript, prompt. view only.
 sa-web      http carrier, auth, embedded ui assets. no daemon, no terminal.
 sa          binary: `sa attach`, `sa run`, `sa rpc --stdio`, `sa daemon`, `sa handoff`,
             `sa init`, `sa export`, `sa knowledge`.
@@ -1057,21 +1057,22 @@ streamed text accumulates into one assistant entry; tool calls and results rende
 transcript; `esc` interrupts a running turn and `ctrl-c` quits; attaching to a session with
 history replays it.
 
-**v1.3 — theme engine.** Layout is a pluggable concern, not a hardcoded screen.
+**v1.3 — terminal workspace.** One visual, built for real work: several sessions side by
+side in tabs, and every transcript entry in its own frame.
 
-Each theme is a single file under `crates/sa-tui/src/theme/themes/` implementing a `Theme`
-trait that owns the entire screen: pane splits, borders, sidebars, top and bottom bars,
-gutters and colour. A registry macro in `theme/mod.rs` lists the compiled-in themes, so
-adding one is a file plus a line and removing one is the reverse. Nothing is loaded at
-runtime. `/theme` lists the available themes and `/theme <name>` switches.
+`DECIDED`: there is no theming layer. An earlier revision carried a pluggable theme engine
+with 24 layouts; it was removed in favour of a single deliberate design. Layout is code, not
+configuration, until there is a reason for it not to be.
 
-Scope limits: themes are compiled in, not discovered from disk, and there is no config file
-for the default theme. The `Theme` trait also declares how many rows the layout gives the
-transcript, so scroll pinning stays correct per layout.
+Sub-work: a tab strip with one tab per session, `shift+tab` to cycle, `shift+ctrl+n` to open
+a session and `shift+ctrl+w` to close one; per-tab transcript, input, counters and scroll;
+daemon events routed to the tab that owns the session; each transcript entry rendered as its
+own titled frame; the prompt box and powerline status bar from v1.1 underneath.
 
-Acceptance: every compiled-in theme renders without panicking at 20x6 through 200x60;
-theme names are unique and each has a description; switching theme changes the rendered
-screen; at least 20 themes exist and differ in layout, not only in colour.
+Acceptance: tabs open, cycle and close, and the last tab cannot be closed; each tab keeps its
+own transcript, input and counters, and events reach only the owning tab; transcript entries
+render as separately framed windows with no raw role gutters; the layout renders without
+panicking at 20x6 through 200x60.
 
 **v2.0 — web interface.** The general surface: sessions, live transcripts, denials, cost
 and manual compaction in a browser.
