@@ -348,9 +348,10 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
 
     // a terminal gets the tui; a pipe gets plain lines, which is also what the tests drive.
     if !line && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        // empty means "not known yet": the tui queries the daemon and omits the area.
         let model = attached["session"]["model"]
             .as_str()
-            .unwrap_or("unknown")
+            .unwrap_or_default()
             .to_owned();
         return sa_tui::run(&mut client, session_id, model, git_branch()).await;
     }

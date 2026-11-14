@@ -482,7 +482,7 @@ fn the_flash_is_a_red_background_behind_the_figure() {
     assert!(!lit.is_empty(), "the figure must be highlighted");
     let text: String = lit.iter().map(|cell| cell.symbol()).collect();
     assert!(
-        text.contains("tok/s"),
+        text.contains("t/s"),
         "the highlighted run is the rate: {text}"
     );
 }
@@ -491,10 +491,7 @@ fn the_flash_is_a_red_background_behind_the_figure() {
 fn the_status_bar_shows_a_number_and_never_a_dash() {
     let mut app = App::new("session-abcdef", "deepseek");
     let screen = screen_of(&mut app, 100, 20);
-    assert!(
-        screen.contains("0.0 tok/s"),
-        "idle must read 0.0:\n{screen}"
-    );
+    assert!(screen.contains("0.0 t/s"), "idle must read 0.0:\n{screen}");
     assert!(!screen.contains('—'), "no dash placeholder:\n{screen}");
 }
 
@@ -507,7 +504,7 @@ fn the_rate_appears_in_the_status_bar_while_streaming() {
 
     let screen = screen_of(&mut app, 100, 20);
     assert!(
-        screen.contains("tok/s"),
+        screen.contains("t/s"),
         "status bar must show the rate:\n{screen}"
     );
 }
@@ -527,7 +524,7 @@ fn the_status_bar_is_split_into_labelled_segments() {
     let mut app = App::new("session-abcdef", "deepseek");
     let screen = screen_of(&mut app, 120, 20);
 
-    for expected in ["session-", "deepseek", "0.0 tok/s", "0/0"] {
+    for expected in ["session-", "deepseek", "0.0 t/s", "0/0"] {
         assert!(screen.contains(expected), "missing {expected:?}:\n{screen}");
     }
     assert!(

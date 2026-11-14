@@ -121,29 +121,51 @@ pub async fn run(
     socket::prepare_runtime_dir(&cfg.runtime_dir)?;
     std::fs::create_dir_all(&cfg.state_dir)?;
 
-    // ask the endpoint what it serves rather than inventing a name.
-    let models = provider.list_models().await.unwrap_or_default();
-    let model = if cfg.model.trim().is_empty() {
-        match models.first() {
-            Some(discovered) => {
-                tracing::info!(%discovered, "resolved model from the endpoint");
-                discovered.clone()
+    // ask the endpoint what it serves rather than inventing a name. if it cannot answer
+    // yet, keep asking in the background: the bar simply omits the area until it can.
+    let mut discovered = Vec::new();
+    if cfg.model.trim().is_empty() {
+        for attempt in 1..=3 {
+            match provider.list_models().await {
+                Ok(models) if !models.is_empty() => {
+                    tracing::info!(model = %models[0], "resolved model from the endpoint");
+                    discovered = models;
+                    break;
+                }
+                Ok(_) => tracing::debug!(attempt, "endpoint reported no models"),
+                Err(err) => tracing::debug!(attempt, %err, "model discovery failed"),
             }
-            None => {
-                tracing::warn!("endpoint did not report a model");
-                "unknown".to_owned()
-            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     } else {
-        cfg.model.clone()
-    };
+        discovered = vec![cfg.model.clone()];
+    }
+
+    let models: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(discovered));
+    if models.lock().map(|m| m.is_empty()).unwrap_or(true) {
+        let slot = Arc::clone(&models);
+        let provider = Arc::clone(&provider);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                if let Ok(found) = provider.list_models().await {
+                    if let Some(first) = found.first() {
+                        tracing::info!(model = %first, "resolved model from the endpoint");
+                        if let Ok(mut guard) = slot.lock() {
+                            *guard = found;
+                        }
+                        return;
+                    }
+                }
+            }
+        });
+    }
 
     let store = Store::open(&cfg.db_path)?;
     let manager = Arc::new(Manager::new(
         store,
         Arc::new(ManagerConfig {
             host_fingerprint: cfg.host_fingerprint.clone(),
-            default_model: model.clone(),
             provider,
             max_tokens: std::env::var("SA_MAX_TOKENS")
                 .ok()

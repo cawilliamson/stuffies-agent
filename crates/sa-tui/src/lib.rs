@@ -69,12 +69,15 @@ fn status_bar(app: &App, width: u16) -> Line<'static> {
         });
     }
 
-    segments.push(Segment {
-        icon: ICON_MODEL,
-        text: app.status.model.clone(),
-        fg: rgb(0xe0, 0xe8, 0xff),
-        bg: rgb(0x2f, 0x45, 0x66),
-    });
+    // never a placeholder: the area is omitted until the real id is known.
+    if !app.status.model.is_empty() {
+        segments.push(Segment {
+            icon: ICON_MODEL,
+            text: app.status.model.clone(),
+            fg: rgb(0xe0, 0xe8, 0xff),
+            bg: rgb(0x2f, 0x45, 0x66),
+        });
+    }
 
     let (rate_fg, rate_bg) = if app.flash_highlight {
         (rgb(0xff, 0xff, 0xff), rgb(0xc0, 0x30, 0x30))
@@ -83,7 +86,7 @@ fn status_bar(app: &App, width: u16) -> Line<'static> {
     };
     segments.push(Segment {
         icon: ICON_SPEED,
-        text: format!("{:.1} tok/s", app.tok_per_sec),
+        text: format!("{:.1} t/s", app.tok_per_sec),
         fg: rate_fg,
         bg: rate_bg,
     });
@@ -232,6 +235,19 @@ pub async fn run(
 
     let mut app = App::new(session.clone(), model.clone());
     app.branch = branch;
+
+    // the cli asks the daemon what it is serving rather than displaying a placeholder.
+    if app.status.model.is_empty() {
+        if let Ok(list) = client.call("model.list", json!({})).await {
+            if let Some(id) = list
+                .as_array()
+                .and_then(|models| models.first())
+                .and_then(|m| m["id"].as_str())
+            {
+                app.status.model = id.to_owned();
+            }
+        }
+    }
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

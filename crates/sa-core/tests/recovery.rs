@@ -14,14 +14,13 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
         store,
         Arc::new(ManagerConfig {
             host_fingerprint: "test-host".to_owned(),
-            default_model: "test-model".to_owned(),
             provider,
             max_tokens: None,
             reasoning_effort: None,
             context_limit: 128_000,
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
-            models: Vec::new(),
+            models: Arc::new(std::sync::Mutex::new(Vec::new())),
         }),
     ))
 }

@@ -55,15 +55,14 @@ fn not_found(id: &str) -> RpcError {
 
 pub struct ManagerConfig {
     pub host_fingerprint: String,
-    pub default_model: String,
     pub provider: Arc<dyn Provider>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
     pub context_limit: u64,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
-    /// model ids the endpoint reports. empty when discovery failed.
-    pub models: Vec<String>,
+    /// model ids the endpoint reports. shared so a background refresher can fill it in.
+    pub models: Arc<Mutex<Vec<String>>>,
 }
 
 struct Attached {
@@ -200,7 +199,10 @@ impl Manager {
             title: title.unwrap_or_else(|| default_title(&canonical)),
             cwd: canonical.display().to_string(),
             repo_id: None,
-            model: Some(self.config.default_model.clone()),
+            model: {
+                let model = self.default_model();
+                (!model.is_empty()).then_some(model)
+            },
             owner_host: self.config.host_fingerprint.clone(),
             owner_epoch: 0,
         })?;
@@ -226,16 +228,20 @@ impl Manager {
         })
     }
 
-    /// the model ids the endpoint reported at startup.
+    /// the model ids the endpoint reports. may be empty until discovery succeeds.
     #[must_use]
     pub fn models(&self) -> Vec<String> {
-        self.config.models.clone()
+        self.config
+            .models
+            .lock()
+            .map(|models| models.clone())
+            .unwrap_or_default()
     }
 
-    /// the model turns use when a session has not selected one.
+    /// the model turns use when a session has not selected one. empty when not yet known.
     #[must_use]
-    pub fn default_model(&self) -> &str {
-        &self.config.default_model
+    pub fn default_model(&self) -> String {
+        self.models().first().cloned().unwrap_or_default()
     }
 
     pub fn list_sessions(
@@ -464,7 +470,7 @@ impl Manager {
             &json!({
                 "turn_id": turn_id,
                 "prompt": prompt,
-                "model": self.config.default_model,
+                "model": self.default_model(),
                 "detach": detach,
                 "client": attached_client,
             }),
@@ -558,10 +564,7 @@ impl Manager {
         });
         let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::new(PathBuf::from(&row.cwd)));
 
-        let model = row
-            .model
-            .clone()
-            .unwrap_or_else(|| self.config.default_model.clone());
+        let model = row.model.clone().unwrap_or_else(|| self.default_model());
 
         // compaction is checked before the turn, and only ever appends (spec 10.4).
         if let Err(err) = self.maybe_compact(&session_id, &model).await {
@@ -599,9 +602,7 @@ impl Manager {
         let request = TurnRequest {
             turn_id: turn_id.clone(),
             prompt,
-            model: row
-                .model
-                .unwrap_or_else(|| self.config.default_model.clone()),
+            model: row.model.unwrap_or_else(|| self.default_model()),
             history,
             compaction_summary,
             context: crate::workspace::context(&workspace),

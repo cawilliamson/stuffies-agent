@@ -324,12 +324,6 @@ impl Dispatcher {
 
     fn model_list(&self) -> Result<Value, RpcError> {
         let models = self.manager.models();
-        if models.is_empty() {
-            return Ok(json!([{
-                "id": self.manager.default_model(),
-                "capabilities": ["tools", "streaming"],
-            }]));
-        }
         Ok(json!(models
             .into_iter()
             .map(|id| json!({"id": id, "capabilities": ["tools", "streaming"]}))
