@@ -9,14 +9,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use sa_proto::session::{Autonomy, Event, SessionState, SessionSummary};
+use sa_proto::session::{Event, SessionState, SessionSummary};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 /// payload fields larger than this are spilled to the blob table (spec 6.3).
 pub const BLOB_THRESHOLD: usize = 64 * 1024;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -48,7 +48,6 @@ pub struct NewSession {
     pub title: String,
     pub cwd: String,
     pub repo_id: Option<String>,
-    pub autonomy: Autonomy,
     pub owner_host: String,
     pub owner_epoch: u64,
 }
@@ -64,7 +63,6 @@ pub struct SessionRow {
     pub owner_epoch: u64,
     pub cwd: String,
     pub repo_id: Option<String>,
-    pub autonomy: Autonomy,
     pub model: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -78,7 +76,6 @@ impl SessionRow {
             title: self.title.clone(),
             state: self.state,
             owner_epoch: self.owner_epoch,
-            autonomy: self.autonomy,
             model: self.model.clone(),
             updated_at: self.updated_at,
         }
@@ -98,22 +95,6 @@ pub fn now_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
-
-fn autonomy_str(autonomy: Autonomy) -> &'static str {
-    match autonomy {
-        Autonomy::ReadOnly => "read-only",
-        Autonomy::Allowlisted => "allowlisted",
-        Autonomy::Full => "full",
-    }
-}
-
-fn parse_autonomy(raw: &str) -> Autonomy {
-    match raw {
-        "full" => Autonomy::Full,
-        "allowlisted" => Autonomy::Allowlisted,
-        _ => Autonomy::ReadOnly,
-    }
 }
 
 impl Store {
@@ -150,8 +131,8 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO sessions (id, title, parent_id, state, owner_host, owner_epoch, cwd,
-                                   repo_id, autonomy, model, created_at, updated_at)
-             VALUES (?1, ?2, NULL, 'active', ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8)",
+                                   repo_id, model, created_at, updated_at)
+             VALUES (?1, ?2, NULL, 'active', ?3, ?4, ?5, ?6, NULL, ?7, ?7)",
             params![
                 new.id,
                 new.title,
@@ -159,7 +140,6 @@ impl Store {
                 i64::try_from(new.owner_epoch).unwrap_or(i64::MAX),
                 new.cwd,
                 new.repo_id,
-                autonomy_str(new.autonomy),
                 now,
             ],
         )?;
@@ -173,7 +153,7 @@ impl Store {
         let row = conn
             .query_row(
                 "SELECT id, title, parent_id, state, owner_host, owner_epoch, cwd, repo_id,
-                        autonomy, model, created_at, updated_at
+                        model, created_at, updated_at
                  FROM sessions WHERE id = ?1",
                 params![id],
                 map_session,
@@ -186,11 +166,11 @@ impl Store {
         let conn = self.conn()?;
         let sql = if include_deleted {
             "SELECT id, title, parent_id, state, owner_host, owner_epoch, cwd, repo_id,
-                    autonomy, model, created_at, updated_at
+                    model, created_at, updated_at
              FROM sessions ORDER BY updated_at DESC"
         } else {
             "SELECT id, title, parent_id, state, owner_host, owner_epoch, cwd, repo_id,
-                    autonomy, model, created_at, updated_at
+                    model, created_at, updated_at
              FROM sessions WHERE state != 'deleted' ORDER BY updated_at DESC"
         };
         let mut stmt = conn.prepare(sql)?;
@@ -490,7 +470,6 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SessionRow, S
     let Some(state) = SessionState::parse(&state_raw) else {
         return Ok(Err(StoreError::UnknownState(state_raw)));
     };
-    let autonomy_raw: String = row.get(8)?;
     Ok(Ok(SessionRow {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -500,10 +479,9 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SessionRow, S
         owner_epoch: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
         cwd: row.get(6)?,
         repo_id: row.get(7)?,
-        autonomy: parse_autonomy(&autonomy_raw),
-        model: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        model: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     }))
 }
 
@@ -606,7 +584,6 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
              owner_epoch INTEGER NOT NULL,
              cwd TEXT NOT NULL,
              repo_id TEXT,
-             autonomy TEXT NOT NULL,
              model TEXT,
              created_at INTEGER NOT NULL,
              updated_at INTEGER NOT NULL
@@ -629,6 +606,21 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     let version: i64 = conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
         row.get(0)
     })?;
+
+    // v2 dropped the autonomy column when the permission system was removed.
+    if version < SCHEMA_VERSION {
+        let has_column: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'autonomy'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_column > 0 {
+            conn.execute_batch("ALTER TABLE sessions DROP COLUMN autonomy;")?;
+        }
+        conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
+        return Ok(());
+    }
+
     if version != SCHEMA_VERSION {
         return Err(StoreError::UnknownState(format!(
             "schema version {version}, expected {SCHEMA_VERSION}"

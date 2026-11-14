@@ -3,35 +3,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// per-session autonomy level (spec 8.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Autonomy {
-    ReadOnly,
-    Allowlisted,
-    Full,
-}
-
-impl Autonomy {
-    /// whether a write inside the workspace is permitted.
-    #[must_use]
-    pub fn allows_write(self) -> bool {
-        !matches!(self, Self::ReadOnly)
-    }
-
-    /// whether an allowlisted command may run.
-    #[must_use]
-    pub fn allows_command(self) -> bool {
-        !matches!(self, Self::ReadOnly)
-    }
-
-    /// whether arbitrary commands and network access are permitted.
-    #[must_use]
-    pub fn is_unrestricted(self) -> bool {
-        matches!(self, Self::Full)
-    }
-}
-
 /// session lifecycle state (spec 5.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -94,7 +65,6 @@ pub struct SessionSummary {
     pub title: String,
     pub state: SessionState,
     pub owner_epoch: u64,
-    pub autonomy: Autonomy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub updated_at: i64,
@@ -111,7 +81,6 @@ pub struct Usage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSessionParams {
     pub cwd: String,
-    pub autonomy: Autonomy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }
@@ -213,28 +182,6 @@ pub mod kinds {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn autonomy_round_trips_as_kebab_case() {
-        for (value, raw) in [
-            (Autonomy::ReadOnly, "\"read-only\""),
-            (Autonomy::Allowlisted, "\"allowlisted\""),
-            (Autonomy::Full, "\"full\""),
-        ] {
-            assert_eq!(serde_json::to_string(&value).expect("ser"), raw);
-            let back: Autonomy = serde_json::from_str(raw).expect("de");
-            assert_eq!(back, value);
-        }
-    }
-
-    #[test]
-    fn read_only_permits_no_writes_or_commands() {
-        assert!(!Autonomy::ReadOnly.allows_write());
-        assert!(!Autonomy::ReadOnly.allows_command());
-        assert!(Autonomy::Allowlisted.allows_write());
-        assert!(!Autonomy::Allowlisted.is_unrestricted());
-        assert!(Autonomy::Full.is_unrestricted());
-    }
 
     #[test]
     fn session_state_parses_and_only_active_is_writable() {

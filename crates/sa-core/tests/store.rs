@@ -1,7 +1,7 @@
 //! behaviour tests for the event log (spec 14, v1.0 task 2).
 
 use sa_core::store::{NewSession, Store, BLOB_THRESHOLD};
-use sa_proto::session::{Autonomy, SessionState};
+use sa_proto::session::SessionState;
 use serde_json::json;
 
 fn session(store: &Store, id: &str) -> sa_core::store::SessionRow {
@@ -11,7 +11,6 @@ fn session(store: &Store, id: &str) -> sa_core::store::SessionRow {
             title: "test".to_owned(),
             cwd: "/tmp".to_owned(),
             repo_id: None,
-            autonomy: Autonomy::Allowlisted,
             owner_host: "host".to_owned(),
             owner_epoch: 0,
         })

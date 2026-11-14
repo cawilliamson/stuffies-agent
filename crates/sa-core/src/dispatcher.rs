@@ -168,7 +168,7 @@ impl Dispatcher {
         let params: CreateSessionParams = parse(params)?;
         let result = self
             .manager
-            .create_session(&params.cwd, params.autonomy, params.title, conn.client())
+            .create_session(&params.cwd, params.title, conn.client())
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!(result))
     }

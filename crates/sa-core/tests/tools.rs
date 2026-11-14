@@ -4,21 +4,11 @@ use std::path::PathBuf;
 
 use sa_core::agent::ToolExecutor;
 use sa_core::llm::ToolCall;
-use sa_core::tools::{Allowlist, AllowlistedPolicy, ToolRegistry};
-use sa_proto::session::Autonomy;
+use sa_core::tools::ToolRegistry;
 use serde_json::json;
 
-fn registry(workspace: &std::path::Path, autonomy: Autonomy) -> ToolRegistry {
-    ToolRegistry::new(
-        workspace.to_path_buf(),
-        autonomy,
-        Allowlist {
-            allowlisted: AllowlistedPolicy {
-                commands: vec!["echo".to_owned(), "git status".to_owned()],
-                network: Vec::new(),
-            },
-        },
-    )
+fn registry(workspace: &std::path::Path) -> ToolRegistry {
+    ToolRegistry::new(workspace.to_path_buf())
 }
 
 fn call(name: &str, args: serde_json::Value) -> ToolCall {
@@ -48,7 +38,7 @@ async fn run(
 #[tokio::test]
 async fn read_returns_file_contents() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let out = run(&reg, "read", json!({"path": "main.rs"}))
         .await
         .expect("read");
@@ -58,7 +48,7 @@ async fn read_returns_file_contents() {
 #[tokio::test]
 async fn write_creates_a_file_and_reports_size() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let out = run(
         &reg,
         "write",
@@ -76,7 +66,7 @@ async fn write_creates_a_file_and_reports_size() {
 #[tokio::test]
 async fn write_creates_missing_parent_directories() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     run(&reg, "write", json!({"path": "a/b/c.txt", "content": "x"}))
         .await
         .expect("write");
@@ -86,7 +76,7 @@ async fn write_creates_missing_parent_directories() {
 #[tokio::test]
 async fn edit_replaces_one_unique_occurrence() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     run(
         &reg,
         "edit",
@@ -104,7 +94,7 @@ async fn edit_replaces_one_unique_occurrence() {
 async fn edit_refuses_an_ambiguous_match() {
     let dir = workspace();
     std::fs::write(dir.path().join("dup.txt"), "x x").expect("write");
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let err = run(
         &reg,
         "edit",
@@ -118,7 +108,7 @@ async fn edit_refuses_an_ambiguous_match() {
 #[tokio::test]
 async fn ls_lists_directory_entries() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let out = run(&reg, "ls", json!({"path": "."})).await.expect("ls");
     assert!(out.contains("main.rs"), "{out}");
     assert!(out.contains("src/"), "{out}");
@@ -127,7 +117,7 @@ async fn ls_lists_directory_entries() {
 #[tokio::test]
 async fn find_matches_names() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let out = run(&reg, "find", json!({"pattern": "lib.rs"}))
         .await
         .expect("find");
@@ -137,7 +127,7 @@ async fn find_matches_names() {
 #[tokio::test]
 async fn grep_returns_matching_lines() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let out = run(&reg, "grep", json!({"pattern": "pub fn"}))
         .await
         .expect("grep");
@@ -146,9 +136,9 @@ async fn grep_returns_matching_lines() {
 }
 
 #[tokio::test]
-async fn bash_runs_an_allowlisted_command() {
+async fn bash_runs_a_command() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let out = run(&reg, "bash", json!({"command": "echo hi"}))
         .await
         .expect("bash");
@@ -159,77 +149,16 @@ async fn bash_runs_an_allowlisted_command() {
 #[tokio::test]
 async fn bash_reports_a_non_zero_exit_as_a_result_not_a_failure() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let out = run(&reg, "bash", json!({"command": "git status"})).await;
     // git status in a non-repo exits non-zero; that is a result, not a tool error
     assert!(out.is_ok(), "{out:?}");
 }
 
 #[tokio::test]
-async fn read_only_refuses_writes() {
-    let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::ReadOnly);
-    let err = run(&reg, "write", json!({"path": "x.txt", "content": "y"}))
-        .await
-        .expect_err("read-only must refuse writes");
-    assert!(err.contains("read-only"), "{err}");
-    assert!(!dir.path().join("x.txt").exists());
-}
-
-#[tokio::test]
-async fn read_only_permits_reads() {
-    let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::ReadOnly);
-    run(&reg, "read", json!({"path": "main.rs"}))
-        .await
-        .expect("read");
-}
-
-#[tokio::test]
-async fn read_only_refuses_commands() {
-    let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::ReadOnly);
-    let err = run(&reg, "bash", json!({"command": "echo hi"}))
-        .await
-        .expect_err("read-only must refuse commands");
-    assert!(err.contains("read-only"), "{err}");
-}
-
-#[tokio::test]
-async fn an_unlisted_command_is_denied_by_policy_without_prompting() {
-    let dir = workspace();
-    let reg = ToolRegistry::new(
-        dir.path().to_path_buf(),
-        Autonomy::Allowlisted,
-        Allowlist::default(),
-    );
-    let err = run(&reg, "bash", json!({"command": "echo hi"}))
-        .await
-        .expect_err("must be denied");
-    assert!(
-        err.contains("allowlist"),
-        "the denial must name the allowlist: {err}"
-    );
-    assert!(
-        err.contains("policy.toml"),
-        "it must say where to fix it: {err}"
-    );
-}
-
-#[tokio::test]
-async fn full_autonomy_runs_any_command() {
-    let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Full);
-    let out = run(&reg, "bash", json!({"command": "echo unrestricted"}))
-        .await
-        .expect("bash");
-    assert!(out.contains("unrestricted"), "{out}");
-}
-
-#[tokio::test]
 async fn a_path_escaping_the_workspace_is_refused() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let err = run(&reg, "read", json!({"path": "../outside.txt"}))
         .await
         .expect_err("escape must be refused");
@@ -239,7 +168,7 @@ async fn a_path_escaping_the_workspace_is_refused() {
 #[tokio::test]
 async fn bash_runs_in_the_workspace() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Full);
+    let reg = registry(dir.path());
     let out = run(&reg, "bash", json!({"command": "pwd"}))
         .await
         .expect("bash");
@@ -250,7 +179,7 @@ async fn bash_runs_in_the_workspace() {
 #[tokio::test]
 async fn an_unknown_tool_is_refused() {
     let dir = workspace();
-    let reg = registry(dir.path(), Autonomy::Allowlisted);
+    let reg = registry(dir.path());
     let err = run(&reg, "nope", json!({}))
         .await
         .expect_err("unknown tool");

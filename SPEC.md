@@ -37,7 +37,7 @@ The workflow this design exists to serve:
 
 1. Start work on the laptop with a local daemon.
 2. Hand the session to a remote daemon before shutting the laptop down.
-3. The remote daemon continues the work unattended, under a restricted autonomy policy.
+3. The remote daemon continues the work unattended.
 4. In the morning, attach to the remote daemon and read what happened.
 5. Hand the session back to the laptop and continue locally.
 
@@ -134,7 +134,7 @@ at 1.
 Session lifecycle:
 
 ```text
-session.create   {cwd, autonomy, title?}          -> {session_id, seq}
+session.create   {cwd, title?}                    -> {session_id, seq}
 session.list     {include_deleted?}               -> [{id, title, state, owner, updated_at}]
 session.attach   {session_id, from_seq, limit?,   -> {session, events[], more, next_seq}
                   takeover?}
@@ -321,7 +321,7 @@ On first start with the listener enabled, the daemon generates `$XDG_STATE_HOME/
 - Every mutating request must additionally carry `X-SA-Token: <session value>`. A custom
   header cannot be set by a cross-origin form post, so this is the CSRF defence and it needs
   no per-form token machinery.
-- `Origin` and `Referer`, when present, must match the configured allowlist.
+- `Origin` and `Referer`, when present, must match the configured origin list.
 - Login attempts are rate limited to 5 per minute per peer address.
 
 `DECIDED`: the URL token is exchanged once and is not a bearer credential for `/rpc`. A
@@ -331,7 +331,7 @@ leaked URL is not a leak.
 
 The web surface does not weaken §1.2. A browser is an untrusted client speaking JSON-RPC over
 a different carrier; it has exactly the authority any other client has, which is none.
-Authorisation — autonomy and knowledge namespaces — is decided in the dispatcher,
+Authorisation — knowledge namespaces — is decided in the dispatcher,
 never in the UI.
 
 #### Assets
@@ -376,11 +376,11 @@ error on import, never a best-effort decode.
 Common envelope, not repeated below: `seq`, `kind`, `at` (unix seconds).
 
 ```text
-session.created     {v, title, cwd, repo_id, autonomy,
+session.created     {v, title, cwd, repo_id,
                      owner:{host_fingerprint, epoch}}
 session.renamed     {v, title}
 session.state       {v, state, reason?}
-turn.started        {v, turn_id, prompt, model, autonomy, detach, resumed_from?}
+turn.started        {v, turn_id, prompt, model, detach, resumed_from?}
 turn.completed      {v, turn_id, finish_reason, usage:{prompt_tokens,
                      completion_tokens, cost_micros?}}
 turn.interrupted    {v, turn_id, cause, pending_call_id?}
@@ -501,7 +501,7 @@ events(id INTEGER PRIMARY KEY, session_id TEXT, seq INTEGER, kind TEXT,
        payload TEXT, created_at INTEGER, UNIQUE(session_id, seq))
 sessions(id TEXT PRIMARY KEY, title TEXT, parent_id TEXT, state TEXT,
          owner_host TEXT, owner_epoch INTEGER, cwd TEXT, repo_id TEXT,
-         autonomy TEXT, model TEXT, created_at INTEGER, updated_at INTEGER)
+         model TEXT, created_at INTEGER, updated_at INTEGER)
 blobs(hash TEXT PRIMARY KEY, bytes INTEGER, data BLOB)
 web_sessions(id TEXT PRIMARY KEY, created_at INTEGER, expires_at INTEGER, peer TEXT)
 schema_version(version INTEGER)
@@ -521,9 +521,7 @@ Everything sa needs lives in the two XDG roots:
 
 ```text
 $XDG_CONFIG_HOME/sa/                     user-authored, deployable from dotfiles
-  policy.toml                            global command allowlist (spec 8.2)
   web.toml                               web listener config (spec 4.3)
-  workspaces/<slug>/policy.toml          per-workspace override
   workspaces/<slug>/SOUL.md              persona, read only
   workspaces/<slug>/AGENTS.md            project context, read only
 
@@ -555,7 +553,7 @@ A handoff is a single container file, written atomically (temp file plus rename)
 
 ```text
 manifest.json     format_version, session_id, owner_epoch, seq_range,
-                  content_hash, created_at, source_host, workspace, autonomy, mode
+                  content_hash, created_at, source_host, workspace, mode
 events.jsonl      the full event log, one JSON object per line, in seq order
 workspace.patch   unified diff of the dirty worktree
 untracked/        contents of untracked files, size-capped
@@ -660,7 +658,7 @@ cleanly is a refusal, not a fuzz.
 the duration of any turn that can write. The lock file is
 `$XDG_RUNTIME_DIR/sa/locks/<sha256(git-common-dir)>.lock`.
 
-This exists because §8.4 creates a checkpoint commit and because two sessions sharing an
+This exists because §8.1 creates a checkpoint commit and because two sessions sharing an
 index will otherwise corrupt each other's staging state. A second session in the same
 repository waits for the lock rather than failing; `turn.status` reports
 `state: waiting_workspace`.
@@ -692,69 +690,15 @@ A bundle is data, never code. Import never executes anything from it.
 
 ---
 
-## 8. Autonomy and policy
+## 8. Workspace safety
 
-### 8.1 Levels
+`DECIDED`: there is no permission system. No autonomy levels, no allowlist, no policy file,
+no approval prompts. A tool runs, or it fails because the path escaped the workspace.
 
-Per session, recorded in the session row and in the bundle:
+The one guard that remains is the checkpoint, because it protects work rather than gating
+the agent.
 
-```text
-read-only     inspect and report; no writes, no commands
-allowlisted   writes inside the workspace, allowlisted commands, no network
-full          unrestricted, including network and destructive commands
-```
-
-`DECIDED`: unattended handoff defaults to `allowlisted`. `full` while detached requires
-explicit opt-in at handoff time.
-
-Knowledge writes are permitted under `allowlisted`. The knowledge root (§11) lives outside
-the workspace, so the workspace checkpoint cannot restore it; the recovery story for
-knowledge is that the root is a git repository (§11.1), not the checkpoint.
-
-### 8.2 Allowlist
-
-`allowlisted` needs a concrete allowlist, so it has one:
-
-```text
-$XDG_CONFIG_HOME/sa/policy.toml                     global default
-$XDG_CONFIG_HOME/sa/workspaces/<slug>/policy.toml   per-workspace override
-
-  [allowlisted]
-  commands = ["cargo build", "cargo test", "git diff", "git status", "rg", "ls"]
-  network  = []          # commands permitted to reach the network
-```
-
-The file lives outside the workspace (§6.1) and is never transferred. The per-workspace
-override wins when it exists. Matching is by argv prefix, not by substring, and the resolved
-binary must be on a fixed PATH.
-
-Network denial under `allowlisted` is enforced with `unshare -n` when available. When it is
-not, the daemon records a `session.state` event at turn start carrying
-`reason: network_isolation_unavailable`, and the guarantee downgrades to allowlist-only for
-that turn. The downgrade is visible in history rather than assumed away.
-
-`DECIDED`: the checkpoint in §8.4 is the real guarantee. Network isolation is defence in
-depth, not the contract.
-
-### 8.3 Enforcement
-
-`DECIDED`: there is no interactive approval. The policy is static configuration and the
-daemon applies it without asking.
-
-- `read-only` refuses every write and every command.
-- `allowlisted` permits writes inside the workspace, and commands whose argv prefix matches
-  `policy.toml` (§8.2). Anything else is refused.
-- `full` permits everything.
-
-A refusal is an ordinary `tool.failed` with `class: denied`, carrying the command and the
-path of the policy file that would permit it. The model sees the refusal and works around
-it, the same way it would a missing file. A denial never blocks a turn and never expires.
-
-This replaces the earlier approval queue, which needed a live client to answer, blocked
-unattended turns until a timeout, and could not resume a turn once answered. Nothing in the
-agent loop now waits on a human.
-
-### 8.4 Unattended safety net
+### 8.1 Unattended safety net
 
 Before any unattended turn the daemon creates a checkpoint and records it in a `checkpoint`
 event. The checkpoint is a commit built against a temporary index, so neither the worktree
@@ -790,8 +734,6 @@ ones at checkpoint time. Nothing outside `refs/sa/` is ever touched.
 Checkpoints are taken under the workspace lock (§7.4). A checkpoint failure aborts the turn
 before any tool runs; an unattended turn never starts without one.
 
----
-
 ## 9. Tools
 
 Initial set, all executed in the daemon process with the session's `cwd`:
@@ -810,7 +752,6 @@ Rules:
 
 - Paths are canonicalised and must resolve inside the session workspace. Escapes are
   errors, not clamps. Symlinks are resolved before the check.
-- Every tool declares a `PermissionClass`; the daemon enforces it per §8.
 - Tool output is bounded; truncation is recorded in the event so a client knows it saw a
   partial result. The bound is 256 KiB before blob spill (§6.3).
 - Tools are async and cancellable. `turn.cancel` drops in-flight tool futures and appends
@@ -1021,7 +962,7 @@ Each of these has a required behaviour and a test in the milestone that introduc
 | two hosts claim the session | lower epoch loses; its writes are rejected, not merged |
 | two sessions, one repository | second turn waits on the workspace lock; reported as `waiting_workspace` |
 | disk full | turn aborts inside a transaction; log stays consistent |
-| command outside the allowlist under `allowlisted` | `tool.failed` with `class: denied`, naming the policy path; the turn continues |
+| tool arguments that escape the workspace | `tool.failed`, path refused, the turn continues |
 | model endpoint unavailable | turn fails, recorded, session remains resumable |
 | partial bundle write | impossible: temp file plus rename, verified by hash before acceptance |
 | unknown event kind or payload version on import | hard rejection, no partial import |
@@ -1054,7 +995,7 @@ Sub-work, in order:
 2. sqlite event log, blob spill, replay, session lifecycle, attach exclusivity, crash
    recovery.
 3. OpenAI-compatible provider, streaming into the log, usage accounting.
-4. Tools, permission classes, autonomy levels, allowlist, workspace lock, checkpoint.
+4. Tools, workspace lock, checkpoint.
 5. Detached turns, `turn.resume`, automatic compaction.
 6. CLI: `sa run -p`, `sa attach` line mode, `sa export`. There is no `sa init` (§6.1).
 
@@ -1085,15 +1026,12 @@ Sub-work:
 4. **Turn timeout.** A turn that produces no terminal event within `SA_TURN_TIMEOUT`
    (default 1800 s) is interrupted with `cause: timeout` and the client told. A stalled
    model stream must not hang the session forever.
-5. **Default policy.** On first daemon start, if no `$XDG_CONFIG_HOME/sa/policy.toml`
-   exists, write a conservative default there — outside every workspace (§6.1). Without one,
-   every `bash` call under `allowlisted` prompts, which makes the agent unusable.
 
 Acceptance: a turn that calls `read` and `bash` shows both arguments and results in the
 transcript; `Ctrl-C` during a turn cancels it and the prompt returns; a second turn on the
 same session sees the first turn's context; `sa sessions` lists sessions with state and age;
 a turn whose provider never completes is interrupted at the timeout with the cause recorded;
-a fresh daemon writes `policy.toml` outside the workspace and `git status` stays clean.
+a daemon start writes nothing into the workspace and `git status` stays clean.
 
 ****v1.2 — terminal front end.** A full-screen client, because a scrolling transcript and a
 persistent input line are the difference between reading a log and using an agent.
@@ -1188,7 +1126,7 @@ scope" decision is superseded: the web surface is a scheduled release, not a may
    escape for multi-line input. Rationale: a full in-terminal editor is a project of its own,
    and users already have one.
 3. **Checkpoint retention** (v1.0): 10 per session, pruned automatically. Answered by
-   replacing stashes with private refs in §8.4, which makes pruning a single `update-ref -d`
+   replacing stashes with private refs in §8.1, which makes pruning a single `update-ref -d`
    instead of index arithmetic on a shared stash list.
 4. **Bundle transport** (v4.0): a separate `ssh <host> sa handoff --receive` invocation
    streaming raw bytes on stdin, not the JSON-RPC channel. Rationale: the RPC channel is
@@ -1218,9 +1156,9 @@ normative text is in the sections above.
 | 4 | SSH stdio is a carrier; systemd owns daemon lifetime | §4.2, §12 |
 | 5 | single protocol version integer, no negotiation | §3.1 |
 | 6 | move by default, fork requires an explicit workspace | §5.5, §7.5 |
-| 7 | no interactive approval; the static policy decides | §8.3 |
-| 8 | unattended handoff defaults to `allowlisted` | §8.1 |
-| 9 | checkpoint before every unattended turn | §8.4 |
+| 7 | no permission system: no autonomy, no allowlist, no prompts | §8 |
+| 8 | no permission system; tools run or fail on path escape | §8 |
+| 9 | checkpoint before every unattended turn | §8.1 |
 | 10 | at most one attached client per session; takeover evicts | §3.6 |
 | 11 | session deletion is a tombstone, not a purge | §5.7 |
 | 12 | workspace is exactly one git repo; remote optional | §7.1 |
@@ -1234,7 +1172,7 @@ normative text is in the sections above.
 | 20 | every `tool.requested` gets a terminal event, including on recovery | §5.2, §5.6 |
 | 21 | pre-provisioned remote host; no `nix develop` integration | §16 |
 | 22 | single-line composer plus `$EDITOR` escape | §16 |
-| 23 | checkpoints are private refs, not stashes; 10 retained | §8.4 |
+| 23 | checkpoints are private refs, not stashes; 10 retained | §8.1 |
 | 24 | bundles move over a dedicated `sa handoff --receive` process | §16 |
 | 25 | the web surface is a scheduled release, served by the daemon over loopback HTTP | §4.3, §14 |
 | 26 | knowledge isolation is a namespace ACL, not a process per tenant | §11.3 |

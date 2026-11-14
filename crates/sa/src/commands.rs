@@ -184,10 +184,7 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 
 async fn create_session(client: &mut Client) -> Result<String> {
     let response = client
-        .call(
-            "session.create",
-            json!({"cwd": cwd()?, "autonomy": "allowlisted"}),
-        )
+        .call("session.create", json!({"cwd": cwd()?}))
         .await
         .map_err(|e| format!("session.create failed: {e}"))?;
     response["session_id"]
@@ -235,13 +232,12 @@ pub async fn sessions() -> Result<()> {
         println!("no sessions");
         return Ok(());
     }
-    println!("{:<38} {:<12} {:<10} TITLE", "ID", "STATE", "AUTONOMY");
+    println!("{:<38} {:<12} TITLE", "ID", "STATE");
     for session in sessions {
         println!(
-            "{:<38} {:<12} {:<10} {}",
+            "{:<38} {:<12} {}",
             session["id"].as_str().unwrap_or("-"),
             session["state"].as_str().unwrap_or("-"),
-            session["autonomy"].as_str().unwrap_or("-"),
             session["title"].as_str().unwrap_or("-"),
         );
     }

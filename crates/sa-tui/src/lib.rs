@@ -246,7 +246,7 @@ pub async fn run(client: &mut Client, session: String, model: String) -> Result<
                             "session.create",
                             json!({"cwd": std::env::current_dir()
                                 .map(|p| p.display().to_string())
-                                .unwrap_or_default(), "autonomy": "allowlisted"}),
+                                .unwrap_or_default(), }),
                         )
                         .await
                     {

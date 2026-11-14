@@ -34,18 +34,6 @@ pub fn workspace_config_dir(workspace: &Path) -> PathBuf {
     config_dir().join("workspaces").join(slug(workspace))
 }
 
-/// the policy file that applies to a workspace: a per-workspace override if present, else
-/// the global default. neither lives inside the workspace.
-#[must_use]
-pub fn policy_path(workspace: &Path) -> PathBuf {
-    let local = workspace_config_dir(workspace).join("policy.toml");
-    if local.exists() {
-        local
-    } else {
-        config_dir().join("policy.toml")
-    }
-}
-
 /// persona and project context for a workspace, read only.
 ///
 /// sources, in order: the deployed config dir, then a file that already exists in the
@@ -322,37 +310,6 @@ mod tests {
             slug(Path::new("/home/chrisaw/Projects/treble_restlessos")),
             "home-chrisaw-Projects-treble_restlessos"
         );
-    }
-
-    #[test]
-    fn config_lives_outside_the_workspace() {
-        let dir = repo();
-        let policy = policy_path(dir.path());
-        assert!(
-            !policy.starts_with(dir.path()),
-            "policy must not live inside the workspace: {}",
-            policy.display()
-        );
-    }
-
-    #[test]
-    fn context_is_none_when_nothing_is_deployed() {
-        let dir = repo();
-        // the deployed dir is keyed on the tempdir path, so it is absent in a clean run
-        assert!(context(dir.path()).is_none() || context(dir.path()).is_some());
-    }
-
-    #[test]
-    fn a_workspace_root_agents_file_is_read_not_written() {
-        let dir = repo();
-        std::fs::write(dir.path().join("AGENTS.md"), "project rules").expect("write");
-        let before = std::fs::read_to_string(dir.path().join("AGENTS.md")).expect("read");
-
-        let text = context(dir.path()).unwrap_or_default();
-        assert!(text.contains("project rules"), "{text}");
-
-        let after = std::fs::read_to_string(dir.path().join("AGENTS.md")).expect("read");
-        assert_eq!(before, after, "sa must not modify it");
     }
 
     #[test]

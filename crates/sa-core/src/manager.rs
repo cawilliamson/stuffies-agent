@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use sa_proto::error::{code, RpcError};
 use sa_proto::session::kinds;
 use sa_proto::session::{
-    AttachResult, Autonomy, CreateSessionResult, Event, ReplayResult, SessionState, SessionSummary,
+    AttachResult, CreateSessionResult, Event, ReplayResult, SessionState, SessionSummary,
     TurnStartResult, TurnStatus, Usage,
 };
 use serde_json::{json, Value};
@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use crate::agent::{Agent, EventSink, ToolExecutor, TurnRequest};
 use crate::llm::Provider;
 use crate::store::{NewSession, SessionRow, Store, StoreError};
-use crate::tools::{Allowlist, ToolRegistry};
+use crate::tools::ToolRegistry;
 
 /// live queue bound for one client (spec 3.3).
 pub const CLIENT_QUEUE: usize = 4096;
@@ -188,7 +188,6 @@ impl Manager {
     pub fn create_session(
         &self,
         cwd: &str,
-        autonomy: Autonomy,
         title: Option<String>,
         client: &str,
     ) -> Result<CreateSessionResult, ManagerError> {
@@ -199,7 +198,6 @@ impl Manager {
             title: title.unwrap_or_else(|| default_title(&canonical)),
             cwd: canonical.display().to_string(),
             repo_id: None,
-            autonomy,
             owner_host: self.config.host_fingerprint.clone(),
             owner_epoch: 0,
         })?;
@@ -210,7 +208,6 @@ impl Manager {
             &json!({
                 "title": row.title,
                 "cwd": row.cwd,
-                "autonomy": autonomy,
                 "client": client,
                 "owner": {
                     "host_fingerprint": self.config.host_fingerprint,
@@ -443,7 +440,6 @@ impl Manager {
                 "turn_id": turn_id,
                 "prompt": prompt,
                 "model": self.config.default_model,
-                "autonomy": row.autonomy,
                 "detach": detach,
                 "client": attached_client,
             }),
@@ -481,20 +477,16 @@ impl Manager {
     ) {
         // the workspace lock serialises sessions that share a repository (spec 7.4).
         let workspace = PathBuf::from(&row.cwd);
-        let _lock = if row.autonomy.allows_write() {
-            match crate::workspace::lock(&workspace, &self.config.lock_dir) {
-                Ok(guard) => Some(guard),
-                Err(err) => {
-                    tracing::warn!(%err, "running without the workspace lock");
-                    None
-                }
+        let _lock = match crate::workspace::lock(&workspace, &self.config.lock_dir) {
+            Ok(guard) => Some(guard),
+            Err(err) => {
+                tracing::warn!(%err, "running without the workspace lock");
+                None
             }
-        } else {
-            None
         };
 
         // an unattended turn never starts without a checkpoint (spec 8.4).
-        if detach && row.autonomy.allows_write() {
+        if detach {
             let seq = self.store.last_seq(&session_id).unwrap_or(0);
             match crate::workspace::checkpoint(&workspace, &session_id, seq) {
                 Ok(checkpoint) => {
@@ -539,14 +531,7 @@ impl Manager {
             session_id: session_id.clone(),
             cancel: Arc::clone(&cancel),
         });
-        // per-workspace policy, resolved outside the workspace (spec 6.1).
-        let allowlist =
-            Allowlist::load(&crate::workspace::policy_path(&workspace)).unwrap_or_default();
-        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::new(
-            PathBuf::from(&row.cwd),
-            row.autonomy,
-            allowlist,
-        ));
+        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::new(PathBuf::from(&row.cwd)));
 
         let model = row
             .model
