@@ -680,6 +680,11 @@ impl Manager {
                             "prompt_tokens": outcome.usage.prompt_tokens,
                             "completion_tokens": outcome.usage.completion_tokens,
                         },
+                        // what the model's view costs now, against the window it has.
+                        "context": {
+                            "tokens": self.estimate_tokens(&session_id),
+                            "limit": self.config.context_limit,
+                        },
                     }),
                 );
             }

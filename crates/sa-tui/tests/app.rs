@@ -298,12 +298,13 @@ fn the_transcript_shows_no_raw_role_gutters() {
 #[test]
 fn the_status_bar_shows_the_session_rate_and_tokens() {
     let mut app = App::new("session-abcdef", "deepseek");
-    app.tab_mut().status.prompt_tokens = 230_000;
-    app.tab_mut().status.completion_tokens = 1_500;
+    app.tab_mut().status.context_tokens = 32_000;
+    app.tab_mut().status.context_limit = 128_000;
     let screen = screen(&mut app, 160, 24);
     assert!(screen.contains("session-"), "{screen}");
     assert!(screen.contains("0.0 t/s"), "{screen}");
-    assert!(screen.contains("230k/1k"), "{screen}");
+    // the token counts gave way to a context meter.
+    assert!(screen.contains("25%"), "{screen}");
     assert!(
         screen.contains("ctrl+t"),
         "key hints must be present:\n{screen}"
@@ -1061,4 +1062,39 @@ fn rebuilding_a_large_transcript_stays_within_a_frame() {
         "rebuilding {} lines took {once:?}",
         lines.len()
     );
+}
+
+#[test]
+fn the_status_bar_shows_context_pressure() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.context_tokens = 64_000;
+    app.tab_mut().status.context_limit = 128_000;
+
+    let screen = screen(&mut app, 160, 24);
+    assert!(screen.contains("50%"), "expected a usage figure:\n{screen}");
+    assert!(
+        screen.contains('\u{2588}'),
+        "expected filled meter cells:\n{screen}"
+    );
+}
+
+#[test]
+fn context_pressure_turns_red_near_the_limit() {
+    use ratatui::style::Color;
+
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.context_tokens = 120_000;
+    app.tab_mut().status.context_limit = 128_000;
+
+    let backend = TestBackend::new(160, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let hot = buffer
+        .content()
+        .iter()
+        .any(|c| c.symbol() == "\u{2588}" && c.fg == sa_tui::app::BAD);
+    assert!(hot, "a nearly full window must read as danger");
+    let _ = Color::Reset;
 }

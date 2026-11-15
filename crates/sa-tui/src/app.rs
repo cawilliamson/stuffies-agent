@@ -55,6 +55,9 @@ pub struct Cache {
 pub struct Status {
     pub model: String,
     pub effort: String,
+    /// estimated tokens in the model's view, and the window it has.
+    pub context_tokens: u64,
+    pub context_limit: u64,
     pub turn_running: bool,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -345,6 +348,14 @@ impl Tab {
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
                     payload["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+                if let Some(context) = payload.get("context") {
+                    self.status.context_tokens = context["tokens"]
+                        .as_u64()
+                        .unwrap_or(self.status.context_tokens);
+                    self.status.context_limit = context["limit"]
+                        .as_u64()
+                        .unwrap_or(self.status.context_limit);
+                }
                 self.touch();
             }
             "turn.interrupted" => {

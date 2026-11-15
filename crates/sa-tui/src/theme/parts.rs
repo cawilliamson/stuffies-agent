@@ -128,6 +128,32 @@ pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
+/// a compact context meter: filled cells and a percentage, coloured by pressure.
+fn context_meter(used: u64, limit: u64) -> (String, Color) {
+    const CELLS: usize = 10;
+    let pct = if limit == 0 {
+        0
+    } else {
+        (used.saturating_mul(100) / limit).min(100)
+    };
+    let filled = (pct as usize * CELLS / 100).min(CELLS);
+    let ink = if pct >= 85 {
+        app::BAD
+    } else if pct >= 60 {
+        Color::Rgb(0xe0, 0xb0, 0x60)
+    } else {
+        app::OK
+    };
+    (
+        format!(
+            "{}{} {pct:>3}%",
+            "\u{2588}".repeat(filled),
+            "\u{2591}".repeat(CELLS - filled)
+        ),
+        ink,
+    )
+}
+
 /// the powerline status bar.
 pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     const SEP: &str = "\u{e0b0}";
@@ -170,15 +196,9 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
             Color::Rgb(0x5c, 0x2f, 0x2f)
         },
     ));
-    segments.push((
-        format!(
-            " \u{f0e7} {}/{} ",
-            compact(tab.status.prompt_tokens),
-            compact(tab.status.completion_tokens)
-        ),
-        Color::Rgb(0xd8, 0xd8, 0xd8),
-        Color::Rgb(0x2a, 0x2a, 0x2a),
-    ));
+    // context pressure, not raw throughput: how much of the window is in use.
+    let (meter, ink) = context_meter(tab.status.context_tokens, tab.status.context_limit);
+    segments.push((format!(" {meter} "), ink, Color::Rgb(0x2a, 0x2a, 0x2a)));
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (index, (text, fg, bg)) in segments.iter().enumerate() {
