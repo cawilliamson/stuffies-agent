@@ -195,6 +195,8 @@ impl Manager {
         client: &str,
     ) -> Result<CreateSessionResult, ManagerError> {
         let id = uuid::Uuid::new_v4().to_string();
+        // an explicit title is the operator's choice and is never overwritten by the model.
+        let titled = title.is_some();
         let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
         let row = self.store.create_session(&NewSession {
             id: id.clone(),
@@ -218,6 +220,7 @@ impl Manager {
                 "title": row.title,
                 "cwd": row.cwd,
                 "client": client,
+                "titled": titled,
                 "owner": {
                     "host_fingerprint": self.config.host_fingerprint,
                     "epoch": 0,
@@ -527,6 +530,10 @@ impl Manager {
         cancel: Arc<AtomicBool>,
         detach: bool,
     ) {
+        // highest priority: name an untitled session before any work starts.
+        let title_model = row.model.clone().unwrap_or_else(|| self.default_model());
+        self.name_session(&session_id, &prompt, &title_model).await;
+
         // the workspace lock serialises sessions that share a repository (spec 7.4).
         let workspace = PathBuf::from(&row.cwd);
         let _lock = match crate::workspace::lock(&workspace, &self.config.lock_dir) {
@@ -712,9 +719,24 @@ impl Manager {
         }
     }
 
-    /// asks the model for a short session title, so tabs read like the work rather than a
-    /// session id. cheap: low effort, a couple of dozen tokens, and only on the first turn
-    /// and then every fourth.
+    /// the first thing a turn does: name an untitled session from the user's prompt, so
+    /// the tab reads like the work immediately rather than a session id.
+    async fn name_session(&self, session_id: &str, prompt: &str, model: &str) {
+        let Ok((events, _)) = self.store.events_since(session_id, 0, 100_000) else {
+            return;
+        };
+        let already_named = events.iter().any(|e| {
+            e.kind == kinds::SESSION_RENAMED
+                || (e.kind == kinds::SESSION_CREATED
+                    && e.payload.get("titled").and_then(Value::as_bool) == Some(true))
+        });
+        if already_named {
+            return;
+        }
+        self.request_title(session_id, prompt, model, prompt).await;
+    }
+
+    /// refreshes the title from the conversation every fourth turn.
     async fn maybe_retitle(&self, session_id: &str, model: String) {
         let Ok((events, _)) = self.store.events_since(session_id, 0, 100_000) else {
             return;
@@ -723,14 +745,7 @@ impl Manager {
             .iter()
             .filter(|e| e.kind == kinds::TURN_COMPLETED)
             .count();
-        if turns == 0 {
-            return;
-        }
-
-        // a session that has never been renamed still carries its default directory-derived
-        // title, so generate one on any turn. after that, refresh periodically.
-        let renamed = events.iter().any(|e| e.kind == kinds::SESSION_RENAMED);
-        if renamed && turns % 4 != 0 {
+        if turns == 0 || turns % 4 != 0 {
             return;
         }
 
@@ -759,50 +774,59 @@ impl Manager {
             }
         }
         if digest.is_empty() {
-            tracing::debug!(%session_id, "retitle skipped: empty digest");
             return;
         }
+        self.request_title(session_id, &digest, &model, &digest)
+            .await;
+    }
 
-        // announce it: the client shows this, then the title itself.
+    /// asks the model for a short title and applies it. falls back to the prompt when the
+    /// model returns nothing usable, so a session is never left unnamed.
+    async fn request_title(
+        &self,
+        session_id: &str,
+        source: &str,
+        model: &str,
+        fallback_source: &str,
+    ) {
         let _ = self.append(
             session_id,
             kinds::TITLE_GENERATING,
             &json!({"model": model, "effort": "low"}),
         );
 
-        let Ok(mut rx) = self
+        let mut title = None;
+        if let Ok(mut rx) = self
             .config
             .provider
             .stream(crate::llm::ChatRequest {
-                model,
+                model: model.to_owned(),
                 messages: vec![crate::llm::ChatMessage::user(format!(
                     "Give this coding session a title of at most six words. \
-                     No quotes, no trailing punctuation. Reply with the title only.\n\n{digest}"
+                     No quotes, no trailing punctuation. Reply with the title only.\n\n{source}"
                 ))],
                 tools: Vec::new(),
-                max_tokens: Some(24),
+                // generous on purpose: a reasoning model spends budget on its trace before
+                // it emits any text, and a tight cap yields an empty title.
+                max_tokens: Some(128),
                 reasoning_effort: Some("low".to_owned()),
             })
             .await
-        else {
-            tracing::debug!(%session_id, "retitle skipped: provider unavailable");
+        {
+            let mut raw = String::new();
+            while let Some(delta) = rx.recv().await {
+                if let crate::llm::Delta::Text(chunk) = delta {
+                    raw.push_str(&chunk);
+                }
+            }
+            title = clean_title(&raw);
+        }
+
+        let Some(title) = title.or_else(|| fallback_title(fallback_source)) else {
             return;
         };
-
-        let mut title = String::new();
-        while let Some(delta) = rx.recv().await {
-            if let crate::llm::Delta::Text(chunk) = delta {
-                title.push_str(&chunk);
-            }
-        }
-        let title = title.trim().trim_matches('"').trim().replace('\n', " ");
-        if title.is_empty() || title.chars().count() > 60 {
-            tracing::debug!(%session_id, %title, "retitle skipped: unusable title");
-            return;
-        }
-        match self.rename_session(session_id, &title) {
-            Ok(()) => tracing::debug!(%session_id, %title, "retitled"),
-            Err(err) => tracing::debug!(%session_id, %err, "retitle failed"),
+        if let Err(err) = self.rename_session(session_id, &title) {
+            tracing::debug!(%session_id, %err, "retitle failed");
         }
     }
 
@@ -1016,6 +1040,43 @@ impl EventSink for TurnSink {
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
     }
+}
+
+/// tidies whatever the model returned into a usable title, or rejects it.
+fn clean_title(raw: &str) -> Option<String> {
+    let line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let mut title = line
+        .trim_start_matches("Title:")
+        .trim_start_matches("title:")
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '*' | '#'))
+        .trim()
+        .trim_end_matches(['.', ':', ';', ','])
+        .trim()
+        .to_owned();
+    if title.is_empty() {
+        return None;
+    }
+    if title.chars().count() > 60 {
+        title = format!("{}\u{2026}", title.chars().take(57).collect::<String>());
+    }
+    Some(title)
+}
+
+/// a title derived from the prompt, used when the model gives nothing back.
+fn fallback_title(source: &str) -> Option<String> {
+    let line = source
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    if line.is_empty() {
+        return None;
+    }
+    let mut title: String = line.chars().take(57).collect();
+    if line.chars().count() > 57 {
+        title.push('\u{2026}');
+    }
+    Some(title)
 }
 
 fn default_title(cwd: &std::path::Path) -> String {

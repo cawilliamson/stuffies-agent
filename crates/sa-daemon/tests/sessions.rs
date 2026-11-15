@@ -659,7 +659,8 @@ async fn a_session_without_a_title_gets_one_generated() {
             },
         ]
     };
-    let daemon = Harness::start(vec![reply("done"), reply("Fixing rust bugs")]).await;
+    // the title call runs first, before the agent turn.
+    let daemon = Harness::start(vec![reply("Fixing rust bugs"), reply("done")]).await;
     let mut client = daemon.connect().await;
     let cwd = daemon.root().display().to_string();
     // no explicit title: the session starts with its default id-derived title.

@@ -385,6 +385,8 @@ pub enum Action {
     NextTab,
     NewTab,
     CloseTab,
+    /// jump straight to a tab by index.
+    SwitchTab(usize),
 }
 
 pub struct App {
@@ -456,6 +458,21 @@ impl App {
         Some(removed.session)
     }
 
+    /// replaces the active tab with a fresh one, keeping the strip non-empty.
+    pub fn replace_active(&mut self, session: impl Into<String>, model: impl Into<String>) {
+        let index = self.active.min(self.tabs.len().saturating_sub(1));
+        self.tabs[index] = Tab::new(session, String::new(), model);
+        self.touch();
+    }
+
+    /// jumps to a tab by zero-based index, ignoring out-of-range presses.
+    pub fn switch_tab(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active = index;
+            self.touch();
+        }
+    }
+
     pub fn next_tab(&mut self) {
         if self.tabs.len() > 1 {
             self.active = (self.active + 1) % self.tabs.len();
@@ -471,8 +488,11 @@ impl App {
             return match key.code {
                 KeyCode::Char('c') | KeyCode::Char('d') => Action::Quit,
                 // plain ctrl+n / ctrl+w, with the shifted forms accepted as aliases.
-                KeyCode::Char('n') | KeyCode::Char('N') => Action::NewTab,
+                KeyCode::Char('t') | KeyCode::Char('T') => Action::NewTab,
                 KeyCode::Char('w') | KeyCode::Char('W') => Action::CloseTab,
+                KeyCode::Char(digit @ '1'..='9') => {
+                    Action::SwitchTab(digit as usize - '1' as usize)
+                }
                 _ => {
                     let _ = shift;
                     self.tab_mut().edit(key);
@@ -603,6 +623,16 @@ fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
     ]));
 }
 
+fn divider_label(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
+    let head = format!("\u{251c}\u{2500} {label} ");
+    let fill = width.saturating_sub(head.chars().count() + 1);
+    out.push(Line::from(vec![
+        Span::styled(head, Style::default().fg(edge)),
+        Span::styled("\u{2500}".repeat(fill), Style::default().fg(edge)),
+        Span::styled("\u{2524}", Style::default().fg(edge)),
+    ]));
+}
+
 fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
     out.push(Line::from(vec![
         Span::styled("\u{251c}", Style::default().fg(edge)),
@@ -652,6 +682,34 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     top(&mut out, &entry_label(entry, model), width, edge);
     body(&mut out, &entry_body(entry), width, edge, ink);
+    bottom(&mut out, width, edge);
+    out
+}
+
+/// renders a tool call and its output as one frame split by a rule, rather than two boxes.
+fn framed_tool(
+    tool: &str,
+    call: &str,
+    output: &str,
+    exit_code: Option<i32>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let (_, edge, ink) = role_style(Role::Tool, "");
+    let (_, _, out_ink) = role_style(Role::ToolOutput, "");
+    let mut out = Vec::new();
+    top(&mut out, tool, width, edge);
+    let invocation = if tool == "bash" {
+        format!("$ {call}")
+    } else {
+        call.to_owned()
+    };
+    body(&mut out, &invocation, width, edge, ink);
+    let label = match exit_code {
+        Some(code) => format!("exit {code}"),
+        None => "output".to_owned(),
+    };
+    divider_label(&mut out, &label, width, edge);
+    body(&mut out, output, width, edge, out_ink);
     bottom(&mut out, width, edge);
     out
 }
@@ -712,6 +770,24 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
                 index = next;
             }
             continue;
+        }
+
+        if entry.role == Role::Tool {
+            let tool = entry.tool.clone().unwrap_or_else(|| "tool".to_owned());
+            if index + 1 < tab.transcript.len()
+                && tab.transcript[index + 1].role == Role::ToolOutput
+            {
+                let result = &tab.transcript[index + 1];
+                out.extend(framed_tool(
+                    &tool,
+                    &entry.text,
+                    &result.text,
+                    result.exit_code,
+                    inner,
+                ));
+                index += 2;
+                continue;
+            }
         }
 
         out.extend(framed(entry, inner, &tab.status.model));

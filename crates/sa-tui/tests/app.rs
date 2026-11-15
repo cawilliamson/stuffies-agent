@@ -77,10 +77,41 @@ fn shift_tab_requests_the_next_tab() {
 }
 
 #[test]
-fn shift_ctrl_n_and_w_request_tab_actions() {
+fn ctrl_t_opens_and_ctrl_w_closes() {
     let mut app = App::new("s", "m");
-    assert_eq!(app.on_key(ctrl_shift('N')), Action::NewTab);
-    assert_eq!(app.on_key(ctrl_shift('W')), Action::CloseTab);
+    assert_eq!(app.on_key(ctrl('t')), Action::NewTab);
+    assert_eq!(app.on_key(ctrl('w')), Action::CloseTab);
+    // the shifted forms stay accepted as aliases.
+    assert_eq!(app.on_key(ctrl_shift('T')), Action::NewTab);
+}
+
+#[test]
+fn ctrl_digits_jump_to_a_tab() {
+    let mut app = App::new("first", "m");
+    app.add_tab("second", "m");
+    app.add_tab("third", "m");
+
+    // on_key reports the intent; the caller applies it.
+    assert_eq!(app.on_key(ctrl('1')), Action::SwitchTab(0));
+    app.switch_tab(0);
+    assert_eq!(app.active, 0);
+
+    assert_eq!(app.on_key(ctrl('3')), Action::SwitchTab(2));
+    app.switch_tab(2);
+    assert_eq!(app.active, 2);
+
+    // out of range presses are ignored.
+    app.switch_tab(8);
+    assert_eq!(app.active, 2);
+}
+
+#[test]
+fn replacing_the_last_tab_keeps_the_strip_alive() {
+    let mut app = App::new("only", "m");
+    app.replace_active("fresh", "m");
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.tab().session, "fresh");
+    assert!(app.tab().transcript.is_empty());
 }
 
 #[test]
@@ -186,7 +217,7 @@ fn every_transcript_entry_is_framed_with_its_role() {
         "\u{256d}\u{2500} deepseek-v4-flash",
         "\u{256d}\u{2500} thinking",
         "\u{256d}\u{2500} tool",
-        "\u{256d}\u{2500} output",
+        "\u{251c}\u{2500} output",
         "\u{256d}\u{2500} error",
     ] {
         assert!(screen.contains(label), "missing frame {label:?}:\n{screen}");
@@ -271,7 +302,7 @@ fn the_status_bar_shows_the_session_rate_and_tokens() {
     assert!(screen.contains("0.0 t/s"), "{screen}");
     assert!(screen.contains("230k/1k"), "{screen}");
     assert!(
-        screen.contains("shift+tab"),
+        screen.contains("ctrl+t"),
         "key hints must be present:\n{screen}"
     );
 }
@@ -580,7 +611,7 @@ fn a_standalone_reasoning_frame_is_grey() {
 }
 
 #[test]
-fn tool_calls_render_as_terminal_like_frames() {
+fn a_tool_call_and_its_output_share_one_split_frame() {
     let mut app = App::new("s", "m");
     app.tab_mut().on_event(
         "tool.requested",
@@ -592,19 +623,45 @@ fn tool_calls_render_as_terminal_like_frames() {
     );
 
     let screen = screen(&mut app, 100, 30);
+
+    // one frame, titled with the tool, not two.
+    assert_eq!(
+        screen.matches("\u{256d}\u{2500} ").count(),
+        1,
+        "the call and its output must share a frame:\n{screen}"
+    );
     assert!(
         screen.contains("\u{256d}\u{2500} bash"),
-        "tool name in the title:\n{screen}"
+        "tool in the title:\n{screen}"
     );
+    assert!(screen.contains("$ ls -la"), "bash gets a prompt:\n{screen}");
     assert!(
-        screen.contains("$ ls -la"),
-        "bash commands get a prompt:\n{screen}"
-    );
-    assert!(
-        screen.contains("\u{256d}\u{2500} output (exit 1)"),
-        "exit code belongs in the title:\n{screen}"
+        screen.contains("\u{251c}\u{2500} exit 1"),
+        "the exit code labels the split:\n{screen}"
     );
     assert!(screen.contains("file.txt"), "{screen}");
+
+    // the invocation sits above the rule, the output below it.
+    let call_at = screen.find("$ ls -la").expect("call");
+    let rule_at = screen.find("\u{251c}").expect("rule");
+    let out_at = screen.find("file.txt").expect("output");
+    assert!(call_at < rule_at && rule_at < out_at, "{screen}");
+}
+
+#[test]
+fn a_tool_without_output_yet_is_its_own_frame() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "sleep 10"}}),
+    );
+    let screen = screen(&mut app, 100, 20);
+    assert!(screen.contains("\u{256d}\u{2500} bash"), "{screen}");
+    assert!(screen.contains("$ sleep 10"), "{screen}");
+    assert!(
+        !screen.contains("\u{251c}"),
+        "no split without a result:\n{screen}"
+    );
 }
 
 #[test]

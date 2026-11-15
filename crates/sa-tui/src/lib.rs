@@ -132,7 +132,7 @@ fn status_bar(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(SEP, Style::default().fg(*bg).bg(next)));
     }
     let used = Line::from(spans.clone()).width();
-    let hints = " ctrl+n new \u{00b7} ctrl+w close \u{00b7} shift+tab switch ";
+    let hints = " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump ";
     let pad = usize::from(width).saturating_sub(used + hints.chars().count());
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled(hints, Style::default().fg(app::FAINT)));
@@ -388,6 +388,7 @@ pub async fn run(
             Action::None => {}
             Action::Quit => break,
             Action::NextTab => app.next_tab(),
+            Action::SwitchTab(index) => app.switch_tab(index),
             Action::NewTab => {
                 let cwd = std::env::current_dir()
                     .map(|p| p.display().to_string())
@@ -405,7 +406,31 @@ pub async fn run(
                 }
             }
             Action::CloseTab => {
-                if let Some(closed) = app.close_tab() {
+                if app.tabs.len() <= 1 {
+                    // closing the last tab leaves a fresh one rather than an empty screen.
+                    let cwd = std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    match client.call("session.create", json!({"cwd": cwd})).await {
+                        Ok(created) => {
+                            if let Some(id) = created["session_id"].as_str() {
+                                let id = id.to_owned();
+                                let previous = app.tab().session.clone();
+                                app.replace_active(id.clone(), model.clone());
+                                let _ = client
+                                    .call("session.detach", json!({"session_id": previous}))
+                                    .await;
+                                let _ = client
+                                    .call(
+                                        "events.subscribe",
+                                        json!({"session_id": id, "from_seq": 0}),
+                                    )
+                                    .await;
+                            }
+                        }
+                        Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
+                    }
+                } else if let Some(closed) = app.close_tab() {
                     let _ = client
                         .call("session.detach", json!({"session_id": closed}))
                         .await;
