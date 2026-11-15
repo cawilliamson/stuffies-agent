@@ -18,6 +18,7 @@
           packages = with pkgs; [
             cargo
             cargo-deny
+            cargo-machete
             cargo-mutants
             clippy
             marksman

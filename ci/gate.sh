@@ -19,6 +19,14 @@ cargo test --workspace --locked
 step "dependencies"
 ./ci/check-deps.sh
 
+step "unused dependencies"
+if ! command -v cargo-machete >/dev/null 2>&1; then
+  echo "gate: cargo-machete not found. run inside the devShell:" >&2
+  echo "      nix develop -c ./ci/gate.sh" >&2
+  exit 1
+fi
+cargo machete
+
 step "supply chain"
 cargo deny check
 
