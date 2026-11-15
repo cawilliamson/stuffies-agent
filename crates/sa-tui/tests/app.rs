@@ -217,7 +217,7 @@ fn every_transcript_entry_is_framed_with_its_role() {
         "\u{256d}\u{2500} deepseek-v4-flash",
         "\u{256d}\u{2500} thinking",
         "\u{256d}\u{2500} tool",
-        "\u{251c}\u{2500} output",
+        "\u{251c}\u{2500}\u{2500}",
         "\u{256d}\u{2500} error",
     ] {
         assert!(screen.contains(label), "missing frame {label:?}:\n{screen}");
@@ -631,13 +631,13 @@ fn a_tool_call_and_its_output_share_one_split_frame() {
         "the call and its output must share a frame:\n{screen}"
     );
     assert!(
-        screen.contains("\u{256d}\u{2500} bash"),
-        "tool in the title:\n{screen}"
+        screen.contains("\u{256d}\u{2500} bash (exit 1)"),
+        "the exit code belongs in the title:\n{screen}"
     );
     assert!(screen.contains("$ ls -la"), "bash gets a prompt:\n{screen}");
     assert!(
-        screen.contains("\u{251c}\u{2500} exit 1"),
-        "the exit code labels the split:\n{screen}"
+        !screen.contains("\u{251c}\u{2500} "),
+        "the rule must carry no text:\n{screen}"
     );
     assert!(screen.contains("file.txt"), "{screen}");
 
@@ -727,4 +727,31 @@ fn scrolling_moves_several_lines_per_key() {
         app.tab().scroll <= ceiling - 3,
         "an arrow key must move more than one line"
     );
+}
+
+#[test]
+fn markdown_bold_is_rendered_as_bold_without_markers() {
+    use ratatui::style::Modifier;
+
+    let mut app = App::new("s", "m");
+    app.tab_mut()
+        .push(Role::Assistant, "It is **Sunday** today");
+
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let screen: String = buffer.content().iter().map(|c| c.symbol()).collect();
+
+    assert!(
+        screen.contains("It is Sunday today"),
+        "the markers must not be drawn:\n{screen}"
+    );
+    assert!(!screen.contains("**"), "no raw markers:\n{screen}");
+
+    let bold = buffer
+        .content()
+        .iter()
+        .any(|c| c.symbol() == "S" && c.modifier.contains(Modifier::BOLD));
+    assert!(bold, "the wrapped run must actually be bold");
 }

@@ -589,27 +589,58 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
     (label, edge, body)
 }
 
+/// splits `**bold**` runs into styled spans, dropping the markers.
+fn styled(text: &str, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut bold = false;
+    let mut rest = text;
+    while let Some(at) = rest.find("**") {
+        let (before, after) = rest.split_at(at);
+        if !before.is_empty() {
+            let style = if bold {
+                base.add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                base
+            };
+            spans.push(Span::styled(before.to_owned(), style));
+        }
+        bold = !bold;
+        rest = &after[2..];
+    }
+    if !rest.is_empty() {
+        let style = if bold {
+            base.add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            base
+        };
+        spans.push(Span::styled(rest.to_owned(), style));
+    }
+    spans
+}
+
 /// pushes one body section: each row is exactly `width` cells.
 fn body(out: &mut Vec<Line<'static>>, text: &str, width: usize, edge: Color, ink: Color) {
     let room = width.saturating_sub(4);
     for raw in text.lines() {
-        let mut line = raw.to_owned();
-        if line.chars().count() > room {
-            line = line
+        // the markers are not drawn, so measure the text without them.
+        let plain = raw.replace("**", "");
+        let mut line: String = plain.chars().take(room).collect();
+        if plain.chars().count() > room {
+            line = plain
                 .chars()
                 .take(room.saturating_sub(1))
                 .collect::<String>();
             line.push('\u{2026}');
         }
         let pad = room.saturating_sub(line.chars().count());
-        out.push(Line::from(vec![
-            Span::styled("\u{2502} ", Style::default().fg(edge)),
-            Span::styled(line, Style::default().fg(ink)),
-            Span::styled(
-                format!("{} \u{2502}", " ".repeat(pad)),
-                Style::default().fg(edge),
-            ),
-        ]));
+
+        let mut spans = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
+        spans.extend(styled(raw, Style::default().fg(ink)));
+        spans.push(Span::styled(
+            format!("{} \u{2502}", " ".repeat(pad)),
+            Style::default().fg(edge),
+        ));
+        out.push(Line::from(spans));
     }
 }
 
@@ -620,16 +651,6 @@ fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
         Span::styled(head, Style::default().fg(edge)),
         Span::styled("\u{2500}".repeat(fill), Style::default().fg(edge)),
         Span::styled("\u{256e}", Style::default().fg(edge)),
-    ]));
-}
-
-fn divider_label(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
-    let head = format!("\u{251c}\u{2500} {label} ");
-    let fill = width.saturating_sub(head.chars().count() + 1);
-    out.push(Line::from(vec![
-        Span::styled(head, Style::default().fg(edge)),
-        Span::styled("\u{2500}".repeat(fill), Style::default().fg(edge)),
-        Span::styled("\u{2524}", Style::default().fg(edge)),
     ]));
 }
 
@@ -697,18 +718,19 @@ fn framed_tool(
     let (_, edge, ink) = role_style(Role::Tool, "");
     let (_, _, out_ink) = role_style(Role::ToolOutput, "");
     let mut out = Vec::new();
-    top(&mut out, tool, width, edge);
+    // the exit code belongs in the title, so the rule stays clean.
+    let title = match exit_code {
+        Some(code) => format!("{tool} (exit {code})"),
+        None => tool.to_owned(),
+    };
+    top(&mut out, &title, width, edge);
     let invocation = if tool == "bash" {
         format!("$ {call}")
     } else {
         call.to_owned()
     };
     body(&mut out, &invocation, width, edge, ink);
-    let label = match exit_code {
-        Some(code) => format!("exit {code}"),
-        None => "output".to_owned(),
-    };
-    divider_label(&mut out, &label, width, edge);
+    divider(&mut out, width, edge);
     body(&mut out, output, width, edge, out_ink);
     bottom(&mut out, width, edge);
     out
