@@ -44,6 +44,12 @@ pub enum Command {
     },
     /// list sessions
     Sessions,
+    /// show the context and skills that would be injected for a directory
+    Context {
+        /// directory to inspect; defaults to the current one
+        #[arg(long)]
+        dir: Option<String>,
+    },
     /// dump a session as jsonl or markdown
     Export {
         #[arg(long)]

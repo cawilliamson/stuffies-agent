@@ -633,7 +633,10 @@ impl Manager {
             model: row.model.unwrap_or_else(|| self.default_model()),
             history,
             compaction_summary,
-            context: crate::workspace::context(&workspace),
+            context: {
+                let cwd = std::env::current_dir().ok();
+                crate::workspace::context(&workspace, cwd.as_deref())
+            },
             max_tokens: self.config.max_tokens,
             reasoning_effort: row
                 .effort

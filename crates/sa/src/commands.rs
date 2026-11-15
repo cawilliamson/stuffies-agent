@@ -233,6 +233,52 @@ fn render_history(renderer: &mut Renderer, events: &[Value]) {
     }
 }
 
+// ---- context ------------------------------------------------------------
+
+/// shows what pi-contexts material would be injected for a directory.
+pub fn context(dir: Option<String>) -> Result<()> {
+    let workspace = match dir {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => std::env::current_dir().map_err(|e| format!("cannot read cwd: {e}"))?,
+    };
+    let cwd = std::env::current_dir().ok();
+    let roots = sa_core::workspace::context_roots(&workspace, cwd.as_deref());
+
+    println!("roots, highest precedence first:");
+    for root in &roots {
+        println!("  {}", root.display());
+    }
+
+    let files = sa_core::workspace::context_files(&workspace, cwd.as_deref());
+    if files.is_empty() {
+        println!("\nno context files found");
+    } else {
+        println!("\ncontext files, in injection order:");
+        for file in &files {
+            println!(
+                "  {:<18} {} ({} bytes)",
+                file.name,
+                file.path.display(),
+                file.body.len()
+            );
+        }
+    }
+
+    let skills = sa_core::workspace::skills(&workspace, cwd.as_deref());
+    if !skills.is_empty() {
+        println!("\nskills:");
+        for skill in &skills {
+            println!(
+                "  {:<18} {} — {}",
+                skill.name,
+                skill.path.display(),
+                skill.summary
+            );
+        }
+    }
+    Ok(())
+}
+
 // ---- sessions -----------------------------------------------------------
 
 pub async fn sessions() -> Result<()> {

@@ -34,28 +34,158 @@ pub fn workspace_config_dir(workspace: &Path) -> PathBuf {
     config_dir().join("workspaces").join(slug(workspace))
 }
 
-/// persona and project context for a workspace, read only.
+/// the context files pi-contexts deploys, in injection order.
+pub const CONTEXT_FILES: [&str; 4] = ["SOUL.md", "AGENTS.md", "RULES.md", "APPEND_SYSTEM.md"];
+
+/// one context file discovered on disk.
+#[derive(Debug, Clone)]
+pub struct ContextFile {
+    pub name: String,
+    pub path: PathBuf,
+    pub body: String,
+}
+
+/// a skill directory discovered on disk.
+#[derive(Debug, Clone)]
+pub struct SkillRef {
+    pub name: String,
+    pub path: PathBuf,
+    pub summary: String,
+}
+
+/// the roots context is read from, highest precedence first.
 ///
-/// sources, in order: the deployed config dir, then a file that already exists in the
-/// workspace root. sa never creates either (spec 6.1).
+/// nothing here is ever written to: the deployed config dir belongs to the operator, and
+/// the workspace and daemon directories are read-only as far as `sa` is concerned.
 #[must_use]
-pub fn context(workspace: &Path) -> Option<String> {
-    let mut parts = Vec::new();
-    let deployed = workspace_config_dir(workspace);
-    for name in ["SOUL.md", "AGENTS.md"] {
-        if let Ok(text) = std::fs::read_to_string(deployed.join(name)) {
-            if !text.trim().is_empty() {
-                parts.push(text);
-            }
+pub fn context_roots(workspace: &Path, cwd: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = vec![workspace_config_dir(workspace), workspace.to_path_buf()];
+    if let Some(cwd) = cwd {
+        if cwd != workspace {
+            roots.push(cwd.to_path_buf());
         }
     }
-    for name in ["SOUL.md", "AGENTS.md"] {
-        if let Ok(text) = std::fs::read_to_string(workspace.join(name)) {
-            if !text.trim().is_empty() {
-                parts.push(text);
+    roots
+}
+
+/// every context file that applies to a workspace, in injection order.
+#[must_use]
+pub fn context_files(workspace: &Path, cwd: Option<&Path>) -> Vec<ContextFile> {
+    context_files_in(&context_roots(workspace, cwd))
+}
+
+/// the same, against explicit roots. keeps tests free of process-global environment.
+#[must_use]
+pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
+    // precedence, not layering: the first root that provides a file wins, so one
+    // AGENTS.md is injected rather than every copy on disk.
+    let mut out = Vec::new();
+    for name in CONTEXT_FILES {
+        for root in roots {
+            let path = root.join(name);
+            let Ok(canonical) = std::fs::canonicalize(&path) else {
+                continue;
+            };
+            let Ok(body) = std::fs::read_to_string(&canonical) else {
+                continue;
+            };
+            if body.trim().is_empty() {
+                continue;
             }
+            out.push(ContextFile {
+                name: name.to_owned(),
+                path: canonical,
+                body,
+            });
+            break;
         }
     }
+    out
+}
+
+/// a one-line summary for a skill file, from its frontmatter or first heading.
+fn skill_summary(body: &str) -> String {
+    for line in body.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("description:") {
+            return rest.trim().trim_matches('"').to_owned();
+        }
+    }
+    body.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("---") && !line.starts_with('#'))
+        .unwrap_or_default()
+        .chars()
+        .take(120)
+        .collect()
+}
+
+/// skill directories that apply to a workspace, in the same precedence order.
+#[must_use]
+pub fn skills(workspace: &Path, cwd: Option<&Path>) -> Vec<SkillRef> {
+    skills_in(&context_roots(workspace, cwd))
+}
+
+/// the same, against explicit roots.
+#[must_use]
+pub fn skills_in(roots: &[PathBuf]) -> Vec<SkillRef> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for root in roots {
+        let dir = root.join("skills");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut names: Vec<_> = entries.filter_map(Result::ok).collect();
+        names.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in names {
+            let file = entry.path().join("SKILL.md");
+            let Ok(canonical) = std::fs::canonicalize(&file) else {
+                continue;
+            };
+            if !seen.insert(canonical.clone()) {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&canonical) else {
+                continue;
+            };
+            out.push(SkillRef {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: canonical,
+                summary: skill_summary(&body),
+            });
+        }
+    }
+    out
+}
+
+/// persona and project context for a workspace, assembled for the system prompt.
+///
+/// read only: files are read from the config dir, the workspace and the daemon's own
+/// directory, and never created or modified (spec 6.1).
+#[must_use]
+pub fn context(workspace: &Path, cwd: Option<&Path>) -> Option<String> {
+    let mut parts: Vec<String> = context_files(workspace, cwd)
+        .into_iter()
+        .map(|file| file.body)
+        .collect();
+
+    let found = skills(workspace, cwd);
+    if !found.is_empty() {
+        let mut listing = String::from(
+            "Skills available in this workspace. Read the file when the task matches it:\n",
+        );
+        for skill in found {
+            listing.push_str(&format!(
+                "- {} ({}): {}\n",
+                skill.name,
+                skill.path.display(),
+                skill.summary
+            ));
+        }
+        parts.push(listing);
+    }
+
     if parts.is_empty() {
         None
     } else {
