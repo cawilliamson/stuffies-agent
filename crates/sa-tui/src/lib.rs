@@ -299,6 +299,7 @@ pub async fn run(
             Action::Submit(prompt) => {
                 let sid = app.tab().session.clone();
                 app.tab_mut().status.turn_running = true;
+                app.tab_mut().working = Some(app::working_word());
                 app.touch();
                 match rpc(
                     client,
@@ -310,6 +311,7 @@ pub async fn run(
                     Ok(_) => {}
                     Err(err) => {
                         app.tab_mut().status.turn_running = false;
+                        app.tab_mut().working = None;
                         app.tab_mut()
                             .push(app::Role::Error, format!("turn.start failed: {err}"));
                     }

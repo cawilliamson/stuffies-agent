@@ -19,6 +19,10 @@ use crate::store::StoreError;
 /// the maximum number of model round-trips in one turn. bounds a runaway loop.
 pub const MAX_ITERATIONS: usize = 45;
 
+/// how often an in-flight turn checks for cancellation. short enough that escape feels
+/// instant, long enough not to spin.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug, thiserror::Error)]
@@ -106,6 +110,37 @@ impl Agent {
     }
 
     /// runs one turn to completion, appending every step to the log.
+    /// runs `work`, giving up the moment the operator cancels.
+    ///
+    /// cancellation is a flag, so a plain await on a stalled provider would not observe it
+    /// until the endpoint produced something. polling turns escape into a 25ms guarantee.
+    async fn until_cancelled<F>(&self, work: F) -> Option<F::Output>
+    where
+        F: Future,
+    {
+        let mut work = std::pin::pin!(work);
+        loop {
+            tokio::select! {
+                output = &mut work => return Some(output),
+                () = tokio::time::sleep(CANCEL_POLL) => {
+                    if self.sink.is_cancelled() {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// the next delta, or `Cancelled` if the operator interrupts while waiting.
+    async fn next_delta(
+        &self,
+        rx: &mut tokio::sync::mpsc::Receiver<Delta>,
+    ) -> Result<Option<Delta>, AgentError> {
+        self.until_cancelled(rx.recv())
+            .await
+            .map_or_else(|| Err(AgentError::Cancelled), Ok)
+    }
+
     pub async fn run_turn(&self, request: TurnRequest) -> Result<TurnOutcome, AgentError> {
         let mut messages = Self::build_transcript(&request);
         let mut usage = Usage {
@@ -119,25 +154,25 @@ impl Agent {
                 return Err(AgentError::Cancelled);
             }
 
-            let mut rx = self
-                .provider
-                .stream(ChatRequest {
+            let Some(streamed) = self
+                .until_cancelled(self.provider.stream(ChatRequest {
                     model: request.model.clone(),
                     messages: messages.clone(),
                     tools: self.tools.specs(),
                     max_tokens: request.max_tokens,
                     reasoning_effort: request.reasoning_effort.clone(),
-                })
-                .await?;
+                }))
+                .await
+            else {
+                return Err(AgentError::Cancelled);
+            };
+            let mut rx = streamed?;
 
             let mut text = String::new();
             let mut tool_calls = Vec::new();
             let mut done = false;
 
-            while let Some(delta) = rx.recv().await {
-                if self.sink.is_cancelled() {
-                    return Err(AgentError::Cancelled);
-                }
+            while let Some(delta) = self.next_delta(&mut rx).await? {
                 match delta {
                     Delta::Text(chunk) => {
                         text.push_str(&chunk);

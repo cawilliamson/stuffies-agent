@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use sa_tui::app::{Action, App, Role};
+use sa_tui::app::{transcript_lines, Action, App, Role, Tab};
 use serde_json::json;
 
 const fn key(code: KeyCode) -> KeyEvent {
@@ -1105,4 +1105,58 @@ fn context_pressure_turns_red_near_the_limit() {
         .any(|c| c.symbol() == "\u{2588}" && c.fg == sa_tui::app::BAD);
     assert!(hot, "a nearly full window must read as danger");
     let _ = Color::Reset;
+}
+
+fn flatten(lines: &[ratatui::text::Line<'static>]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_working_header_is_framed_while_a_turn_runs() {
+    let mut tab = Tab::new("session-abcdef", "t", "m");
+    tab.status.turn_running = true;
+    tab.working = Some("cogitating".to_owned());
+    let rendered = flatten(&transcript_lines(&tab, 60));
+    // the word sits in a header, not as a bare line of text.
+    assert!(rendered.contains("cogitating"), "{rendered}");
+    assert!(
+        rendered.contains('\u{256d}'),
+        "expected a frame:\n{rendered}"
+    );
+}
+
+#[test]
+fn the_working_header_disappears_when_the_turn_ends() {
+    let mut tab = Tab::new("session-abcdef", "t", "m");
+    tab.status.turn_running = true;
+    tab.working = Some("cogitating".to_owned());
+    assert!(flatten(&transcript_lines(&tab, 60)).contains("cogitating"));
+
+    // what turn.completed and turn.interrupted do.
+    tab.status.turn_running = false;
+    tab.working = None;
+    let rendered = flatten(&transcript_lines(&tab, 60));
+    assert!(!rendered.contains("cogitating"), "{rendered}");
+}
+
+#[test]
+fn every_working_word_is_distinct_and_non_empty() {
+    let mut words: Vec<&str> = sa_tui::app::WORKING_WORDS.to_vec();
+    assert_ne!(words.len(), 0);
+    words.sort_unstable();
+    words.dedup();
+    assert_eq!(words.len(), sa_tui::app::WORKING_WORDS.len());
+    assert!(sa_tui::app::WORKING_WORDS
+        .iter()
+        .all(|w| !w.trim().is_empty()));
+    assert_ne!(sa_tui::app::working_word().len(), 0);
 }

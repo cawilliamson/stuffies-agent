@@ -21,6 +21,124 @@ pub const ACCENT: Color = Color::Rgb(0x8a, 0xc8, 0xff);
 pub const OK: Color = Color::Rgb(0x7f, 0xc7, 0x9a);
 pub const BAD: Color = Color::Rgb(0xe8, 0x7c, 0x7c);
 
+/// shown in the transcript while a turn runs. one is picked per turn, so it reads as the
+/// model getting on with it rather than a static label.
+pub const WORKING_WORDS: &[&str] = &[
+    "adjudicating",
+    "appraising",
+    "arbitrating",
+    "assessing",
+    "brainstorming",
+    "brewing",
+    "brooding",
+    "calculating",
+    "calibrating",
+    "cerebrating",
+    "chiselling",
+    "chugging",
+    "churning",
+    "cogitating",
+    "concocting",
+    "conjuring",
+    "considering",
+    "contemplating",
+    "contriving",
+    "cross-referencing",
+    "crunching",
+    "deciphering",
+    "deducing",
+    "deliberating",
+    "dissecting",
+    "distilling",
+    "divining",
+    "dredging",
+    "envisioning",
+    "evaluating",
+    "excavating",
+    "extrapolating",
+    "fermenting",
+    "ferreting",
+    "fettling",
+    "fiddling",
+    "foraging",
+    "fossicking",
+    "gauging",
+    "gestating",
+    "grinding",
+    "hammering",
+    "imagining",
+    "improvising",
+    "incubating",
+    "introspecting",
+    "macgyvering",
+    "manifesting",
+    "mapping",
+    "marinating",
+    "measuring",
+    "meditating",
+    "mulling",
+    "musing",
+    "noodling",
+    "percolating",
+    "philosophising",
+    "picturing",
+    "plotting",
+    "pondering",
+    "pontificating",
+    "probing",
+    "prophesying",
+    "puzzling",
+    "ratiocinating",
+    "reflecting",
+    "riffing",
+    "ruminating",
+    "scavenging",
+    "scheming",
+    "scrutinising",
+    "scrying",
+    "sculpting",
+    "shaping",
+    "sifting",
+    "simmering",
+    "sleuthing",
+    "sniffing",
+    "soliloquising",
+    "speculating",
+    "spelunking",
+    "stewing",
+    "summoning",
+    "synthesising",
+    "theorising",
+    "tinkering",
+    "tracing",
+    "tracking",
+    "triangulating",
+    "trundling",
+    "tuning",
+    "unravelling",
+    "weighing",
+    "whirring",
+    "whittling",
+    "winnowing",
+    "wondering",
+    "wrangling",
+    "wrestling",
+];
+
+/// picks this turn's word. seeded from the clock: no dependency, and the exact choice is
+/// not worth being reproducible.
+#[must_use]
+pub fn working_word() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos() as usize);
+    WORKING_WORDS
+        .get(nanos % WORKING_WORDS.len())
+        .copied()
+        .unwrap_or("working")
+        .to_owned()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -71,6 +189,9 @@ pub struct Tab {
     pub transcript: Vec<Entry>,
     input: tui_input::Input,
     pub status: Status,
+    /// the word in the in-progress header. cleared when the turn ends, which is what
+    /// makes the header disappear.
+    pub working: Option<String>,
     pub scroll: u16,
     pub max_scroll: u16,
     pub follow: bool,
@@ -113,6 +234,7 @@ impl Tab {
                 model: model.into(),
                 ..Status::default()
             },
+            working: None,
             scroll: 0,
             max_scroll: 0,
             follow: true,
@@ -340,6 +462,7 @@ impl Tab {
             }
             "turn.completed" => {
                 self.status.turn_running = false;
+                self.working = None;
                 let reported = payload["usage"]["completion_tokens"].as_u64();
                 self.finish_message(now, reported);
                 self.status.prompt_tokens +=
@@ -358,6 +481,7 @@ impl Tab {
             }
             "turn.interrupted" => {
                 self.status.turn_running = false;
+                self.working = None;
                 self.finish_message(now, None);
                 let cause = payload.get("cause").and_then(Value::as_str).unwrap_or("");
                 self.push(Role::Error, format!("interrupted: {cause}"));
@@ -996,5 +1120,19 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
         index += 1;
     }
 
+    // an in-progress turn gets the same frame as a finished entry, so the transcript keeps
+    // one shape. the word is fixed for the turn, so the render cache stays valid.
+    if tab.status.turn_running {
+        if let Some(word) = &tab.working {
+            working_header(&mut out, word, inner);
+        }
+    }
+
     out
+}
+
+/// the in-progress header. deliberately header-only: it is a state, not a message.
+fn working_header(out: &mut Vec<Line<'static>>, word: &str, width: usize) {
+    top(out, &format!("{word}\u{2026}"), width, ACCENT);
+    bottom(out, width, ACCENT);
 }

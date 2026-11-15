@@ -3,7 +3,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use sa_core::agent::{Agent, BoxFuture, EventSink, ToolExecutor, ToolOutcome, TurnRequest};
+use sa_core::agent::{
+    Agent, AgentError, BoxFuture, EventSink, ToolExecutor, ToolOutcome, TurnRequest,
+};
 use sa_core::llm::{ChatRequest, Delta, Provider, ScriptedProvider, ToolCall, ToolSpec};
 use sa_core::store::StoreError;
 use serde_json::{json, Value};
@@ -195,5 +197,66 @@ async fn a_failed_tool_still_answers_the_call() {
             .as_deref()
             .is_some_and(|c| c.contains("permission denied")),
         "the failure must reach the model"
+    );
+}
+
+/// a provider that accepts the request and then never sends anything.
+struct StalledProvider;
+
+impl Provider for StalledProvider {
+    fn stream(&self, _request: ChatRequest) -> sa_core::llm::StreamFuture<'_> {
+        Box::pin(async {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            // leaked so the channel stays open: the stream simply stalls.
+            let _leaked = Box::leak(Box::new(tx));
+            Ok(rx)
+        })
+    }
+}
+
+struct CancellingSink {
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl EventSink for CancellingSink {
+    fn append(&self, _kind: &str, _payload: &Value) -> Result<u64, StoreError> {
+        Ok(0)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[tokio::test]
+async fn escape_interrupts_a_stalled_turn_without_waiting_for_a_delta() {
+    let sink = Arc::new(CancellingSink {
+        cancelled: std::sync::atomic::AtomicBool::new(false),
+    });
+    let agent = Agent::new(
+        Arc::new(StalledProvider),
+        Arc::new(FixedTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let flag = Arc::clone(&sink);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        flag.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    let started = std::time::Instant::now();
+    let outcome =
+        tokio::time::timeout(std::time::Duration::from_secs(5), agent.run_turn(request())).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(outcome, Ok(Err(AgentError::Cancelled))),
+        "expected a cancellation, got {outcome:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "took {elapsed:?}"
     );
 }
