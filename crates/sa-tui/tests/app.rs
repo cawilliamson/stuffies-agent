@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use sa_tui::app::{transcript_lines, Action, App, Role, Tab};
+use sa_tui::app::{transcript_lines, Action, App, Role};
 use serde_json::json;
 
 const fn key(code: KeyCode) -> KeyEvent {
@@ -1121,31 +1121,31 @@ fn flatten(lines: &[ratatui::text::Line<'static>]) -> String {
 }
 
 #[test]
-fn the_working_header_is_framed_while_a_turn_runs() {
-    let mut tab = Tab::new("session-abcdef", "t", "m");
-    tab.status.turn_running = true;
-    tab.working = Some("cogitating".to_owned());
-    let rendered = flatten(&transcript_lines(&tab, 60));
-    // the word sits in a header, not as a bare line of text.
-    assert!(rendered.contains("cogitating"), "{rendered}");
-    assert!(
-        rendered.contains('\u{256d}'),
-        "expected a frame:\n{rendered}"
-    );
+fn the_working_header_rides_the_composer_border() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some("cogitating".to_owned());
+
+    let screen = screen(&mut app, 100, 20);
+    assert!(screen.contains("cogitating"), "{screen}");
+
+    // it belongs to the composer, not the transcript at the bottom of the chat.
+    let transcript = flatten(&transcript_lines(app.tab(), 100));
+    assert!(!transcript.contains("cogitating"), "{transcript}");
 }
 
 #[test]
 fn the_working_header_disappears_when_the_turn_ends() {
-    let mut tab = Tab::new("session-abcdef", "t", "m");
-    tab.status.turn_running = true;
-    tab.working = Some("cogitating".to_owned());
-    assert!(flatten(&transcript_lines(&tab, 60)).contains("cogitating"));
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some("cogitating".to_owned());
+    assert!(screen(&mut app, 100, 20).contains("cogitating"));
 
     // what turn.completed and turn.interrupted do.
-    tab.status.turn_running = false;
-    tab.working = None;
-    let rendered = flatten(&transcript_lines(&tab, 60));
-    assert!(!rendered.contains("cogitating"), "{rendered}");
+    app.tab_mut().status.turn_running = false;
+    app.tab_mut().working = None;
+    let screen = screen(&mut app, 100, 20);
+    assert!(!screen.contains("cogitating"), "{screen}");
 }
 
 #[test]

@@ -249,16 +249,26 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
     let tab = app.tab();
     let field = usize::from(area.width.saturating_sub(4));
     let (hscroll, column) = tab.input_view(field);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(RULE))
+        .padding(Padding::new(1, 1, 0, 0));
+
+    // the in-progress header rides the composer's top border, where the operator is
+    // already looking, and vanishes with the turn.
+    if tab.status.turn_running {
+        if let Some(word) = &tab.working {
+            block = block.title(
+                Line::from(format!(" {word}\u{2026} ")).style(Style::default().fg(app::ACCENT)),
+            );
+        }
+    }
+
     frame.render_widget(
         Paragraph::new(tab.input_text().to_owned())
             .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(RULE))
-                    .padding(Padding::new(1, 1, 0, 0)),
-            ),
+            .block(block),
         area,
     );
     Some((area.x + 2 + u16::try_from(column).unwrap_or(0), area.y + 1))

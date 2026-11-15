@@ -1120,19 +1120,5 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
         index += 1;
     }
 
-    // an in-progress turn gets the same frame as a finished entry, so the transcript keeps
-    // one shape. the word is fixed for the turn, so the render cache stays valid.
-    if tab.status.turn_running {
-        if let Some(word) = &tab.working {
-            working_header(&mut out, word, inner);
-        }
-    }
-
     out
-}
-
-/// the in-progress header. deliberately header-only: it is a state, not a message.
-fn working_header(out: &mut Vec<Line<'static>>, word: &str, width: usize) {
-    top(out, &format!("{word}\u{2026}"), width, ACCENT);
-    bottom(out, width, ACCENT);
 }
