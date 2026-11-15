@@ -686,13 +686,9 @@ impl Manager {
             inner.turns.remove(&session_id);
         }
 
-        // retitle in the background: it must never hold up the next turn.
-        let manager = Arc::clone(&self);
-        let sid = session_id.clone();
+        // retitle inline so the operator watches it happen and sees the result.
         let model = self.default_model();
-        tokio::spawn(async move {
-            manager.maybe_retitle(sid, model).await;
-        });
+        self.maybe_retitle(&session_id, model).await;
     }
 
     pub fn cancel_turn(&self, session_id: &str) -> Result<(), ManagerError> {
@@ -719,8 +715,8 @@ impl Manager {
     /// asks the model for a short session title, so tabs read like the work rather than a
     /// session id. cheap: low effort, a couple of dozen tokens, and only on the first turn
     /// and then every fourth.
-    async fn maybe_retitle(self: Arc<Self>, session_id: String, model: String) {
-        let Ok((events, _)) = self.store.events_since(&session_id, 0, 100_000) else {
+    async fn maybe_retitle(&self, session_id: &str, model: String) {
+        let Ok((events, _)) = self.store.events_since(session_id, 0, 100_000) else {
             return;
         };
         let turns = events
@@ -767,6 +763,13 @@ impl Manager {
             return;
         }
 
+        // announce it: the client shows this, then the title itself.
+        let _ = self.append(
+            session_id,
+            kinds::TITLE_GENERATING,
+            &json!({"model": model, "effort": "low"}),
+        );
+
         let Ok(mut rx) = self
             .config
             .provider
@@ -797,7 +800,7 @@ impl Manager {
             tracing::debug!(%session_id, %title, "retitle skipped: unusable title");
             return;
         }
-        match self.rename_session(&session_id, &title) {
+        match self.rename_session(session_id, &title) {
             Ok(()) => tracing::debug!(%session_id, %title, "retitled"),
             Err(err) => tracing::debug!(%session_id, %err, "retitle failed"),
         }

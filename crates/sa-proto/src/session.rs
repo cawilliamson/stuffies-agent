@@ -172,6 +172,7 @@ pub mod kinds {
     pub const TOOL_COMPLETED: &str = "tool.completed";
     pub const TOOL_FAILED: &str = "tool.failed";
     pub const MODEL_CHANGED: &str = "model.changed";
+    pub const TITLE_GENERATING: &str = "title.generating";
     pub const CHECKPOINT: &str = "checkpoint";
     pub const COMPACTION_APPLIED: &str = "compaction.applied";
     pub const REVIEW_COMPLETED: &str = "review.completed";

@@ -349,12 +349,25 @@ pub async fn run(
                         if let Some(tab) = app.tab_for(sid) {
                             tab.on_event(kind, &frame["params"]["payload"]);
                         }
-                        // a generated title renames the tab it belongs to.
+                        // the title call is announced, then its result, then applied.
+                        if kind == "title.generating" {
+                            let model = frame["params"]["payload"]["model"]
+                                .as_str()
+                                .unwrap_or("model")
+                                .to_owned();
+                            if let Some(tab) = app.tab_for(sid) {
+                                tab.push(
+                                    app::Role::System,
+                                    format!("generating a session title with {model} (low effort)"),
+                                );
+                            }
+                        }
                         if kind == "session.renamed" {
                             if let Some(title) = frame["params"]["payload"]["title"].as_str() {
                                 let title = title.to_owned();
                                 if let Some(tab) = app.tab_for(sid) {
-                                    tab.title = title;
+                                    tab.title = title.clone();
+                                    tab.push(app::Role::System, format!("title: {title}"));
                                 }
                                 app.touch();
                             }

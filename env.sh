@@ -16,7 +16,8 @@ fi
 export OPENAI_API_ENDPOINT=https://clankers.chrisaw.io/v1
 export SA_MODEL=deepseek-v4-1-flash-1017-ablit
 export SA_CONTEXT_LIMIT=1048576
-export SA_REASONING_EFFORT=low
+# middle ground for chat. title generation picks its own (lowest) effort.
+export SA_REASONING_EFFORT=medium
 
 echo "sa env: ${SA_MODEL:-unset} @ ${OPENAI_API_ENDPOINT:-unset}"
 echo "  ./target/debug/sa daemon &"
