@@ -35,6 +35,9 @@ if ! command -v ast-grep >/dev/null 2>&1; then
 fi
 ast-grep scan --config sgconfig.yml
 
+step "complexity"
+./ci/complexity.sh
+
 step "supply chain"
 cargo deny check
 

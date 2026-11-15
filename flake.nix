@@ -16,13 +16,15 @@
       devShells = each (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [
+            ast-grep
             cargo
             cargo-deny
-            ast-grep
             cargo-machete
             cargo-mutants
             clippy
             marksman
+            python3
+            rust-code-analysis
             rustc
             rustfmt
           ];
