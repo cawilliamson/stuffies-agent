@@ -851,3 +851,76 @@ fn a_rename_for_an_unknown_session_is_ignored() {
         app.tab().title
     );
 }
+
+#[test]
+fn long_tool_output_is_not_truncated() {
+    let mut app = App::new("s", "m");
+    let output: String = (0..40)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "seq 40"}}),
+    );
+    app.tab_mut()
+        .on_event("tool.completed", &json!({"output": output, "exit_code": 0}));
+
+    // every line must survive, not just the first dozen.
+    let screen = screen(&mut app, 100, 60);
+    assert!(screen.contains("line 0"), "{screen}");
+    assert!(
+        screen.contains("line 39"),
+        "the tail must survive:\n{screen}"
+    );
+}
+
+#[test]
+fn markdown_italics_and_code_render_without_markers() {
+    use ratatui::style::Modifier;
+
+    let mut app = App::new("s", "m");
+    app.tab_mut()
+        .push(Role::Assistant, "use *cargo* with `--release` now");
+
+    let backend = TestBackend::new(120, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let screen: String = buffer.content().iter().map(|c| c.symbol()).collect();
+
+    assert!(
+        screen.contains("use cargo with --release now"),
+        "markers must be stripped:\n{screen}"
+    );
+    for marker in ["*", "`"] {
+        assert!(!screen.contains(marker), "no {marker:?} left:\n{screen}");
+    }
+
+    let italic = buffer
+        .content()
+        .iter()
+        .any(|c| c.symbol() == "c" && c.modifier.contains(Modifier::ITALIC));
+    assert!(italic, "the italic run must be italic");
+
+    let code = buffer
+        .content()
+        .iter()
+        .any(|c| c.symbol() == "-" && c.fg == sa_tui::app::CODE_INK);
+    assert!(code, "the code run must use the code colour");
+}
+
+#[test]
+fn the_hint_offers_interrupt_while_a_turn_runs() {
+    let mut app = App::new("session-abcdef", "m");
+    let idle = screen(&mut app, 160, 24);
+    assert!(idle.contains("ctrl+1..9 jump"), "idle hints:\n{idle}");
+
+    app.tab_mut().status.turn_running = true;
+    let busy = screen(&mut app, 160, 24);
+    assert!(busy.contains("esc interrupt"), "busy hints:\n{busy}");
+    assert!(
+        !busy.contains("ctrl+1..9 jump"),
+        "jump hint yields:\n{busy}"
+    );
+}

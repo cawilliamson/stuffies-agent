@@ -163,10 +163,38 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(SEP, Style::default().fg(*bg).bg(next)));
     }
     let used = Line::from(spans.clone()).width();
-    let hints = " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump ";
-    let pad = usize::from(width).saturating_sub(used + hints.chars().count());
+
+    // the hint is contextual: while a turn runs, interrupting is the useful key.
+    let busy = tab.status.turn_running;
+    let hint_len = if busy {
+        " esc interrupt \u{00b7} ctrl+t new \u{00b7} ctrl+w close "
+            .chars()
+            .count()
+    } else {
+        " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump "
+            .chars()
+            .count()
+    };
+    let pad = usize::from(width).saturating_sub(used + hint_len);
     spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(hints, Style::default().fg(app::FAINT)));
+    if busy {
+        spans.push(Span::styled(
+            " esc interrupt ",
+            Style::default()
+                .fg(Color::Rgb(0x10, 0x14, 0x1a))
+                .bg(app::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " ctrl+t new \u{00b7} ctrl+w close ",
+            Style::default().fg(app::FAINT),
+        ));
+    } else {
+        spans.push(Span::styled(
+            " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump ",
+            Style::default().fg(app::FAINT),
+        ));
+    }
     Line::from(spans)
 }
 

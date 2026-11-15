@@ -309,7 +309,7 @@ impl Tab {
                     .and_then(|c| i32::try_from(c).ok());
                 self.transcript.push(Entry {
                     role: Role::ToolOutput,
-                    text: indent(output, 12),
+                    text: output.to_owned(),
                     tool: None,
                     exit_code,
                 });
@@ -572,14 +572,6 @@ fn summarise(args: &Value) -> String {
     String::new()
 }
 
-fn indent(text: &str, max_lines: usize) -> String {
-    let mut lines: Vec<&str> = text.lines().take(max_lines).collect();
-    if text.lines().count() > max_lines {
-        lines.push("\u{2026}");
-    }
-    lines.join("\n")
-}
-
 /// the label and edge colour for a role.
 #[must_use]
 pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
@@ -611,31 +603,79 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
     (label, edge, body)
 }
 
-/// splits `**bold**` runs into styled spans, dropping the markers.
+/// the colour inline code is drawn in.
+pub const CODE_INK: Color = Color::Rgb(0xe0, 0xc0, 0x80);
+
+/// drops the inline markdown markers so text can be measured.
+#[must_use]
+pub fn plain(text: &str) -> String {
+    text.replace("**", "").replace(['*', '`'], "")
+}
+
+/// splits `**bold**`, `*italic*` and `` `code` `` runs into styled spans, dropping the
+/// markers. unmatched markers simply style the remainder.
 fn styled(text: &str, base: Style) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut bold = false;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
     let mut rest = text;
-    while let Some(at) = rest.find("**") {
-        let (before, after) = rest.split_at(at);
-        if !before.is_empty() {
-            let style = if bold {
-                base.add_modifier(ratatui::style::Modifier::BOLD)
-            } else {
-                base
-            };
-            spans.push(Span::styled(before.to_owned(), style));
+    let mut bold = false;
+    let mut italic = false;
+    let mut code = false;
+
+    let style_of = |bold: bool, italic: bool, code: bool| {
+        let mut style = base;
+        if bold {
+            style = style.add_modifier(ratatui::style::Modifier::BOLD);
         }
-        bold = !bold;
-        rest = &after[2..];
+        if italic {
+            style = style.add_modifier(ratatui::style::Modifier::ITALIC);
+        }
+        if code {
+            style = style.fg(CODE_INK);
+        }
+        style
+    };
+
+    while let Some(ch) = rest.chars().next() {
+        // longest marker first, so `**` is never read as two italics.
+        if let Some(after) = rest.strip_prefix("**") {
+            if !buf.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut buf),
+                    style_of(bold, italic, code),
+                ));
+            }
+            bold = !bold;
+            rest = after;
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix('*') {
+            if !buf.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut buf),
+                    style_of(bold, italic, code),
+                ));
+            }
+            italic = !italic;
+            rest = after;
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix('`') {
+            if !buf.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut buf),
+                    style_of(bold, italic, code),
+                ));
+            }
+            code = !code;
+            rest = after;
+            continue;
+        }
+        buf.push(ch);
+        rest = &rest[ch.len_utf8()..];
     }
-    if !rest.is_empty() {
-        let style = if bold {
-            base.add_modifier(ratatui::style::Modifier::BOLD)
-        } else {
-            base
-        };
-        spans.push(Span::styled(rest.to_owned(), style));
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, style_of(bold, italic, code)));
     }
     spans
 }
@@ -645,7 +685,7 @@ fn body(out: &mut Vec<Line<'static>>, text: &str, width: usize, edge: Color, ink
     let room = width.saturating_sub(4);
     for raw in text.lines() {
         // the markers are not drawn, so measure the text without them.
-        let plain = raw.replace("**", "");
+        let plain = plain(raw);
         let mut line: String = plain.chars().take(room).collect();
         if plain.chars().count() > room {
             line = plain

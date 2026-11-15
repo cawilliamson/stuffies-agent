@@ -220,19 +220,15 @@ impl Agent {
                 let started = std::time::Instant::now();
                 match self.tools.execute(call.clone()).await {
                     Ok(outcome) => {
-                        let truncated = outcome.output.len() > crate::tools::MAX_TOOL_OUTPUT;
-                        let stored = if truncated {
-                            truncate(&outcome.output, crate::tools::MAX_TOOL_OUTPUT)
-                        } else {
-                            outcome.output.clone()
-                        };
+                        // no truncation: the operator asked for full command output.
+                        let stored = outcome.output.clone();
                         self.sink.append(
                             kinds::TOOL_COMPLETED,
                             &json!({
                                 "turn_id": request.turn_id,
                                 "call_id": call.id,
                                 "output": stored,
-                                "truncated": truncated,
+                                "truncated": false,
                                 "exit_code": outcome.exit_code,
                                 "duration_ms": started.elapsed().as_millis() as u64,
                             }),
@@ -306,12 +302,4 @@ fn system_prompt() -> String {
 
 fn parse_args(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
-}
-
-fn truncate(text: &str, limit: usize) -> String {
-    let mut end = limit;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_owned()
 }
