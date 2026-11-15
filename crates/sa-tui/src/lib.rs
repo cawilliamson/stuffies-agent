@@ -212,24 +212,19 @@ pub fn draw<B: ratatui::backend::Backend>(
             let tab = app.tab();
             let field_width = usize::from(rows[2].width.saturating_sub(4));
             let (hscroll, column) = tab.input_view(field_width);
-            let (before, after) = tab.input_parts();
+            // no drawn caret: the terminal cursor is the caret, on an empty cell.
             frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::raw(before),
-                    Span::styled("|", Style::default().fg(app::ACCENT)),
-                    Span::raw(after),
-                ]))
-                .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(RULE))
-                        .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
-                ),
+                Paragraph::new(tab.input_text().to_owned())
+                    .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(RULE))
+                            .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
+                    ),
                 rows[2],
             );
-            // the terminal cursor sits on the marker so the two never double up.
             frame.set_cursor_position((
                 rows[2].x + 2 + u16::try_from(column).unwrap_or(0),
                 rows[2].y + 1,

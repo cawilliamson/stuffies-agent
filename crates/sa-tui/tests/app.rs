@@ -370,7 +370,7 @@ fn the_layout_renders_at_several_sizes() {
 }
 
 #[test]
-fn the_composer_has_no_prompt_prefix_and_a_caret_after_the_text() {
+fn the_composer_is_just_a_box_with_the_text() {
     let mut app = App::new("session-abcdef", "m");
     typed(&mut app, "hello");
 
@@ -379,17 +379,21 @@ fn the_composer_has_no_prompt_prefix_and_a_caret_after_the_text() {
     let mut terminal = Terminal::new(backend).expect("terminal");
     sa_tui::draw(&mut terminal, &mut app).expect("draw");
     let buffer = terminal.backend().buffer();
-    let composer: String = (0..100).map(|x| buffer[(x, height - 3)].symbol()).collect();
+    let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
 
+    let composer = row(height - 3);
     assert!(
-        composer.contains("hello|"),
-        "caret must follow the text:\n{composer}"
+        composer.contains("hello"),
+        "the text must render:\n{composer}"
     );
+    // the caret is the terminal cursor, not a drawn glyph.
+    assert!(!composer.contains('|'), "no drawn caret:\n{composer}");
     assert!(
         !composer.contains('\u{276f}'),
-        "the prompt glyph must be gone:\n{composer}"
+        "no prompt glyph:\n{composer}"
     );
-    let border: String = (0..100).map(|x| buffer[(x, height - 4)].symbol()).collect();
+
+    let border = row(height - 4);
     assert!(
         border.contains('\u{256d}') && border.contains('\u{256e}'),
         "the box must remain:\n{border}"

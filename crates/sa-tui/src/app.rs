@@ -122,17 +122,6 @@ impl Tab {
         self.touch();
     }
 
-    /// the input split at the caret, so the view can draw a marker where typing happens.
-    #[must_use]
-    pub fn input_parts(&self) -> (String, String) {
-        let value = self.input.value();
-        let cursor = self.input.cursor();
-        (
-            value.chars().take(cursor).collect(),
-            value.chars().skip(cursor).collect(),
-        )
-    }
-
     #[must_use]
     pub fn input_view(&self, width: usize) -> (usize, usize) {
         let scroll = self.input.visual_scroll(width.max(1));
