@@ -176,8 +176,11 @@ fn the_tab_bar_is_one_row_of_lit_and_dim_tabs() {
     let buffer = terminal.backend().buffer();
 
     let row0: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
-    assert!(row0.contains("1 session"), "first tab label:\n{row0}");
-    assert!(row0.contains("2 session"), "second tab label:\n{row0}");
+    assert!(
+        row0.contains("1 (session"),
+        "the tab must carry its id:\n{row0}"
+    );
+    assert!(row0.contains("2 (session"), "second tab label:\n{row0}");
     assert!(row0.contains('\u{2502}'), "tabs need a divider:\n{row0}");
 
     // the active tab is a lit chip; the inactive one is not filled.
@@ -784,4 +787,44 @@ fn long_text_is_truncated_inside_the_frame_not_wrapped_outside_it() {
         }
     }
     assert!(rows >= 3, "expected a framed message, got {rows} rows");
+}
+
+#[test]
+fn a_busy_tab_shows_a_spinner() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.spinner = 3;
+    let screen = screen(&mut app, 100, 20);
+    // a braille frame from the spinner set sits beside the tab label.
+    assert!(
+        screen
+            .chars()
+            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+        "expected a spinner glyph:\n{screen}"
+    );
+}
+
+#[test]
+fn an_idle_tab_has_no_spinner() {
+    let app = App::new("session-abcdef", "m");
+    let mut app = app;
+    let screen = screen(&mut app, 100, 20);
+    assert!(
+        !screen
+            .chars()
+            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+        "no spinner when idle:\n{screen}"
+    );
+}
+
+#[test]
+fn the_tab_title_keeps_its_session_id_after_a_rename() {
+    let mut app = App::new("abcdef12-3456", "m");
+    let tab = app.tab_for("abcdef12-3456").expect("tab");
+    let short: String = "abcdef12-3456".chars().take(8).collect();
+    tab.title = format!("Fixing rust bugs ({short})");
+    let screen = screen(&mut app, 100, 20);
+    // the summary may be shortened to fit, but the id must always survive.
+    assert!(screen.contains("Fixing rust"), "{screen}");
+    assert!(screen.contains("(abcdef12"), "{screen}");
 }

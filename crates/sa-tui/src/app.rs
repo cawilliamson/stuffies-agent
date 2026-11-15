@@ -86,7 +86,12 @@ impl Tab {
         let title = title.into();
         Self {
             session,
-            title: if title.is_empty() { short } else { title },
+            title: if title.is_empty() {
+                // the tab always carries its session id, so tabs are identifiable.
+                format!("({short})")
+            } else {
+                title
+            },
             transcript: Vec::new(),
             input: tui_input::Input::default(),
             status: Status {
@@ -395,6 +400,10 @@ pub struct App {
     pub branch: Option<String>,
     pub workspace: Option<String>,
     pub revision: u64,
+    /// index into the compiled-in theme registry.
+    pub theme: usize,
+    /// animation frame for the activity spinner.
+    pub spinner: usize,
 }
 
 impl App {
@@ -407,6 +416,8 @@ impl App {
             branch: None,
             workspace: None,
             revision: 1,
+            theme: crate::theme::default_index(),
+            spinner: 0,
         }
     }
 

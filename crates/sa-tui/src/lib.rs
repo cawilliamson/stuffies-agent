@@ -4,6 +4,7 @@
 //! something visible changed, so an idle session costs nothing.
 
 pub mod app;
+pub mod theme;
 
 use std::io::Write;
 
@@ -12,16 +13,10 @@ use crossterm::event::{Event, EventStream, KeyEventKind};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::text::Line;
 use ratatui::Terminal;
 use sa_client::Client;
 use serde_json::{json, Value};
-
-const RULE: Color = Color::Rgb(0x2a, 0x30, 0x3a);
-const SEP: &str = "\u{e0b0}";
 
 struct Restore;
 
@@ -34,198 +29,15 @@ impl Drop for Restore {
 
 /// draws the tab strip: one row, no background bands. the active tab is a lit chip; the
 /// rest are plain text separated by dim dividers.
-fn tab_bar(app: &App, width: u16) -> Line<'static> {
-    const MAX_LABEL: usize = 20;
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut used: usize = 0;
-
-    for (index, tab) in app.tabs.iter().enumerate() {
-        let mut label = format!("{} {}", index + 1, tab.title);
-        if label.chars().count() > MAX_LABEL {
-            label = label.chars().take(MAX_LABEL - 1).collect::<String>();
-            label.push('\u{2026}');
-        }
-        let cell = label.chars().count() + 2;
-        if used + cell + 3 > usize::from(width) {
-            break;
-        }
-        if index > 0 {
-            spans.push(Span::styled("\u{2502}", Style::default().fg(app::FAINT)));
-            used += 1;
-        }
-        if index == app.active {
-            spans.push(Span::styled(
-                format!(" {label} "),
-                Style::default()
-                    .fg(Color::Rgb(0x10, 0x14, 0x1a))
-                    .bg(app::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            spans.push(Span::styled(
-                format!(" {label} "),
-                Style::default().fg(app::DIM),
-            ));
-        }
-        used += cell;
-    }
-
-    spans.push(Span::styled(" \u{002b}", Style::default().fg(app::FAINT)));
-    Line::from(spans)
-}
-
-fn status_bar(app: &App, width: u16) -> Line<'static> {
-    let tab = app.tab();
-    let short: String = tab.session.chars().take(8).collect();
-    let mut segments: Vec<(String, Color, Color)> = vec![(
-        format!(" {short} "),
-        Color::Rgb(0xd8, 0xd8, 0xd8),
-        Color::Rgb(0x2a, 0x2a, 0x2a),
-    )];
-    if let Some(branch) = &app.branch {
-        segments.push((
-            format!(" \u{e725} {branch} "),
-            Color::Rgb(0xd8, 0xd8, 0xf0),
-            Color::Rgb(0x3b, 0x3b, 0x5c),
-        ));
-    }
-    if !tab.status.model.is_empty() {
-        let label = if tab.status.effort.is_empty() {
-            tab.status.model.clone()
-        } else {
-            format!("{}:{}", tab.status.model, tab.status.effort)
-        };
-        segments.push((
-            format!(" \u{f2db} {label} "),
-            Color::Rgb(0xe0, 0xe8, 0xff),
-            Color::Rgb(0x2f, 0x45, 0x66),
-        ));
-    }
-    segments.push((
-        format!(" \u{f0e4} {:.1} t/s ", tab.tok_per_sec),
-        if tab.flash_highlight {
-            Color::Rgb(0xff, 0xff, 0xff)
-        } else {
-            Color::Rgb(0xff, 0xd8, 0xd8)
-        },
-        if tab.flash_highlight {
-            Color::Rgb(0xc0, 0x30, 0x30)
-        } else {
-            Color::Rgb(0x5c, 0x2f, 0x2f)
-        },
-    ));
-    segments.push((
-        format!(
-            " \u{f0e7} {}/{} ",
-            compact(tab.status.prompt_tokens),
-            compact(tab.status.completion_tokens)
-        ),
-        Color::Rgb(0xd8, 0xd8, 0xd8),
-        Color::Rgb(0x2a, 0x2a, 0x2a),
-    ));
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for (index, (text, fg, bg)) in segments.iter().enumerate() {
-        spans.push(Span::styled(text.clone(), Style::default().fg(*fg).bg(*bg)));
-        let next = segments.get(index + 1).map_or(Color::Reset, |s| s.2);
-        spans.push(Span::styled(SEP, Style::default().fg(*bg).bg(next)));
-    }
-    let used = Line::from(spans.clone()).width();
-    let hints = " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump ";
-    let pad = usize::from(width).saturating_sub(used + hints.chars().count());
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(hints, Style::default().fg(app::FAINT)));
-    Line::from(spans)
-}
-
-fn compact(count: u64) -> String {
-    if count >= 1_000_000 {
-        format!("{}M", count / 1_000_000)
-    } else if count >= 1_000 {
-        format!("{}k", count / 1_000)
-    } else {
-        count.to_string()
-    }
-}
-
 pub fn draw<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> std::io::Result<()> {
     terminal
         .draw(|frame| {
-            let area = frame.area();
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Min(3),
-                    Constraint::Length(3),
-                    Constraint::Length(1),
-                ])
-                .split(area);
-
-            frame.render_widget(Paragraph::new(tab_bar(app, rows[0].width)), rows[0]);
-
-            // the transcript lives in a framed pane.
-            let pane = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(RULE));
-            let inner = pane.inner(rows[1]);
-            frame.render_widget(pane, rows[1]);
-
-            let content = app::transcript_lines(app.tab(), inner.width);
-            let width = usize::from(inner.width).max(1);
-            let visual: usize = content
-                .iter()
-                .map(|line| {
-                    // a line that exactly fills the pane is one row, not two.
-                    let w = line.width();
-                    if w == 0 {
-                        1
-                    } else {
-                        w.div_ceil(width)
-                    }
-                })
-                .sum();
-            let tab = app.tab_mut();
-            tab.max_scroll =
-                u16::try_from(visual.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
-            if tab.follow {
-                tab.scroll = tab.max_scroll;
-            } else {
-                tab.scroll = tab.scroll.min(tab.max_scroll);
+            if let Some((x, y)) = theme::at(app.theme).render(frame, app) {
+                frame.set_cursor_position((x, y));
             }
-            let scroll = tab.scroll;
-
-            // no Wrap here: every line is already measured to the frame width, and
-            // wrapping again spills text outside the frame.
-            frame.render_widget(Paragraph::new(content).scroll((scroll, 0)), inner);
-
-            let tab = app.tab();
-            let field_width = usize::from(rows[2].width.saturating_sub(4));
-            let (hscroll, column) = tab.input_view(field_width);
-            // no drawn caret: the terminal cursor is the caret, on an empty cell.
-            frame.render_widget(
-                Paragraph::new(tab.input_text().to_owned())
-                    .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .border_style(Style::default().fg(RULE))
-                            .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
-                    ),
-                rows[2],
-            );
-            frame.set_cursor_position((
-                rows[2].x + 2 + u16::try_from(column).unwrap_or(0),
-                rows[2].y + 1,
-            ));
-
-            frame.render_widget(Paragraph::new(status_bar(app, rows[3].width)), rows[3]);
         })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
@@ -331,6 +143,11 @@ pub async fn run(
                 for tab in &mut app.tabs {
                     tab.tick();
                 }
+                // animate the spinner while anything is in flight.
+                if app.tabs.iter().any(|t| t.status.turn_running) {
+                    app.spinner = app.spinner.wrapping_add(1);
+                    app.touch();
+                }
             }
             Incoming::Resize => app.touch(),
             Incoming::Key(key) => action = app.on_key(key),
@@ -362,8 +179,10 @@ pub async fn run(
                         if kind == "session.renamed" {
                             if let Some(title) = frame["params"]["payload"]["title"].as_str() {
                                 let title = title.to_owned();
+                                let short: String = sid.chars().take(8).collect();
                                 if let Some(tab) = app.tab_for(sid) {
-                                    tab.title = title.clone();
+                                    // the id always travels with the summary.
+                                    tab.title = format!("{title} ({short})");
                                     tab.push(app::Role::System, format!("title: {title}"));
                                 }
                                 app.touch();
@@ -415,7 +234,7 @@ pub async fn run(
                                 let previous = app.tab().session.clone();
                                 app.replace_active(id.clone(), model.clone());
                                 let _ = client
-                                    .call("session.detach", json!({"session_id": previous}))
+                                    .call("session.delete", json!({"session_id": previous}))
                                     .await;
                                 let _ = client
                                     .call(
@@ -428,8 +247,9 @@ pub async fn run(
                         Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
                     }
                 } else if let Some(closed) = app.close_tab() {
+                    // a closed tab is retired, not parked: sessions are tabs, not history.
                     let _ = client
-                        .call("session.detach", json!({"session_id": closed}))
+                        .call("session.delete", json!({"session_id": closed}))
                         .await;
                 }
             }
@@ -482,6 +302,26 @@ pub async fn run(
                             }
                         }
                     }
+                    "/theme" if arg.is_empty() => {
+                        let names: Vec<&str> =
+                            theme::THEMES.iter().map(|t| t.name()).collect();
+                        app.tab_mut().push(
+                            app::Role::System,
+                            format!("themes: {}", names.join(", ")),
+                        );
+                    }
+                    "/theme" => match theme::index_of(arg) {
+                        Some(index) => {
+                            app.theme = index;
+                            app.touch();
+                            app.tab_mut()
+                                .push(app::Role::System, format!("theme: {arg}"));
+                        }
+                        None => app.tab_mut().push(
+                            app::Role::Error,
+                            format!("no theme named {arg}, try /theme"),
+                        ),
+                    },
                     "/effort" if arg.is_empty() => {
                         let levels = crate::app::Status::default();
                         let _ = levels;
