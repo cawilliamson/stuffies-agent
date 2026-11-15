@@ -20,6 +20,7 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
             context_limit: 128_000,
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
+            default_effort: "medium".to_owned(),
             models: Arc::new(std::sync::Mutex::new(Vec::new())),
         }),
     ))

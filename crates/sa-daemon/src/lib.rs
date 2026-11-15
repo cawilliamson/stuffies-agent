@@ -171,6 +171,8 @@ pub async fn run(
                 .ok()
                 .and_then(|v| v.parse().ok()),
             reasoning_effort: std::env::var("SA_REASONING_EFFORT").ok(),
+            default_effort: std::env::var("SA_REASONING_EFFORT")
+                .unwrap_or_else(|_| "medium".to_owned()),
             models,
             lock_dir: cfg.runtime_dir.join("locks"),
             turn_timeout_secs: cfg.turn_timeout_secs,

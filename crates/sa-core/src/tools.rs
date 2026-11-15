@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::agent::{BoxFuture, ToolExecutor};
+use crate::agent::{BoxFuture, ToolExecutor, ToolOutcome};
 use crate::llm::{ToolCall, ToolSpec};
 
 /// tool output above this is truncated in the event, with `truncated: true` recorded.
@@ -53,15 +53,15 @@ impl ToolRegistry {
         Ok(normalised)
     }
 
-    async fn call(&self, call: &ToolCall) -> Result<String, ToolError> {
+    async fn call(&self, call: &ToolCall) -> Result<ToolOutcome, ToolError> {
         let args = parse_args(&call.arguments)?;
         match call.name.as_str() {
-            "read" => self.read(&args).await,
-            "write" => self.write(&args).await,
-            "edit" => self.edit(&args).await,
-            "ls" => self.ls(&args).await,
-            "find" => self.find(&args).await,
-            "grep" => self.grep(&args).await,
+            "read" => self.read(&args).await.map(text),
+            "write" => self.write(&args).await.map(text),
+            "edit" => self.edit(&args).await.map(text),
+            "ls" => self.ls(&args).await.map(text),
+            "find" => self.find(&args).await.map(text),
+            "grep" => self.grep(&args).await.map(text),
             "bash" => self.bash(&args).await,
             other => Err(ToolError::Unknown(other.to_owned())),
         }
@@ -191,7 +191,7 @@ impl ToolRegistry {
         Ok(hits.join("\n"))
     }
 
-    async fn bash(&self, args: &Value) -> Result<String, ToolError> {
+    async fn bash(&self, args: &Value) -> Result<ToolOutcome, ToolError> {
         let command = required(args, "command")?.to_owned();
 
         let mut process = tokio::process::Command::new("sh");
@@ -212,12 +212,13 @@ impl ToolRegistry {
         .await
         .map_err(|_| ToolError::Args(format!("timed out after {COMMAND_TIMEOUT_SECS}s")))??;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(format!(
-            "exit {}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-            output.status.code().unwrap_or(-1)
-        ))
+        // one combined stream, as a terminal would show it: no section headers.
+        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        Ok(ToolOutcome {
+            output: combined,
+            exit_code: output.status.code(),
+        })
     }
 }
 
@@ -262,8 +263,16 @@ impl ToolExecutor for ToolRegistry {
         ]
     }
 
-    fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<String, String>> {
+    fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
         Box::pin(async move { self.call(&call).await.map_err(|e| e.to_string()) })
+    }
+}
+
+/// wraps plain text output as a tool outcome.
+fn text(output: String) -> ToolOutcome {
+    ToolOutcome {
+        output,
+        exit_code: None,
     }
 }
 

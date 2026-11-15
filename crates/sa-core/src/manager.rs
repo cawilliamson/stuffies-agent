@@ -61,6 +61,8 @@ pub struct ManagerConfig {
     pub context_limit: u64,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
+    /// reasoning effort applied to new sessions when none is chosen.
+    pub default_effort: String,
     /// model ids the endpoint reports. shared so a background refresher can fill it in.
     pub models: Arc<Mutex<Vec<String>>>,
 }
@@ -203,6 +205,8 @@ impl Manager {
                 let model = self.default_model();
                 (!model.is_empty()).then_some(model)
             },
+            effort: (!self.config.default_effort.is_empty())
+                .then(|| self.config.default_effort.clone()),
             owner_host: self.config.host_fingerprint.clone(),
             owner_epoch: 0,
         })?;
@@ -242,6 +246,23 @@ impl Manager {
     #[must_use]
     pub fn default_model(&self) -> String {
         self.models().first().cloned().unwrap_or_default()
+    }
+
+    /// the reasoning effort levels this build offers.
+    #[must_use]
+    pub fn effort_levels() -> Vec<&'static str> {
+        vec!["low", "medium", "high"]
+    }
+
+    /// changes a session's reasoning effort, recording it in the log.
+    pub fn set_effort(&self, id: &str, effort: &str) -> Result<(), ManagerError> {
+        self.store.set_session_effort(id, effort)?;
+        self.append(
+            id,
+            kinds::MODEL_CHANGED,
+            &json!({"field": "effort", "to": effort}),
+        )?;
+        Ok(())
     }
 
     pub fn list_sessions(
@@ -607,7 +628,10 @@ impl Manager {
             compaction_summary,
             context: crate::workspace::context(&workspace),
             max_tokens: self.config.max_tokens,
-            reasoning_effort: self.config.reasoning_effort.clone(),
+            reasoning_effort: row
+                .effort
+                .clone()
+                .or_else(|| self.config.reasoning_effort.clone()),
         };
 
         // a stalled model stream must not hang the session forever (spec 14, v1.1).
@@ -661,6 +685,14 @@ impl Manager {
         if let Ok(mut inner) = self.inner.lock() {
             inner.turns.remove(&session_id);
         }
+
+        // retitle in the background: it must never hold up the next turn.
+        let manager = Arc::clone(&self);
+        let sid = session_id.clone();
+        let model = self.default_model();
+        tokio::spawn(async move {
+            manager.maybe_retitle(sid, model).await;
+        });
     }
 
     pub fn cancel_turn(&self, session_id: &str) -> Result<(), ManagerError> {
@@ -682,6 +714,80 @@ impl Manager {
             since: crate::store::now_seconds(),
             turn_id,
         }
+    }
+
+    /// asks the model for a short session title, so tabs read like the work rather than a
+    /// session id. cheap: low effort, a couple of dozen tokens, and only on the first turn
+    /// and then every fourth.
+    async fn maybe_retitle(self: Arc<Self>, session_id: String, model: String) {
+        let Ok((events, _)) = self.store.events_since(&session_id, 0, 100_000) else {
+            return;
+        };
+        let turns = events
+            .iter()
+            .filter(|e| e.kind == kinds::TURN_COMPLETED)
+            .count();
+        if turns == 0 || (turns != 1 && turns % 4 != 0) {
+            return;
+        }
+
+        let mut digest = String::new();
+        for event in &events {
+            match event.kind.as_str() {
+                kinds::TURN_STARTED => {
+                    if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
+                        digest.push_str(&format!(
+                            "user: {}\n",
+                            prompt.chars().take(200).collect::<String>()
+                        ));
+                    }
+                }
+                kinds::LLM_COMPLETED => {
+                    if let Some(text) = event.payload.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            digest.push_str(&format!(
+                                "assistant: {}\n",
+                                text.chars().take(200).collect::<String>()
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if digest.is_empty() {
+            return;
+        }
+
+        let Ok(mut rx) = self
+            .config
+            .provider
+            .stream(crate::llm::ChatRequest {
+                model,
+                messages: vec![crate::llm::ChatMessage::user(format!(
+                    "Give this coding session a title of at most six words. \
+                     No quotes, no trailing punctuation. Reply with the title only.\n\n{digest}"
+                ))],
+                tools: Vec::new(),
+                max_tokens: Some(24),
+                reasoning_effort: Some("low".to_owned()),
+            })
+            .await
+        else {
+            return;
+        };
+
+        let mut title = String::new();
+        while let Some(delta) = rx.recv().await {
+            if let crate::llm::Delta::Text(chunk) = delta {
+                title.push_str(&chunk);
+            }
+        }
+        let title = title.trim().trim_matches('"').trim().replace('\n', " ");
+        if title.is_empty() || title.chars().count() > 60 {
+            return;
+        }
+        let _ = self.rename_session(&session_id, &title);
     }
 
     // ---- compaction --------------------------------------------------

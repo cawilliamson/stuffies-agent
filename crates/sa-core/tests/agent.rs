@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use sa_core::agent::{Agent, BoxFuture, EventSink, ToolExecutor, TurnRequest};
+use sa_core::agent::{Agent, BoxFuture, EventSink, ToolExecutor, ToolOutcome, TurnRequest};
 use sa_core::llm::{ChatRequest, Delta, Provider, ScriptedProvider, ToolCall, ToolSpec};
 use sa_core::store::StoreError;
 use serde_json::{json, Value};
@@ -37,8 +37,13 @@ impl ToolExecutor for FixedTool {
         }]
     }
 
-    fn execute(&self, _call: ToolCall) -> BoxFuture<'_, Result<String, String>> {
-        Box::pin(async { Ok("file contents".to_owned()) })
+    fn execute(&self, _call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
+        Box::pin(async {
+            Ok(ToolOutcome {
+                output: "file contents".to_owned(),
+                exit_code: None,
+            })
+        })
     }
 }
 
@@ -141,7 +146,7 @@ async fn a_failed_tool_still_answers_the_call() {
         fn specs(&self) -> Vec<ToolSpec> {
             Vec::new()
         }
-        fn execute(&self, _call: ToolCall) -> BoxFuture<'_, Result<String, String>> {
+        fn execute(&self, _call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
             Box::pin(async { Err("permission denied".to_owned()) })
         }
     }

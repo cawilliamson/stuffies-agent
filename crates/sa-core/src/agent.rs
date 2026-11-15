@@ -40,9 +40,17 @@ pub trait EventSink: Send + Sync {
 }
 
 /// executes tool calls. the registry arrives at v1.0 task 4; tests use an empty one.
+/// what a tool produced. `exit_code` is set by tools that run a process, so the client can
+/// show it rather than burying it in the output text.
+#[derive(Debug, Clone)]
+pub struct ToolOutcome {
+    pub output: String,
+    pub exit_code: Option<i32>,
+}
+
 pub trait ToolExecutor: Send + Sync {
     fn specs(&self) -> Vec<ToolSpec>;
-    fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<String, String>>;
+    fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>>;
 }
 
 pub struct EmptyTools;
@@ -52,7 +60,7 @@ impl ToolExecutor for EmptyTools {
         Vec::new()
     }
 
-    fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<String, String>> {
+    fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
         Box::pin(async move { Err(format!("unknown tool: {}", call.name)) })
     }
 }
@@ -211,12 +219,12 @@ impl Agent {
 
                 let started = std::time::Instant::now();
                 match self.tools.execute(call.clone()).await {
-                    Ok(output) => {
-                        let truncated = output.len() > crate::tools::MAX_TOOL_OUTPUT;
+                    Ok(outcome) => {
+                        let truncated = outcome.output.len() > crate::tools::MAX_TOOL_OUTPUT;
                         let stored = if truncated {
-                            truncate(&output, crate::tools::MAX_TOOL_OUTPUT)
+                            truncate(&outcome.output, crate::tools::MAX_TOOL_OUTPUT)
                         } else {
-                            output.clone()
+                            outcome.output.clone()
                         };
                         self.sink.append(
                             kinds::TOOL_COMPLETED,
@@ -225,10 +233,11 @@ impl Agent {
                                 "call_id": call.id,
                                 "output": stored,
                                 "truncated": truncated,
+                                "exit_code": outcome.exit_code,
                                 "duration_ms": started.elapsed().as_millis() as u64,
                             }),
                         )?;
-                        messages.push(ChatMessage::tool(&call.id, output));
+                        messages.push(ChatMessage::tool(&call.id, outcome.output));
                     }
                     Err(error) => {
                         self.sink.append(

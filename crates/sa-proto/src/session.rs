@@ -67,6 +67,8 @@ pub struct SessionSummary {
     pub owner_epoch: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub updated_at: i64,
 }
 

@@ -578,3 +578,96 @@ fn a_standalone_reasoning_frame_is_grey() {
         "a thinking frame must be grey"
     );
 }
+
+#[test]
+fn tool_calls_render_as_terminal_like_frames() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "ls -la"}}),
+    );
+    app.tab_mut().on_event(
+        "tool.completed",
+        &json!({"output": "file.txt", "exit_code": 1}),
+    );
+
+    let screen = screen(&mut app, 100, 30);
+    assert!(
+        screen.contains("\u{256d}\u{2500} bash"),
+        "tool name in the title:\n{screen}"
+    );
+    assert!(
+        screen.contains("$ ls -la"),
+        "bash commands get a prompt:\n{screen}"
+    );
+    assert!(
+        screen.contains("\u{256d}\u{2500} output (exit 1)"),
+        "exit code belongs in the title:\n{screen}"
+    );
+    assert!(screen.contains("file.txt"), "{screen}");
+}
+
+#[test]
+fn the_rate_freezes_while_a_tool_runs() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event_at("turn.started", &json!({"prompt": "go"}), t0);
+    app.tab_mut()
+        .on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), t0);
+    app.tab_mut().tick_at(t0 + Duration::from_millis(100));
+    let live = app.tab().tok_per_sec;
+    assert!(live > 0.0, "a live rate first");
+
+    // the window ages out during a long tool call, but the figure must hold.
+    app.tab_mut().on_event_at(
+        "tool.requested",
+        &json!({"tool": "bash"}),
+        t0 + Duration::from_millis(200),
+    );
+    app.tab_mut().tick_at(t0 + Duration::from_secs(30));
+    assert!(
+        app.tab().tok_per_sec > 0.0,
+        "the rate must freeze during tools, got {}",
+        app.tab().tok_per_sec
+    );
+}
+
+#[test]
+fn the_status_bar_shows_the_effort_level() {
+    let mut app = App::new("session-abcdef", "deepseek-v4");
+    app.tab_mut().status.effort = "high".to_owned();
+    let screen = screen(&mut app, 160, 24);
+    assert!(screen.contains("deepseek-v4:high"), "{screen}");
+}
+
+#[test]
+fn frames_fill_whatever_width_is_available() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::Assistant, "x");
+    assert_eq!(sa_tui::render(&app, 60)[0].width(), 60);
+    assert_eq!(
+        sa_tui::render(&app, 120)[0].width(),
+        120,
+        "a wide terminal must not leave a dead margin"
+    );
+}
+
+#[test]
+fn scrolling_moves_several_lines_per_key() {
+    let mut app = App::new("s", "m");
+    for n in 0..40 {
+        app.tab_mut().push(Role::Assistant, format!("line {n}"));
+    }
+    let _ = screen(&mut app, 100, 24);
+    let ceiling = app.tab().max_scroll;
+    assert!(ceiling > 3, "need a scrollable transcript");
+
+    app.on_key(key(KeyCode::Up));
+    assert!(
+        app.tab().scroll <= ceiling - 3,
+        "an arrow key must move more than one line"
+    );
+}

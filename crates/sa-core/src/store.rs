@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 /// payload fields larger than this are spilled to the blob table (spec 6.3).
 pub const BLOB_THRESHOLD: usize = 64 * 1024;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -49,6 +49,7 @@ pub struct NewSession {
     pub cwd: String,
     pub repo_id: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub owner_host: String,
     pub owner_epoch: u64,
 }
@@ -65,6 +66,7 @@ pub struct SessionRow {
     pub cwd: String,
     pub repo_id: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -78,6 +80,7 @@ impl SessionRow {
             state: self.state,
             owner_epoch: self.owner_epoch,
             model: self.model.clone(),
+            effort: self.effort.clone(),
             updated_at: self.updated_at,
         }
     }
@@ -132,8 +135,8 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO sessions (id, title, parent_id, state, owner_host, owner_epoch, cwd,
-                                   repo_id, model, created_at, updated_at)
-             VALUES (?1, ?2, NULL, 'active', ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                                   repo_id, model, effort, created_at, updated_at)
+             VALUES (?1, ?2, NULL, 'active', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             params![
                 new.id,
                 new.title,
@@ -142,6 +145,7 @@ impl Store {
                 new.cwd,
                 new.repo_id,
                 new.model,
+                new.effort,
                 now,
             ],
         )?;
@@ -155,7 +159,7 @@ impl Store {
         let row = conn
             .query_row(
                 "SELECT id, title, parent_id, state, owner_host, owner_epoch, cwd, repo_id,
-                        model, created_at, updated_at
+                        model, effort, created_at, updated_at
                  FROM sessions WHERE id = ?1",
                 params![id],
                 map_session,
@@ -168,11 +172,11 @@ impl Store {
         let conn = self.conn()?;
         let sql = if include_deleted {
             "SELECT id, title, parent_id, state, owner_host, owner_epoch, cwd, repo_id,
-                    model, created_at, updated_at
+                    model, effort, created_at, updated_at
              FROM sessions ORDER BY updated_at DESC"
         } else {
             "SELECT id, title, parent_id, state, owner_host, owner_epoch, cwd, repo_id,
-                    model, created_at, updated_at
+                    model, effort, created_at, updated_at
              FROM sessions WHERE state != 'deleted' ORDER BY updated_at DESC"
         };
         let mut stmt = conn.prepare(sql)?;
@@ -205,6 +209,15 @@ impl Store {
         if changed == 0 {
             return Err(StoreError::SessionNotFound(id.to_owned()));
         }
+        Ok(())
+    }
+
+    pub fn set_session_effort(&self, id: &str, effort: &str) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE sessions SET effort = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, effort, now_seconds()],
+        )?;
         Ok(())
     }
 
@@ -482,8 +495,9 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SessionRow, S
         cwd: row.get(6)?,
         repo_id: row.get(7)?,
         model: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        effort: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     }))
 }
 
@@ -587,6 +601,7 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
              cwd TEXT NOT NULL,
              repo_id TEXT,
              model TEXT,
+             effort TEXT,
              created_at INTEGER NOT NULL,
              updated_at INTEGER NOT NULL
          );
@@ -608,6 +623,20 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     let version: i64 = conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
         row.get(0)
     })?;
+
+    // v3 added the per-session reasoning effort.
+    if version == 2 {
+        let has_column: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'effort'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_column == 0 {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN effort TEXT;")?;
+        }
+        conn.execute("UPDATE schema_version SET version = 3", [])?;
+        return Ok(());
+    }
 
     // v2 dropped the autonomy column when the permission system was removed.
     if version < SCHEMA_VERSION {

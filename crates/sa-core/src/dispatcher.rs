@@ -118,6 +118,7 @@ impl Dispatcher {
             "events.unsubscribe" => self.events_unsubscribe(params),
             "model.list" => self.model_list(),
             "model.select" => self.model_select(params),
+            "model.effort" => self.model_effort(params),
             "handoff.export" | "handoff.import" | "handoff.accept" => Err(RpcError::new(
                 code::NOT_IMPLEMENTED,
                 "handoff arrives at v4.0",
@@ -324,10 +325,30 @@ impl Dispatcher {
 
     fn model_list(&self) -> Result<Value, RpcError> {
         let models = self.manager.models();
+        let levels = crate::manager::Manager::effort_levels();
         Ok(json!(models
             .into_iter()
-            .map(|id| json!({"id": id, "capabilities": ["tools", "streaming"]}))
+            .map(|id| json!({
+                "id": id,
+                "capabilities": ["tools", "streaming"],
+                "effort_levels": levels,
+            }))
             .collect::<Vec<_>>()))
+    }
+
+    fn model_effort(&self, params: Value) -> Result<Value, RpcError> {
+        let session_id = string_field(&params, "session_id")?;
+        let effort = string_field(&params, "effort")?;
+        if !crate::manager::Manager::effort_levels().contains(&effort.as_str()) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("unknown effort level: {effort}"),
+            ));
+        }
+        self.manager
+            .set_effort(&session_id, &effort)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!({"effort": effort}))
     }
 
     fn model_select(&self, params: Value) -> Result<Value, RpcError> {

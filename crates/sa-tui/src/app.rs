@@ -9,6 +9,10 @@ const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 const CHARS_PER_TOKEN: f32 = 4.0;
+/// lines moved per arrow key.
+const SCROLL_STEP: u16 = 3;
+/// lines moved per page key.
+const PAGE_STEP: u16 = 20;
 
 pub const INK: Color = Color::Rgb(0xc8, 0xd0, 0xdc);
 pub const DIM: Color = Color::Rgb(0x6c, 0x76, 0x86);
@@ -33,11 +37,16 @@ pub enum Role {
 pub struct Entry {
     pub role: Role,
     pub text: String,
+    /// for tool entries: which tool ran.
+    pub tool: Option<String>,
+    /// for tool output: the process exit code, when the tool ran a process.
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Status {
     pub model: String,
+    pub effort: String,
     pub turn_running: bool,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -107,6 +116,8 @@ impl Tab {
         self.transcript.push(Entry {
             role,
             text: text.into(),
+            tool: None,
+            exit_code: None,
         });
         if self.follow {
             self.scroll = self.max_scroll;
@@ -171,7 +182,7 @@ impl Tab {
         }
     }
 
-    fn finish_message(&mut self, now: std::time::Instant) {
+    fn finish_message(&mut self, now: std::time::Instant, reported_tokens: Option<u64>) {
         self.close_generation(now);
         let chars = self.turn_chars;
         let active = self.active_elapsed;
@@ -187,7 +198,11 @@ impl Tab {
             self.touch();
             return;
         }
-        let average = (chars as f32 / CHARS_PER_TOKEN) / active.as_secs_f32().max(0.05);
+        // prefer the provider's own token count over the character estimate.
+        let tokens = reported_tokens
+            .map(|t| t as f32)
+            .unwrap_or(chars as f32 / CHARS_PER_TOKEN);
+        let average = tokens / active.as_secs_f32().max(0.25);
         self.flash = Some((average, now));
         self.tok_per_sec = average;
         self.flash_highlight = true;
@@ -224,6 +239,11 @@ impl Tab {
                 }
             }
             if self.samples.is_empty() {
+                // while tools run there is no generation: hold the figure rather than
+                // decaying to zero mid-turn.
+                if self.status.turn_running && self.tok_per_sec > 0.0 {
+                    return;
+                }
                 self.tok_per_sec = self.frozen.unwrap_or(0.0);
             } else {
                 let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
@@ -268,11 +288,27 @@ impl Tab {
                     .and_then(Value::as_str)
                     .unwrap_or("tool");
                 let args = summarise(&payload["args"]);
-                self.push(Role::Tool, format!("{tool} {args}").trim_end().to_owned());
+                self.transcript.push(Entry {
+                    role: Role::Tool,
+                    text: args,
+                    tool: Some(tool.to_owned()),
+                    exit_code: None,
+                });
+                self.touch();
             }
             "tool.completed" => {
                 let output = payload.get("output").and_then(Value::as_str).unwrap_or("");
-                self.push(Role::ToolOutput, indent(output, 12));
+                let exit_code = payload
+                    .get("exit_code")
+                    .and_then(Value::as_i64)
+                    .and_then(|c| i32::try_from(c).ok());
+                self.transcript.push(Entry {
+                    role: Role::ToolOutput,
+                    text: indent(output, 12),
+                    tool: None,
+                    exit_code,
+                });
+                self.touch();
             }
             "tool.failed" => {
                 let error = payload
@@ -283,7 +319,8 @@ impl Tab {
             }
             "turn.completed" => {
                 self.status.turn_running = false;
-                self.finish_message(now);
+                let reported = payload["usage"]["completion_tokens"].as_u64();
+                self.finish_message(now, reported);
                 self.status.prompt_tokens +=
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
@@ -292,7 +329,7 @@ impl Tab {
             }
             "turn.interrupted" => {
                 self.status.turn_running = false;
-                self.finish_message(now);
+                self.finish_message(now, None);
                 let cause = payload.get("cause").and_then(Value::as_str).unwrap_or("");
                 self.push(Role::Error, format!("interrupted: {cause}"));
             }
@@ -325,6 +362,8 @@ impl Tab {
                     self.transcript.push(Entry {
                         role,
                         text: text.to_owned(),
+                        tool: None,
+                        exit_code: None,
                     });
                 }
             }
@@ -448,13 +487,13 @@ impl App {
             KeyCode::Up => {
                 let tab = self.tab_mut();
                 tab.follow = false;
-                tab.scroll = tab.scroll.saturating_sub(1);
+                tab.scroll = tab.scroll.saturating_sub(SCROLL_STEP);
                 tab.touch();
                 Action::None
             }
             KeyCode::Down => {
                 let tab = self.tab_mut();
-                tab.scroll = (tab.scroll + 1).min(tab.max_scroll);
+                tab.scroll = (tab.scroll + SCROLL_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
                 tab.touch();
                 Action::None
@@ -462,13 +501,13 @@ impl App {
             KeyCode::PageUp => {
                 let tab = self.tab_mut();
                 tab.follow = false;
-                tab.scroll = tab.scroll.saturating_sub(10);
+                tab.scroll = tab.scroll.saturating_sub(PAGE_STEP);
                 tab.touch();
                 Action::None
             }
             KeyCode::PageDown => {
                 let tab = self.tab_mut();
-                tab.scroll = (tab.scroll + 10).min(tab.max_scroll);
+                tab.scroll = (tab.scroll + PAGE_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
                 tab.touch();
                 Action::None
@@ -586,12 +625,33 @@ fn bottom(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
     ]));
 }
 
+/// the frame title for an entry: the tool's own name, or `output (exit N)`.
+fn entry_label(entry: &Entry, model: &str) -> String {
+    match entry.role {
+        Role::Tool => entry.tool.clone().unwrap_or_else(|| "tool".to_owned()),
+        Role::ToolOutput => match entry.exit_code {
+            Some(code) => format!("output (exit {code})"),
+            None => "output".to_owned(),
+        },
+        other => role_style(other, model).0,
+    }
+}
+
+/// the body text for an entry, with a shell prompt in front of a command.
+fn entry_body(entry: &Entry) -> String {
+    if entry.role == Role::Tool && entry.tool.as_deref() == Some("bash") {
+        format!("$ {}", entry.text)
+    } else {
+        entry.text.clone()
+    }
+}
+
 /// renders one transcript entry as a titled frame.
-fn framed(role: Role, text: &str, width: usize, model: &str) -> Vec<Line<'static>> {
-    let (label, edge, ink) = role_style(role, model);
+fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
+    let (_, edge, ink) = role_style(entry.role, model);
     let mut out = Vec::new();
-    top(&mut out, &label, width, edge);
-    body(&mut out, text, width, edge, ink);
+    top(&mut out, &entry_label(entry, model), width, edge);
+    body(&mut out, &entry_body(entry), width, edge, ink);
     bottom(&mut out, width, edge);
     out
 }
@@ -617,7 +677,8 @@ fn framed_split(model: &str, thinking: &str, message: &str, width: usize) -> Vec
 /// the reply below it.
 #[must_use]
 pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
-    let inner = usize::from(width).clamp(16, 160);
+    // fill whatever width the pane has: no cap, or wide terminals leave a dead margin.
+    let inner = usize::from(width).max(16);
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut index = 0;
 
@@ -638,13 +699,22 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
                 out.extend(framed_split(&tab.status.model, &thinking, &message, inner));
                 index = next + 1;
             } else {
-                out.extend(framed(Role::Thinking, &thinking, inner, &tab.status.model));
+                out.extend(framed(
+                    &Entry {
+                        role: Role::Thinking,
+                        text: thinking,
+                        tool: None,
+                        exit_code: None,
+                    },
+                    inner,
+                    &tab.status.model,
+                ));
                 index = next;
             }
             continue;
         }
 
-        out.extend(framed(entry.role, &entry.text, inner, &tab.status.model));
+        out.extend(framed(entry, inner, &tab.status.model));
         index += 1;
     }
 

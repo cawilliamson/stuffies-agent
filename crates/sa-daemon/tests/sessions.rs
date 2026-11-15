@@ -505,23 +505,21 @@ async fn a_stalled_stream_is_interrupted_by_the_turn_timeout() {
 
 #[tokio::test]
 async fn a_second_turn_sees_the_first_turns_context() {
+    let reply = |text: &str| {
+        vec![
+            Delta::Text(text.to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ]
+    };
+    // a spare reply: the background retitle may take one of these slots.
     let script = vec![
-        vec![
-            Delta::Text("first answer".to_owned()),
-            Delta::Done {
-                stop_reason: "stop".to_owned(),
-                prompt_tokens: 1,
-                completion_tokens: 1,
-            },
-        ],
-        vec![
-            Delta::Text("second answer".to_owned()),
-            Delta::Done {
-                stop_reason: "stop".to_owned(),
-                prompt_tokens: 1,
-                completion_tokens: 1,
-            },
-        ],
+        reply("first answer"),
+        reply("second answer"),
+        reply("a session title"),
     ];
     let provider = Arc::new(ScriptedProvider::new(script));
     let dir = tempfile::tempdir().expect("tempdir");
@@ -570,15 +568,27 @@ async fn a_second_turn_sees_the_first_turns_context() {
     )
     .await;
     for _ in 0..300 {
-        if provider.seen_requests().len() >= 2 {
+        let seen = provider.seen_requests();
+        if seen.iter().any(|r| {
+            r.messages
+                .iter()
+                .any(|m| m.content.as_deref() == Some("second prompt"))
+        }) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
     let seen = provider.seen_requests();
-    assert!(seen.len() >= 2, "the second turn must reach the provider");
-    let second = &seen[1];
+    // the background retitle also calls the provider, so find the turn by its prompt.
+    let second = seen
+        .iter()
+        .find(|r| {
+            r.messages
+                .iter()
+                .any(|m| m.content.as_deref() == Some("second prompt"))
+        })
+        .expect("the second turn must reach the provider");
     let carried = second
         .messages
         .iter()

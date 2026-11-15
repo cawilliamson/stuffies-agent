@@ -91,8 +91,13 @@ fn status_bar(app: &App, width: u16) -> Line<'static> {
         ));
     }
     if !tab.status.model.is_empty() {
+        let label = if tab.status.effort.is_empty() {
+            tab.status.model.clone()
+        } else {
+            format!("{}:{}", tab.status.model, tab.status.effort)
+        };
         segments.push((
-            format!(" \u{f2db} {} ", tab.status.model),
+            format!(" \u{f2db} {label} "),
             Color::Rgb(0xe0, 0xe8, 0xff),
             Color::Rgb(0x2f, 0x45, 0x66),
         ));
@@ -236,6 +241,7 @@ pub async fn run(
     model: String,
     branch: Option<String>,
     workspace: String,
+    effort: String,
 ) -> Result<(), String> {
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
@@ -248,6 +254,7 @@ pub async fn run(
     let mut app = App::new(session.clone(), model.clone());
     app.branch = branch;
     app.workspace = (!workspace.is_empty()).then_some(workspace);
+    app.tab_mut().status.effort = effort;
     if app.tab().status.model.is_empty() {
         if let Ok(list) = client.call("model.list", json!({})).await {
             if let Some(id) = list
@@ -303,11 +310,14 @@ pub async fn run(
             Key(crossterm::event::KeyEvent),
             Frame(Value),
             Tick,
+            Resize,
         }
 
         let incoming = tokio::select! {
             event = keys.next() => match event {
                 Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => Incoming::Key(key),
+                // a resize must force a redraw, or the frames keep their old width.
+                Some(Ok(Event::Resize(_, _))) => Incoming::Resize,
                 Some(Ok(_)) => continue,
                 Some(Err(err)) => return Err(err.to_string()),
                 None => break,
@@ -325,6 +335,7 @@ pub async fn run(
                     tab.tick();
                 }
             }
+            Incoming::Resize => app.touch(),
             Incoming::Key(key) => action = app.on_key(key),
             Incoming::Frame(frame) => {
                 let method = frame
@@ -337,6 +348,16 @@ pub async fn run(
                         let kind = frame["params"]["kind"].as_str().unwrap_or_default();
                         if let Some(tab) = app.tab_for(sid) {
                             tab.on_event(kind, &frame["params"]["payload"]);
+                        }
+                        // a generated title renames the tab it belongs to.
+                        if kind == "session.renamed" {
+                            if let Some(title) = frame["params"]["payload"]["title"].as_str() {
+                                let title = title.to_owned();
+                                if let Some(tab) = app.tab_for(sid) {
+                                    tab.title = title;
+                                }
+                                app.touch();
+                            }
                         }
                     }
                     "evicted" => {
@@ -426,6 +447,25 @@ pub async fn run(
                             }
                         }
                     }
+                    "/effort" if arg.is_empty() => {
+                        let levels = crate::app::Status::default();
+                        let _ = levels;
+                        app.tab_mut().push(
+                            app::Role::System,
+                            "effort levels: low, medium, high",
+                        );
+                    }
+                    "/effort" => match client
+                        .call("model.effort", json!({"session_id": sid, "effort": arg}))
+                        .await
+                    {
+                        Ok(_) => {
+                            app.tab_mut().status.effort = arg.to_owned();
+                            app.touch();
+                            app.tab_mut().push(app::Role::System, format!("effort: {arg}"));
+                        }
+                        Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
+                    },
                     "/model" if !arg.is_empty() => {
                         let _ = client
                             .call("model.select", json!({"session_id": sid, "model": arg}))

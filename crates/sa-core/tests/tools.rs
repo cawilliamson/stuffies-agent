@@ -32,7 +32,10 @@ async fn run(
     name: &str,
     args: serde_json::Value,
 ) -> Result<String, String> {
-    registry.execute(call(name, args)).await
+    registry
+        .execute(call(name, args))
+        .await
+        .map(|outcome| outcome.output)
 }
 
 #[tokio::test]
@@ -142,8 +145,31 @@ async fn bash_runs_a_command() {
     let out = run(&reg, "bash", json!({"command": "echo hi"}))
         .await
         .expect("bash");
-    assert!(out.contains("exit 0"), "{out}");
-    assert!(out.contains("hi"), "{out}");
+    // no section headers: the output is what the command printed, and nothing else.
+    assert_eq!(out.trim(), "hi", "unexpected output: {out}");
+}
+
+#[tokio::test]
+async fn bash_reports_the_exit_code_structurally() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let outcome = reg
+        .execute(call("bash", json!({"command": "exit 3"})))
+        .await
+        .expect("bash");
+    assert_eq!(outcome.exit_code, Some(3), "the exit code must be reported");
+}
+
+#[tokio::test]
+async fn bash_merges_stdout_and_stderr() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let out = run(&reg, "bash", json!({"command": "echo out; echo err 1>&2"}))
+        .await
+        .expect("bash");
+    assert!(out.contains("out"), "{out}");
+    assert!(out.contains("err"), "{out}");
+    assert!(!out.contains("--- stdout ---"), "no headers: {out}");
 }
 
 #[tokio::test]
