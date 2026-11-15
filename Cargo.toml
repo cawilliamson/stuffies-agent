@@ -10,10 +10,15 @@ members = [
 ]
 
 [workspace.package]
+categories = ["command-line-utilities", "development-tools"]
+description = "daemon-first coding agent"
 edition = "2021"
-version = "0.1.0"
+keywords = ["agent", "daemon", "llm", "tui"]
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/cawilliamson/stuffies-agent"
 rust-version = "1.89"
+version = "0.1.0"
 
 [workspace.dependencies]
 ansi-to-tui = "8"
@@ -44,9 +49,30 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 
 [workspace.lints.rust]
+# rust_2018_idioms already covers trivial_casts, trivial_numeric_casts,
+# unreachable_pub, unused_qualifications and missing_debug_implementations.
+rust_2018_idioms = { level = "deny", priority = -1 }
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+mem_forget = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
 unwrap_used = "deny"
+# documented exceptions. each is a style preference, not a correctness rule.
+missing_errors_doc = "allow"     # error enums are named and self-describing
+cast_precision_loss = "allow"    # throughput and token figures are display metrics
+cast_possible_truncation = "allow" # same: saturating conversions into display types
+cast_sign_loss = "allow"         # token and byte counts are never negative
+significant_drop_tightening = "allow" # store guards are held for exactly one statement
+assigning_clones = "allow"       # clone_from cannot reuse an allocation from &str
+too_many_lines = "allow"         # one readable function beats artificial splitting
+multiple_crate_versions = "allow" # transitive duplicates we do not control

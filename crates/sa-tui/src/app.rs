@@ -46,7 +46,8 @@ pub struct Entry {
 /// a rendered transcript, reused until its content or width changes. rebuilding it on every
 /// scroll keypress is what made scrolling crawl.
 pub struct Cache {
-    pub rev: u64,
+    /// matches [`Tab::content_rev`]: the render is reused while these agree.
+    pub content_rev: u64,
     pub width: u16,
     pub lines: Vec<Line<'static>>,
 }
@@ -129,7 +130,7 @@ impl Tab {
         }
     }
 
-    pub fn touch(&mut self) {
+    pub const fn touch(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -222,9 +223,7 @@ impl Tab {
             return;
         }
         // prefer the provider's own token count over the character estimate.
-        let tokens = reported_tokens
-            .map(|t| t as f32)
-            .unwrap_or(chars as f32 / CHARS_PER_TOKEN);
+        let tokens = reported_tokens.map_or(chars as f32 / CHARS_PER_TOKEN, |t| t as f32);
         let average = tokens / active.as_secs_f32().max(0.25);
         self.flash = Some((average, now));
         self.tok_per_sec = average;
@@ -273,8 +272,7 @@ impl Tab {
                 let span = self
                     .samples
                     .front()
-                    .map(|(at, _)| now.duration_since(*at).as_secs_f32())
-                    .unwrap_or(0.0)
+                    .map_or(0.0, |(at, _)| now.duration_since(*at).as_secs_f32())
                     .max(0.5)
                     .min(RATE_WINDOW.as_secs_f32());
                 self.tok_per_sec = (chars as f32 / CHARS_PER_TOKEN) / span;
@@ -536,10 +534,10 @@ impl App {
 
         if ctrl {
             return match key.code {
-                KeyCode::Char('c') | KeyCode::Char('d') => Action::Quit,
+                KeyCode::Char('c' | 'd') => Action::Quit,
                 // plain ctrl+n / ctrl+w, with the shifted forms accepted as aliases.
-                KeyCode::Char('t') | KeyCode::Char('T') => Action::NewTab,
-                KeyCode::Char('w') | KeyCode::Char('W') => Action::CloseTab,
+                KeyCode::Char('t' | 'T') => Action::NewTab,
+                KeyCode::Char('w' | 'W') => Action::CloseTab,
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
                 }
@@ -553,7 +551,7 @@ impl App {
 
         match key.code {
             KeyCode::BackTab => Action::NextTab,
-            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => self.tab_mut().submit(),
+            KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.tab_mut().submit(),
             KeyCode::Up => {
                 let tab = self.tab_mut();
                 tab.follow = false;
@@ -856,10 +854,10 @@ fn bottom(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
 fn entry_label(entry: &Entry, model: &str) -> String {
     match entry.role {
         Role::Tool => entry.tool.clone().unwrap_or_else(|| "tool".to_owned()),
-        Role::ToolOutput => match entry.exit_code {
-            Some(code) => format!("output (exit {code})"),
-            None => "output".to_owned(),
-        },
+        Role::ToolOutput => entry.exit_code.map_or_else(
+            || "output".to_owned(),
+            |code| format!("output (exit {code})"),
+        ),
         other => role_style(other, model).0,
     }
 }
@@ -896,10 +894,7 @@ fn framed_tool(
     let (_, _, out_ink) = role_style(Role::ToolOutput, "");
     let mut out = Vec::new();
     // the exit code belongs in the title, so the rule stays clean.
-    let title = match exit_code {
-        Some(code) => format!("{tool} (exit {code})"),
-        None => tool.to_owned(),
-    };
+    let title = exit_code.map_or_else(|| tool.to_owned(), |code| format!("{tool} (exit {code})"));
     top(&mut out, &title, width, edge);
     let invocation = if tool == "bash" {
         format!("$ {call}")

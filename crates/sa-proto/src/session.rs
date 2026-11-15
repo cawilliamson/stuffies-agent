@@ -17,7 +17,7 @@ pub enum SessionState {
 
 impl SessionState {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
             Self::Quiescing => "quiescing",
@@ -43,7 +43,7 @@ impl SessionState {
 
     /// whether a turn may start.
     #[must_use]
-    pub fn is_writable(self) -> bool {
+    pub const fn is_writable(self) -> bool {
         matches!(self, Self::Active)
     }
 }
@@ -183,6 +183,7 @@ pub mod kinds {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

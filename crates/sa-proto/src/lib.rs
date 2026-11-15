@@ -13,6 +13,7 @@ pub mod session;
 pub const MAX_LINE_LEN: usize = 1024 * 1024;
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

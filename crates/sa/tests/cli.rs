@@ -1,4 +1,5 @@
 //! end-to-end tests for the v1.0 cli client (spec 14).
+#![allow(clippy::expect_used)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;

@@ -1,4 +1,5 @@
 //! pi-contexts parity: read from several roots, never write (spec 6.1).
+#![allow(clippy::expect_used)]
 
 use std::path::PathBuf;
 

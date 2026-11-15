@@ -1,4 +1,5 @@
 //! the tabbed tui: key handling, tab lifecycle, transcript framing and rate accounting.
+#![allow(clippy::expect_used)]
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
@@ -6,11 +7,11 @@ use ratatui::Terminal;
 use sa_tui::app::{Action, App, Role};
 use serde_json::json;
 
-fn key(code: KeyCode) -> KeyEvent {
+const fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn ctrl(c: char) -> KeyEvent {
+const fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
@@ -36,7 +37,7 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
         .buffer()
         .content()
         .iter()
-        .map(|c| c.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect()
 }
 
@@ -49,7 +50,7 @@ fn typing_and_enter_submits_the_prompt() {
         app.on_key(key(KeyCode::Enter)),
         Action::Submit("hello".to_owned())
     );
-    assert!(app.tab().input_text().is_empty());
+    assert_eq!(app.tab().input_text(), "");
 }
 
 #[test]
@@ -184,13 +185,8 @@ fn the_tab_bar_is_one_row_of_lit_and_dim_tabs() {
     assert!(row0.contains('\u{2502}'), "tabs need a divider:\n{row0}");
 
     // the active tab is a lit chip; the inactive one is not filled.
-    let lit: Vec<&str> = buffer
-        .content()
-        .iter()
-        .filter(|c| c.bg == sa_tui::app::ACCENT)
-        .map(|c| c.symbol())
-        .collect();
-    assert!(!lit.is_empty(), "the active tab must be highlighted");
+    let lit = buffer.content().iter().any(|c| c.bg == sa_tui::app::ACCENT);
+    assert!(lit, "the active tab must be highlighted");
 
     // one row only: the pane border starts on row 1.
     let row1: String = (0..100).map(|x| buffer[(x, 1)].symbol()).collect();
@@ -469,7 +465,7 @@ fn every_frame_row_is_the_same_width() {
     app.tab_mut().push(Role::Thinking, "thinking");
 
     let lines = sa_tui::render(&app, 98);
-    let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
+    let widths: Vec<usize> = lines.iter().map(ratatui::prelude::Line::width).collect();
     let first = widths.first().copied().unwrap_or(0);
     assert_eq!(first, 98, "frames must fill the pane exactly");
     for (index, width) in widths.iter().enumerate() {
@@ -745,7 +741,11 @@ fn markdown_bold_is_rendered_as_bold_without_markers() {
     let mut terminal = Terminal::new(backend).expect("terminal");
     sa_tui::draw(&mut terminal, &mut app).expect("draw");
     let buffer = terminal.backend().buffer();
-    let screen: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    let screen: String = buffer
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
 
     assert!(
         screen.contains("It is Sunday today"),
@@ -888,7 +888,11 @@ fn markdown_italics_and_code_render_without_markers() {
     let mut terminal = Terminal::new(backend).expect("terminal");
     sa_tui::draw(&mut terminal, &mut app).expect("draw");
     let buffer = terminal.backend().buffer();
-    let screen: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    let screen: String = buffer
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
 
     assert!(
         screen.contains("use cargo with --release now"),
@@ -993,7 +997,11 @@ fn ansi_colour_in_command_output_is_honoured() {
     let mut terminal = Terminal::new(backend).expect("terminal");
     sa_tui::draw(&mut terminal, &mut app).expect("draw");
     let buffer = terminal.backend().buffer();
-    let screen: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    let screen: String = buffer
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
 
     assert!(screen.contains("red plain"), "{screen}");
     assert!(

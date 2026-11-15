@@ -1,4 +1,7 @@
 //! the `sa` binary. every subcommand is a disposable client of the daemon, except `daemon`.
+//!
+//! this is the user-facing program: it is the one place allowed to write to the terminal.
+#![allow(clippy::print_stderr, clippy::print_stdout)]
 
 mod cli;
 mod commands;
@@ -116,9 +119,9 @@ async fn proxy_stdio() -> Result<(), String> {
 }
 
 async fn shutdown_signal() {
-    let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-        Ok(sig) => sig,
-        Err(_) => return,
+    let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    else {
+        return;
     };
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}

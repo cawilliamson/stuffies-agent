@@ -18,6 +18,7 @@ use crate::agent::{Agent, EventSink, ToolExecutor, TurnRequest};
 use crate::llm::Provider;
 use crate::store::{NewSession, SessionRow, Store, StoreError};
 use crate::tools::ToolRegistry;
+use std::fmt::Write as _;
 
 /// live queue bound for one client (spec 3.3).
 pub const CLIENT_QUEUE: usize = 4096;
@@ -61,6 +62,9 @@ pub struct ManagerConfig {
     pub context_limit: u64,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
+    /// how long an auxiliary model call (title, compaction) may take before it is abandoned.
+    /// without this a stalled provider blocks the turn before the agent even starts.
+    pub aux_budget_secs: u64,
     /// reasoning effort applied to new sessions when none is chosen.
     pub default_effort: String,
     /// model ids the endpoint reports. shared so a background refresher can fill it in.
@@ -111,7 +115,7 @@ impl Manager {
     }
 
     #[must_use]
-    pub fn store(&self) -> &Store {
+    pub const fn store(&self) -> &Store {
         &self.store
     }
 
@@ -140,7 +144,7 @@ impl Manager {
         }
     }
 
-    fn push(&self, inner: &Inner, conn: u64, value: Value) {
+    fn push(inner: &Inner, conn: u64, value: Value) {
         if let Some(tx) = inner.conns.get(&conn) {
             if tx.try_send(value).is_err() {
                 tracing::debug!(conn, "client queue full, notification dropped");
@@ -163,7 +167,7 @@ impl Manager {
                 "kind": event.kind,
                 "payload": event.payload,
             });
-            self.push(
+            Self::push(
                 &inner,
                 sub.conn,
                 json!({"jsonrpc": "2.0", "method": "event", "params": payload}),
@@ -360,7 +364,7 @@ impl Manager {
                     },
                 );
                 if evicted != conn {
-                    self.push(
+                    Self::push(
                         &inner,
                         evicted,
                         json!({
@@ -530,9 +534,19 @@ impl Manager {
         cancel: Arc<AtomicBool>,
         detach: bool,
     ) {
-        // highest priority: name an untitled session before any work starts.
+        // highest priority: name an untitled session before any work starts, but never let
+        // it hold the turn: a stalled provider would otherwise block everything.
         let title_model = row.model.clone().unwrap_or_else(|| self.default_model());
-        self.name_session(&session_id, &prompt, &title_model).await;
+        let budget = std::time::Duration::from_secs(self.config.aux_budget_secs.max(1));
+        if tokio::time::timeout(
+            budget,
+            self.name_session(&session_id, &prompt, &title_model),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(%session_id, "title generation timed out");
+        }
 
         // the workspace lock serialises sessions that share a repository (spec 7.4).
         let workspace = PathBuf::from(&row.cwd);
@@ -595,8 +609,10 @@ impl Manager {
         let model = row.model.clone().unwrap_or_else(|| self.default_model());
 
         // compaction is checked before the turn, and only ever appends (spec 10.4).
-        if let Err(err) = self.maybe_compact(&session_id, &model).await {
-            tracing::warn!(%err, "compaction skipped");
+        match tokio::time::timeout(budget, self.maybe_compact(&session_id, &model)).await {
+            Ok(Err(err)) => tracing::warn!(%err, "compaction skipped"),
+            Err(_) => tracing::warn!(%session_id, "compaction timed out"),
+            Ok(Ok(_)) => {}
         }
 
         let agent = Agent::new(Arc::clone(&self.config.provider), tools, sink);
@@ -645,27 +661,24 @@ impl Manager {
         };
 
         // a stalled model stream must not hang the session forever (spec 14, v1.1).
-        let outcome = match tokio::time::timeout(
+        let Ok(outcome) = tokio::time::timeout(
             std::time::Duration::from_secs(self.config.turn_timeout_secs.max(1)),
             agent.run_turn(request),
         )
         .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                let _ = self.append(
-                    &session_id,
-                    kinds::TURN_INTERRUPTED,
-                    &json!({
-                        "turn_id": turn_id,
-                        "cause": format!("timeout after {}s", self.config.turn_timeout_secs),
-                    }),
-                );
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.turns.remove(&session_id);
-                }
-                return;
+        else {
+            let _ = self.append(
+                &session_id,
+                kinds::TURN_INTERRUPTED,
+                &json!({
+                    "turn_id": turn_id,
+                    "cause": format!("timeout after {}s", self.config.turn_timeout_secs),
+                }),
+            );
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.turns.remove(&session_id);
             }
+            return;
         };
 
         match outcome {
@@ -762,19 +775,21 @@ impl Manager {
             match event.kind.as_str() {
                 kinds::TURN_STARTED => {
                     if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
-                        digest.push_str(&format!(
-                            "user: {}\n",
+                        let _ = writeln!(
+                            &mut digest,
+                            "user: {}",
                             prompt.chars().take(200).collect::<String>()
-                        ));
+                        );
                     }
                 }
                 kinds::LLM_COMPLETED => {
                     if let Some(text) = event.payload.get("text").and_then(Value::as_str) {
                         if !text.is_empty() {
-                            digest.push_str(&format!(
-                                "assistant: {}\n",
+                            let _ = writeln!(
+                                &mut digest,
+                                "assistant: {}",
                                 text.chars().take(200).collect::<String>()
-                            ));
+                            );
                         }
                     }
                 }
@@ -803,8 +818,7 @@ impl Manager {
             &json!({"model": model, "effort": "low"}),
         );
 
-        let mut title = None;
-        if let Ok(mut rx) = self
+        let title = if let Ok(mut rx) = self
             .config
             .provider
             .stream(crate::llm::ChatRequest {
@@ -827,8 +841,10 @@ impl Manager {
                     raw.push_str(&chunk);
                 }
             }
-            title = clean_title(&raw);
-        }
+            clean_title(&raw)
+        } else {
+            None
+        };
 
         let Some(title) = title.or_else(|| fallback_title(fallback_source)) else {
             return;
@@ -888,12 +904,12 @@ impl Manager {
             match event.kind.as_str() {
                 kinds::TURN_STARTED => {
                     if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
-                        transcript.push_str(&format!("\nuser: {prompt}\n"));
+                        let _ = write!(transcript, "\nuser: {prompt}\n\n");
                     }
                 }
                 kinds::LLM_COMPLETED => {
                     if let Some(text) = event.payload.get("text").and_then(Value::as_str) {
-                        transcript.push_str(&format!("assistant: {text}\n"));
+                        let _ = writeln!(transcript, "assistant: {text}");
                     }
                 }
                 _ => {}

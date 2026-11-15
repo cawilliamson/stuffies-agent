@@ -19,7 +19,7 @@ pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
         let tab = app.tab();
         tab.cache
             .as_ref()
-            .is_none_or(|c| c.rev != tab.content_rev || c.width != area.width)
+            .is_none_or(|c| (c.content_rev != tab.content_rev) || (c.width != area.width))
     };
     if stale {
         let lines = {
@@ -28,7 +28,7 @@ pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
         };
         let tab = app.tab_mut();
         tab.cache = Some(app::Cache {
-            rev: tab.content_rev,
+            content_rev: tab.content_rev,
             width: area.width,
             lines,
         });
@@ -84,6 +84,7 @@ fn fit_label(label: &str, max: usize) -> String {
 }
 
 /// the session tab strip.
+#[must_use]
 pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
     const MAX_LABEL: usize = 28;
 
@@ -155,6 +156,7 @@ fn context_meter(used: u64, limit: u64) -> (String, Color) {
 }
 
 /// the powerline status bar.
+#[must_use]
 pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     const SEP: &str = "\u{e0b0}";
     let tab = app.tab();
@@ -263,6 +265,7 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
 }
 
 /// key/value facts about the session, for sidebars and dashboards.
+#[must_use]
 pub fn facts(app: &App) -> Vec<(&'static str, String)> {
     let tab = app.tab();
     let mut out = vec![

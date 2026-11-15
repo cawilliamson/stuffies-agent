@@ -1,4 +1,5 @@
 //! tool execution against a real filesystem (spec 9).
+#![allow(clippy::expect_used)]
 
 use std::path::PathBuf;
 
@@ -11,7 +12,7 @@ fn registry(workspace: &std::path::Path) -> ToolRegistry {
     ToolRegistry::new(workspace.to_path_buf())
 }
 
-fn call(name: &str, args: serde_json::Value) -> ToolCall {
+fn call(name: &str, args: &serde_json::Value) -> ToolCall {
     ToolCall {
         id: "c1".to_owned(),
         name: name.to_owned(),
@@ -33,7 +34,7 @@ async fn run(
     args: serde_json::Value,
 ) -> Result<String, String> {
     registry
-        .execute(call(name, args))
+        .execute(call(name, &args))
         .await
         .map(|outcome| outcome.output)
 }
@@ -59,7 +60,7 @@ async fn write_creates_a_file_and_reports_size() {
     )
     .await
     .expect("write");
-    assert!(out.contains("5"), "{out}");
+    assert!(out.contains('5'), "{out}");
     assert_eq!(
         std::fs::read_to_string(dir.path().join("new.txt")).expect("read"),
         "hello"
@@ -154,7 +155,7 @@ async fn bash_reports_the_exit_code_structurally() {
     let dir = workspace();
     let reg = registry(dir.path());
     let outcome = reg
-        .execute(call("bash", json!({"command": "exit 3"})))
+        .execute(call("bash", &json!({"command": "exit 3"})))
         .await
         .expect("bash");
     assert_eq!(outcome.exit_code, Some(3), "the exit code must be reported");

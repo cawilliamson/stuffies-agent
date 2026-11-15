@@ -1,5 +1,6 @@
 //! workspace locking and the unattended checkpoint (spec 7.4, 8.4).
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -176,12 +177,13 @@ pub fn context(workspace: &Path, cwd: Option<&Path>) -> Option<String> {
             "Skills available in this workspace. Read the file when the task matches it:\n",
         );
         for skill in found {
-            listing.push_str(&format!(
-                "- {} ({}): {}\n",
+            let _ = writeln!(
+                &mut listing,
+                "- {} ({}): {}",
                 skill.name,
                 skill.path.display(),
                 skill.summary
-            ));
+            );
         }
         parts.push(listing);
     }
@@ -250,7 +252,6 @@ pub fn lock(workspace: &Path, lock_dir: &Path) -> Result<WorkspaceLock, Workspac
     hasher.update(common.display().to_string().as_bytes());
     let mut name = String::new();
     for byte in hasher.finalize() {
-        use std::fmt::Write as _;
         let _ = write!(name, "{byte:02x}");
     }
 
@@ -361,6 +362,7 @@ pub fn checkpoint_payload(checkpoint: &Checkpoint) -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -394,7 +396,7 @@ mod tests {
             dir.path().join("new.txt").exists(),
             "the worktree must be untouched"
         );
-        assert!(!checkpoint.tree.is_empty());
+        assert_ne!(checkpoint.tree, "");
 
         // the index must still be clean: `git add -A` went to the temporary index only.
         let staged = git(dir.path(), &["diff", "--cached", "--name-only"]).expect("diff");

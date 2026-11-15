@@ -22,10 +22,10 @@ impl Serialize for JsonRpc {
 }
 
 impl<'de> Deserialize<'de> for JsonRpc {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(deserializer)?;
+    fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(input)?;
         if raw == "2.0" {
-            Ok(JsonRpc)
+            Ok(Self)
         } else {
             Err(de::Error::custom(format!(
                 "expected jsonrpc \"2.0\", got {raw:?}"
@@ -64,7 +64,7 @@ impl Request {
     }
 
     #[must_use]
-    pub fn is_notification(&self) -> bool {
+    pub const fn is_notification(&self) -> bool {
         self.id.is_none()
     }
 }
@@ -82,7 +82,7 @@ pub struct Response {
 
 impl Response {
     #[must_use]
-    pub fn ok(id: Option<Id>, result: Value) -> Self {
+    pub const fn ok(id: Option<Id>, result: Value) -> Self {
         Self {
             jsonrpc: JsonRpc,
             id,
@@ -92,7 +92,7 @@ impl Response {
     }
 
     #[must_use]
-    pub fn err(id: Option<Id>, error: RpcError) -> Self {
+    pub const fn err(id: Option<Id>, error: RpcError) -> Self {
         Self {
             jsonrpc: JsonRpc,
             id,
@@ -102,6 +102,11 @@ impl Response {
     }
 
     /// the successful result, or the carried error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the carried [`RpcError`] when the response is an error, and an internal
+    /// error when it carried neither a result nor an error.
     pub fn into_result(self) -> Result<Value, RpcError> {
         match (self.result, self.error) {
             (_, Some(error)) => Err(error),
@@ -137,6 +142,7 @@ pub struct PingResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use serde_json::json;

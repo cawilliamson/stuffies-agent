@@ -1,8 +1,13 @@
 [package]
 name = "sa"
 version.workspace = true
+categories.workspace = true
+description.workspace = true
 edition.workspace = true
+keywords.workspace = true
 license.workspace = true
+readme.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
@@ -21,13 +26,8 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 
 # the only crate allowed to write to stdout/stderr: it is the user-facing binary.
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-print_stderr = "allow"
-print_stdout = "allow"
-unwrap_used = "deny"
+[lints]
+workspace = true
 
 [dev-dependencies]
 tempfile = "3"

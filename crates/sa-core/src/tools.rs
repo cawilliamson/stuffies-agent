@@ -34,7 +34,7 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     #[must_use]
-    pub fn new(workspace: PathBuf) -> Self {
+    pub const fn new(workspace: PathBuf) -> Self {
         Self { workspace }
     }
 
@@ -104,7 +104,7 @@ impl ToolRegistry {
         let mut entries = tokio::fs::read_dir(path).await?;
         let mut names = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
-            let suffix = if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            let suffix = if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
                 "/"
             } else {
                 ""
@@ -130,11 +130,10 @@ impl ToolRegistry {
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.contains(&pattern) {
+                    let path = entry.path();
                     out.push(
-                        entry
-                            .path()
-                            .strip_prefix(&root)
-                            .unwrap_or(entry.path())
+                        path.strip_prefix(root.as_path())
+                            .unwrap_or(path)
                             .display()
                             .to_string(),
                     );
@@ -168,16 +167,13 @@ impl ToolRegistry {
                 };
                 for (number, line) in body.lines().enumerate() {
                     if regex.is_match(line) {
-                        out.push(format!(
-                            "{}:{}:{}",
-                            entry
-                                .path()
-                                .strip_prefix(&root)
-                                .unwrap_or(entry.path())
-                                .display(),
-                            number + 1,
-                            line.trim_end()
-                        ));
+                        let path = entry.path();
+                        let shown = path
+                            .strip_prefix(&root)
+                            .unwrap_or(path)
+                            .display()
+                            .to_string();
+                        out.push(format!("{shown}:{}:{}", number + 1, line.trim_end()));
                         if out.len() >= 500 {
                             return out;
                         }
@@ -269,7 +265,7 @@ impl ToolExecutor for ToolRegistry {
 }
 
 /// wraps plain text output as a tool outcome.
-fn text(output: String) -> ToolOutcome {
+const fn text(output: String) -> ToolOutcome {
     ToolOutcome {
         output,
         exit_code: None,

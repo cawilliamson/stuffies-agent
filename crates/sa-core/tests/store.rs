@@ -1,4 +1,5 @@
 //! behaviour tests for the event log (spec 14, v1.0 task 2).
+#![allow(clippy::expect_used)]
 
 use sa_core::store::{NewSession, Store, BLOB_THRESHOLD};
 use sa_proto::session::SessionState;
@@ -170,7 +171,10 @@ fn a_completed_turn_is_not_open() {
     store
         .append_event("s1", "turn.completed", &json!({"turn_id": "t1"}))
         .expect("append");
-    assert!(store.open_turns().expect("open turns").is_empty());
+    assert_eq!(
+        store.open_turns().expect("open turns"),
+        [] as [sa_core::store::OpenTurn; 0]
+    );
 }
 
 #[test]

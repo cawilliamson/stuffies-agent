@@ -23,6 +23,7 @@ pub struct Config {
     pub model: String,
     pub host_fingerprint: String,
     pub turn_timeout_secs: u64,
+    pub aux_budget_secs: u64,
 }
 
 impl Config {
@@ -54,6 +55,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1800),
+            aux_budget_secs: std::env::var("SA_AUX_BUDGET")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20),
             runtime_dir,
             socket_path,
             state_dir,
@@ -71,6 +76,7 @@ impl Config {
             model: String::new(),
             host_fingerprint: "test-host".to_owned(),
             turn_timeout_secs: 1800,
+            aux_budget_secs: 20,
             state_dir,
         }
     }
@@ -142,7 +148,7 @@ pub async fn run(
     }
 
     let models: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(discovered));
-    if models.lock().map(|m| m.is_empty()).unwrap_or(true) {
+    if models.lock().map_or(true, |m| m.is_empty()) {
         let slot = Arc::clone(&models);
         let provider = Arc::clone(&provider);
         tokio::spawn(async move {
@@ -176,6 +182,7 @@ pub async fn run(
             models,
             lock_dir: cfg.runtime_dir.join("locks"),
             turn_timeout_secs: cfg.turn_timeout_secs,
+            aux_budget_secs: cfg.aux_budget_secs,
             context_limit: std::env::var("SA_CONTEXT_LIMIT")
                 .ok()
                 .and_then(|v| v.parse().ok())

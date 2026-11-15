@@ -40,6 +40,7 @@ pub trait EventSink: Send + Sync {
 }
 
 /// executes tool calls. the registry arrives at v1.0 task 4; tests use an empty one.
+///
 /// what a tool produced. `exit_code` is set by tools that run a process, so the client can
 /// show it rather than burying it in the output text.
 #[derive(Debug, Clone)]
@@ -106,7 +107,7 @@ impl Agent {
 
     /// runs one turn to completion, appending every step to the log.
     pub async fn run_turn(&self, request: TurnRequest) -> Result<TurnOutcome, AgentError> {
-        let mut messages = self.build_transcript(&request);
+        let mut messages = Self::build_transcript(&request);
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -254,7 +255,7 @@ impl Agent {
         Err(AgentError::IterationLimit)
     }
 
-    fn build_transcript(&self, request: &TurnRequest) -> Vec<ChatMessage> {
+    fn build_transcript(request: &TurnRequest) -> Vec<ChatMessage> {
         let mut system = system_prompt();
         if let Some(context) = &request.context {
             system.push_str("\n\nProject context (read-only, deployed outside the workspace):\n");

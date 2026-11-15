@@ -70,6 +70,7 @@ impl std::fmt::Display for RpcError {
 impl std::error::Error for RpcError {}
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -127,6 +128,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod display_tests {
     use super::*;
 

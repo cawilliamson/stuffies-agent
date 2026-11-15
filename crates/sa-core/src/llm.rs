@@ -244,7 +244,7 @@ impl OpenAiProvider {
 
 impl Provider for OpenAiProvider {
     fn list_models(&self) -> ModelsFuture<'_> {
-        Box::pin(async move { OpenAiProvider::list_models(self).await })
+        Box::pin(async move { Self::list_models(self).await })
     }
 
     fn stream(&self, request: ChatRequest) -> StreamFuture<'_> {
@@ -500,13 +500,17 @@ impl Provider for ScriptedProvider {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn sse_parser_handles_split_chunks_and_multiple_events() {
         let mut parser = SseParser::default();
-        assert!(parser.feed(b"data: {\"a\":1}").is_empty());
+        assert_eq!(
+            parser.feed(b"data: {\"a\":1}"),
+            [] as [std::string::String; 0]
+        );
         let out = parser.feed(b"\n\ndata: {\"b\":2}\n\n");
         assert_eq!(out, vec!["{\"a\":1}".to_owned(), "{\"b\":2}".to_owned()]);
     }

@@ -10,10 +10,10 @@ pub const SOCKET_FILE: &str = "daemon.sock";
 /// the runtime directory, from `XDG_RUNTIME_DIR`. falls back to the per-user temp directory.
 #[must_use]
 pub fn default_runtime_dir() -> PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) => PathBuf::from(dir).join("sa"),
-        None => std::env::temp_dir().join(format!("sa-{}", nix::unistd::geteuid().as_raw())),
-    }
+    std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || std::env::temp_dir().join(format!("sa-{}", nix::unistd::geteuid().as_raw())),
+        |dir| PathBuf::from(dir).join("sa"),
+    )
 }
 
 #[must_use]

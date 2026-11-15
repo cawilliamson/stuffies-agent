@@ -127,7 +127,7 @@ impl Renderer {
         );
     }
 
-    fn tool_completed(&mut self, payload: &Value) {
+    fn tool_completed(&self, payload: &Value) {
         let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
         let tool = self.tool_names.get(call_id).cloned().unwrap_or_default();
         let output = payload.get("output").and_then(Value::as_str).unwrap_or("");

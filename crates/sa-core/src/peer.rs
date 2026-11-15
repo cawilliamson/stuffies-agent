@@ -6,7 +6,7 @@
 /// compares a peer's uid against the daemon's own effective uid.
 ///
 /// kept pure so the rejection path is testable without a second unix user.
-pub fn check_uid(expected: u32, actual: u32) -> Result<(), PeerError> {
+pub const fn check_uid(expected: u32, actual: u32) -> Result<(), PeerError> {
     if expected == actual {
         Ok(())
     } else {
@@ -21,6 +21,7 @@ pub enum PeerError {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

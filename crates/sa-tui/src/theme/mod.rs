@@ -74,7 +74,7 @@ registry!(
 
 /// the default theme index.
 #[must_use]
-pub fn default_index() -> usize {
+pub const fn default_index() -> usize {
     0
 }
 

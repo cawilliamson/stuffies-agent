@@ -42,7 +42,7 @@ impl Frame {
     }
 
     /// makes the next render unconditional, so input is never starved by the throttle.
-    fn force(&mut self) {
+    const fn force(&mut self) {
         self.drawn = 0;
     }
 
@@ -255,7 +255,7 @@ pub async fn run(
                             .await;
                         }
                     }
-                    Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
+                    Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                 }
             }
             Action::CloseTab => {
@@ -281,7 +281,7 @@ pub async fn run(
                                 .await;
                             }
                         }
-                        Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
+                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                     }
                 } else if let Some(closed) = app.close_tab() {
                     // a closed tab is retired, not parked: sessions are tabs, not history.
@@ -372,7 +372,7 @@ pub async fn run(
                             app.touch();
                             app.tab_mut().push(app::Role::System, format!("effort: {arg}"));
                         }
-                        Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
+                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                     },
                     "/model" if !arg.is_empty() => {
                         let _ = rpc(client, "model.select", json!({"session_id": sid, "model": arg}))
@@ -433,6 +433,7 @@ pub fn render(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

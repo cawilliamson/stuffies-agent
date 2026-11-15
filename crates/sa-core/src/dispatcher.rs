@@ -27,7 +27,7 @@ pub struct ConnState {
 
 impl ConnState {
     #[must_use]
-    pub fn new(conn: u64) -> Self {
+    pub const fn new(conn: u64) -> Self {
         Self {
             conn,
             client: None,
@@ -36,12 +36,12 @@ impl ConnState {
     }
 
     #[must_use]
-    pub fn is_handshaken(&self) -> bool {
+    pub const fn is_handshaken(&self) -> bool {
         self.handshaken
     }
 
     #[must_use]
-    pub fn conn(&self) -> u64 {
+    pub const fn conn(&self) -> u64 {
         self.conn
     }
 
@@ -94,31 +94,31 @@ impl Dispatcher {
                     format!("first message must be hello, got {}", req.method),
                 ));
             }
-            return self.hello(conn, req.params);
+            return Self::hello(conn, req.params);
         }
 
         let params = req.params.unwrap_or(Value::Null);
         match req.method.as_str() {
-            "hello" => self.hello(conn, Some(params)),
+            "hello" => Self::hello(conn, Some(params)),
             "ping" => self.ping(),
-            "session.create" => self.session_create(conn, params),
-            "session.list" => self.session_list(params),
-            "session.attach" => self.session_attach(conn, params),
-            "session.detach" => self.session_detach(conn, params),
-            "session.rename" => self.session_rename(params),
-            "session.delete" => self.session_delete(params),
-            "session.usage" => self.session_usage(params),
-            "session.fork" => self.session_fork(params),
-            "turn.start" => self.turn_start(conn, params),
-            "turn.cancel" => self.turn_cancel(params),
-            "turn.status" => self.turn_status(params),
-            "turn.resume" => self.turn_resume(params),
-            "events.replay" => self.events_replay(params),
-            "events.subscribe" => self.events_subscribe(conn, params),
-            "events.unsubscribe" => self.events_unsubscribe(params),
+            "session.create" => self.session_create(conn, &params),
+            "session.list" => self.session_list(&params),
+            "session.attach" => self.session_attach(conn, &params),
+            "session.detach" => self.session_detach(conn, &params),
+            "session.rename" => self.session_rename(&params),
+            "session.delete" => self.session_delete(&params),
+            "session.usage" => self.session_usage(&params),
+            "session.fork" => Self::session_fork(&params),
+            "turn.start" => self.turn_start(conn, &params),
+            "turn.cancel" => self.turn_cancel(&params),
+            "turn.status" => self.turn_status(&params),
+            "turn.resume" => self.turn_resume(&params),
+            "events.replay" => self.events_replay(&params),
+            "events.subscribe" => self.events_subscribe(conn, &params),
+            "events.unsubscribe" => self.events_unsubscribe(&params),
             "model.list" => self.model_list(),
-            "model.select" => self.model_select(params),
-            "model.effort" => self.model_effort(params),
+            "model.select" => self.model_select(&params),
+            "model.effort" => self.model_effort(&params),
             "handoff.export" | "handoff.import" | "handoff.accept" => Err(RpcError::new(
                 code::NOT_IMPLEMENTED,
                 "handoff arrives at v4.0",
@@ -127,7 +127,7 @@ impl Dispatcher {
         }
     }
 
-    fn hello(&self, conn: &mut ConnState, params: Option<Value>) -> Result<Value, RpcError> {
+    fn hello(conn: &mut ConnState, params: Option<Value>) -> Result<Value, RpcError> {
         let params: HelloParams = params
             .map(serde_json::from_value)
             .transpose()
@@ -153,6 +153,8 @@ impl Dispatcher {
         }))
     }
 
+    // uniform with every other dispatch arm: the caller expects a Result.
+    #[allow(clippy::unnecessary_wraps)]
     fn ping(&self) -> Result<Value, RpcError> {
         Ok(json!(PingResult {
             version: DAEMON_VERSION.to_owned(),
@@ -160,12 +162,11 @@ impl Dispatcher {
             sessions: self
                 .manager
                 .list_sessions(false)
-                .map(|s| s.len() as u64)
-                .unwrap_or(0),
+                .map_or(0, |s| s.len() as u64),
         }))
     }
 
-    fn session_create(&self, conn: &ConnState, params: Value) -> Result<Value, RpcError> {
+    fn session_create(&self, conn: &ConnState, params: &Value) -> Result<Value, RpcError> {
         let params: CreateSessionParams = parse(params)?;
         let result = self
             .manager
@@ -174,7 +175,7 @@ impl Dispatcher {
         Ok(json!(result))
     }
 
-    fn session_list(&self, params: Value) -> Result<Value, RpcError> {
+    fn session_list(&self, params: &Value) -> Result<Value, RpcError> {
         let params: ListSessionsParams = if params.is_null() {
             ListSessionsParams {
                 include_deleted: false,
@@ -189,7 +190,7 @@ impl Dispatcher {
         Ok(json!(sessions))
     }
 
-    fn session_attach(&self, conn: &ConnState, params: Value) -> Result<Value, RpcError> {
+    fn session_attach(&self, conn: &ConnState, params: &Value) -> Result<Value, RpcError> {
         let params: AttachParams = parse(params)?;
         let limit = params.limit.unwrap_or(500).clamp(1, 5000);
         let result = self
@@ -206,31 +207,31 @@ impl Dispatcher {
         Ok(json!(result))
     }
 
-    fn session_detach(&self, conn: &ConnState, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
+    fn session_detach(&self, conn: &ConnState, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
         self.manager.detach(conn.conn(), &session_id);
         Ok(json!({}))
     }
 
-    fn session_rename(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
-        let title = string_field(&params, "title")?;
+    fn session_rename(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let title = string_field(params, "title")?;
         self.manager
             .rename_session(&session_id, &title)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!({}))
     }
 
-    fn session_delete(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
+    fn session_delete(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
         self.manager
             .delete_session(&session_id)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!({}))
     }
 
-    fn session_usage(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
+    fn session_usage(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
         let usage = self
             .manager
             .usage(&session_id)
@@ -238,14 +239,14 @@ impl Dispatcher {
         Ok(json!(usage))
     }
 
-    fn session_fork(&self, _params: Value) -> Result<Value, RpcError> {
+    fn session_fork(_params: &Value) -> Result<Value, RpcError> {
         Err(RpcError::new(
             code::NOT_IMPLEMENTED,
             "session.fork arrives at v4.0",
         ))
     }
 
-    fn turn_start(&self, conn: &ConnState, params: Value) -> Result<Value, RpcError> {
+    fn turn_start(&self, conn: &ConnState, params: &Value) -> Result<Value, RpcError> {
         let params: TurnStartParams = parse(params)?;
         let result = self
             .manager
@@ -259,21 +260,21 @@ impl Dispatcher {
         Ok(json!(result))
     }
 
-    fn turn_cancel(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
+    fn turn_cancel(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
         self.manager
             .cancel_turn(&session_id)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!({}))
     }
 
-    fn turn_status(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
+    fn turn_status(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
         Ok(json!(self.manager.turn_status(&session_id)))
     }
 
-    fn turn_resume(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
+    fn turn_resume(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
         let result = self
             .manager
             .resume_turn(&session_id)
@@ -281,7 +282,7 @@ impl Dispatcher {
         Ok(json!(result))
     }
 
-    fn events_replay(&self, params: Value) -> Result<Value, RpcError> {
+    fn events_replay(&self, params: &Value) -> Result<Value, RpcError> {
         let params: ReplayParams = parse(params)?;
         let limit = params.limit.unwrap_or(500).clamp(1, 5000);
         let result = self
@@ -291,8 +292,8 @@ impl Dispatcher {
         Ok(json!(result))
     }
 
-    fn events_subscribe(&self, conn: &ConnState, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
+    fn events_subscribe(&self, conn: &ConnState, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
         let from_seq = params.get("from_seq").and_then(Value::as_u64).unwrap_or(0);
         let exclude = params
             .get("filter")
@@ -314,7 +315,7 @@ impl Dispatcher {
         Ok(json!({"subscription_id": subscription_id, "from_seq": from_seq}))
     }
 
-    fn events_unsubscribe(&self, params: Value) -> Result<Value, RpcError> {
+    fn events_unsubscribe(&self, params: &Value) -> Result<Value, RpcError> {
         let id = params
             .get("subscription_id")
             .and_then(Value::as_u64)
@@ -323,6 +324,7 @@ impl Dispatcher {
         Ok(json!({}))
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn model_list(&self) -> Result<Value, RpcError> {
         let models = self.manager.models();
         let levels = crate::manager::Manager::effort_levels();
@@ -336,9 +338,9 @@ impl Dispatcher {
             .collect::<Vec<_>>()))
     }
 
-    fn model_effort(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
-        let effort = string_field(&params, "effort")?;
+    fn model_effort(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let effort = string_field(params, "effort")?;
         if !crate::manager::Manager::effort_levels().contains(&effort.as_str()) {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
@@ -351,9 +353,9 @@ impl Dispatcher {
         Ok(json!({"effort": effort}))
     }
 
-    fn model_select(&self, params: Value) -> Result<Value, RpcError> {
-        let session_id = string_field(&params, "session_id")?;
-        let model = string_field(&params, "model")?;
+    fn model_select(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let model = string_field(params, "model")?;
         self.manager
             .store()
             .set_session_model(&session_id, &model)
@@ -362,8 +364,8 @@ impl Dispatcher {
     }
 }
 
-fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcError> {
-    serde_json::from_value(params)
+fn parse<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, RpcError> {
+    serde_json::from_value(params.clone())
         .map_err(|e| RpcError::new(code::INVALID_PARAMS, format!("bad params: {e}")))
 }
 

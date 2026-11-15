@@ -1,4 +1,5 @@
 //! session, turn and recovery behaviour (spec 14, v1.0 tasks 2-3).
+#![allow(clippy::expect_used)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -288,7 +289,7 @@ async fn delete_is_a_tombstone() {
     .await;
 
     let hidden = call(&mut client, 3, "session.list", json!({})).await;
-    assert!(hidden["result"].as_array().expect("array").is_empty());
+    assert_eq!(hidden["result"].as_array().expect("array").len(), 0);
 
     let shown = call(
         &mut client,
@@ -448,7 +449,7 @@ impl Provider for HangingProvider {
         Box::pin(async {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             // the sender is leaked so the channel never closes: the stream simply stalls.
-            std::mem::forget(tx);
+            let _leaked = Box::leak(Box::new(tx));
             Ok(rx)
         })
     }
@@ -757,4 +758,70 @@ async fn a_rename_is_pushed_to_subscribers() {
     );
 
     daemon.stop().await;
+}
+
+#[tokio::test]
+async fn a_stalled_title_call_does_not_block_the_turn() {
+    // an untitled session runs the title call before the agent; a stalled provider there
+    // must not stop the turn from ever starting.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = Config::at(dir.path());
+    cfg.turn_timeout_secs = 2;
+    cfg.aux_budget_secs = 1;
+    let socket = cfg.socket_path.clone();
+
+    let (stop, wait) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        run(cfg, Arc::new(HangingProvider), async move {
+            let _ = wait.await;
+        })
+        .await
+        .expect("daemon");
+    });
+    for _ in 0..500 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let stream = UnixStream::connect(&socket).await.expect("connect");
+    let mut client = Framed::new(stream, LinesCodec::new_with_max_length(1024 * 1024));
+    let hello = json!({"jsonrpc":"2.0","id":0,"method":"hello",
+                       "params":{"protocol":1,"client":"t","client_version":"0"}});
+    client.send(hello.to_string()).await.expect("hello");
+    let _ = client.next().await.expect("hello response").expect("frame");
+
+    // no explicit title: the title call will run and stall.
+    let created = call(
+        &mut client,
+        1,
+        "session.create",
+        json!({"cwd": dir.path().display().to_string()}),
+    )
+    .await;
+    let session = created["result"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+
+    call(
+        &mut client,
+        2,
+        "turn.start",
+        json!({"session_id": session, "prompt": "go", "detach": true}),
+    )
+    .await;
+
+    let interrupted = wait_for_kind(&mut client, &session, "turn.interrupted").await;
+    assert!(
+        interrupted["payload"]["cause"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("timeout"),
+        "expected the turn timeout to fire: {interrupted}"
+    );
+
+    let _ = stop.send(());
+    let _ = handle.await;
 }
