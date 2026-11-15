@@ -134,10 +134,8 @@ fn events_route_to_the_tab_that_owns_the_session() {
     assert_eq!(app.tabs[1].transcript.len(), 0);
 }
 
-// printing is opt-in here (SA_PREVIEW=1) and only for eyeballing the bar.
-#[allow(clippy::print_stdout)]
 #[test]
-fn the_tab_bar_draws_tab_shapes() {
+fn the_tab_bar_is_one_row_of_lit_and_dim_tabs() {
     let mut app = App::new("session-one", "m");
     app.add_tab("session-two", "m");
 
@@ -145,35 +143,26 @@ fn the_tab_bar_draws_tab_shapes() {
     let mut terminal = Terminal::new(backend).expect("terminal");
     sa_tui::draw(&mut terminal, &mut app).expect("draw");
     let buffer = terminal.backend().buffer();
-    let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
 
-    let top = row(0);
-    let mid = row(1);
-    let bot = row(2);
-    if std::env::var("SA_PREVIEW").is_ok() {
-        println!("{top}\n{mid}\n{bot}");
-    }
+    let row0: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
+    assert!(row0.contains("1 session"), "first tab label:\n{row0}");
+    assert!(row0.contains("2 session"), "second tab label:\n{row0}");
+    assert!(row0.contains('\u{2502}'), "tabs need a divider:\n{row0}");
 
+    // the active tab is a lit chip; the inactive one is not filled.
+    let lit: Vec<&str> = buffer
+        .content()
+        .iter()
+        .filter(|c| c.bg == sa_tui::app::ACCENT)
+        .map(|c| c.symbol())
+        .collect();
+    assert!(!lit.is_empty(), "the active tab must be highlighted");
+
+    // one row only: the pane border starts on row 1.
+    let row1: String = (0..100).map(|x| buffer[(x, 1)].symbol()).collect();
     assert!(
-        top.contains('\u{256d}'),
-        "the active tab needs a rounded top:\n{top}"
-    );
-    assert!(
-        top.contains('\u{250c}'),
-        "inactive tabs need square tops:\n{top}"
-    );
-    assert!(
-        mid.contains('\u{2502}') && mid.contains('1'),
-        "labels row:\n{mid}"
-    );
-    // inactive tabs are square; the active one has no bottom edge and opens into the pane.
-    assert!(
-        bot.contains('\u{2514}'),
-        "inactive tabs need a bottom edge:\n{bot}"
-    );
-    assert!(
-        bot.contains('\u{2518}'),
-        "inactive tabs need a bottom edge:\n{bot}"
+        row1.contains('\u{256d}'),
+        "the pane must start immediately below:\n{row1}"
     );
 }
 

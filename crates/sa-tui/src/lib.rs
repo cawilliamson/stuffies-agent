@@ -32,65 +32,47 @@ impl Drop for Restore {
     }
 }
 
-/// draws the tab strip: a row of complete tab shapes sharing edges, so it reads as one
-/// strip. every tab is a closed box; the active one is distinguished by fill, not by a
-/// missing edge, which would leave a ragged outline.
-fn tab_bar(app: &App, width: u16) -> [Line<'static>; 3] {
-    const MIN_INNER: usize = 8;
-    const MAX_INNER: usize = 20;
+/// draws the tab strip: one row, no background bands. the active tab is a lit chip; the
+/// rest are plain text separated by dim dividers.
+fn tab_bar(app: &App, width: u16) -> Line<'static> {
+    const MAX_LABEL: usize = 20;
 
-    let mut top: Vec<Span<'static>> = Vec::new();
-    let mut mid: Vec<Span<'static>> = Vec::new();
-    let mut bot: Vec<Span<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used: usize = 0;
 
     for (index, tab) in app.tabs.iter().enumerate() {
         let mut label = format!("{} {}", index + 1, tab.title);
-        if label.chars().count() > MAX_INNER - 2 {
-            label = label.chars().take(MAX_INNER - 3).collect::<String>();
+        if label.chars().count() > MAX_LABEL {
+            label = label.chars().take(MAX_LABEL - 1).collect::<String>();
             label.push('\u{2026}');
         }
-        let inner = (label.chars().count() + 2).clamp(MIN_INNER, MAX_INNER);
-        let w = inner + 2;
-        if used + w > usize::from(width) {
+        let cell = label.chars().count() + 2;
+        if used + cell + 3 > usize::from(width) {
             break;
         }
-        let active = index == app.active;
-        let (bg, fg, edge) = if active {
-            (app::ACCENT, Color::Rgb(0x10, 0x14, 0x1a), app::ACCENT)
+        if index > 0 {
+            spans.push(Span::styled("\u{2502}", Style::default().fg(app::FAINT)));
+            used += 1;
+        }
+        if index == app.active {
+            spans.push(Span::styled(
+                format!(" {label} "),
+                Style::default()
+                    .fg(Color::Rgb(0x10, 0x14, 0x1a))
+                    .bg(app::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ));
         } else {
-            (Color::Rgb(0x22, 0x27, 0x30), app::DIM, app::FAINT)
-        };
-        let style = Style::default().fg(edge).bg(bg);
-        let (tl, tr, bl, br) = if active {
-            ("\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}")
-        } else {
-            ("\u{250c}", "\u{2510}", "\u{2514}", "\u{2518}")
-        };
-
-        top.push(Span::styled(
-            format!("{tl}{}{tr}", "\u{2500}".repeat(inner)),
-            style,
-        ));
-        mid.push(Span::styled("\u{2502}", style));
-        mid.push(Span::styled(
-            format!(" {label:<width$} ", width = inner - 2),
-            Style::default().fg(fg).bg(bg).add_modifier(if active {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            }),
-        ));
-        mid.push(Span::styled("\u{2502}", style));
-        bot.push(Span::styled(
-            format!("{bl}{}{br}", "\u{2500}".repeat(inner)),
-            style,
-        ));
-        used += w;
+            spans.push(Span::styled(
+                format!(" {label} "),
+                Style::default().fg(app::DIM),
+            ));
+        }
+        used += cell;
     }
 
-    mid.push(Span::styled(" \u{002b}", Style::default().fg(app::FAINT)));
-    [Line::from(top), Line::from(mid), Line::from(bot)]
+    spans.push(Span::styled(" \u{002b}", Style::default().fg(app::FAINT)));
+    Line::from(spans)
 }
 
 fn status_bar(app: &App, width: u16) -> Line<'static> {
@@ -172,23 +154,14 @@ pub fn draw<B: ratatui::backend::Backend>(
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),
+                    Constraint::Length(1),
                     Constraint::Min(3),
                     Constraint::Length(3),
                     Constraint::Length(1),
                 ])
                 .split(area);
 
-            for (offset, line) in tab_bar(app, rows[0].width).into_iter().enumerate() {
-                frame.render_widget(
-                    Paragraph::new(line),
-                    ratatui::layout::Rect {
-                        y: rows[0].y + u16::try_from(offset).unwrap_or(0),
-                        height: 1,
-                        ..rows[0]
-                    },
-                );
-            }
+            frame.render_widget(Paragraph::new(tab_bar(app, rows[0].width)), rows[0]);
 
             // the transcript lives in a framed pane.
             let pane = Block::default()
