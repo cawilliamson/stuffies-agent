@@ -16,7 +16,7 @@ async fn main() -> ExitCode {
     let parsed = Cli::parse();
 
     // the daemon is long-lived and wants its lifecycle visible; a one-shot client does not.
-    let default_level = if matches!(parsed.command, Command::Daemon) {
+    let default_level = if matches!(parsed.command, Some(Command::Daemon)) {
         "info"
     } else {
         "warn"
@@ -30,7 +30,9 @@ async fn main() -> ExitCode {
         .init();
 
     let result = match parsed.command {
-        Command::Daemon => {
+        // no subcommand means attach: `sa` on its own should get you working.
+        None => commands::attach(None, false, false).await,
+        Some(Command::Daemon) => {
             let provider: std::sync::Arc<dyn Provider> = match OpenAiProvider::from_env() {
                 Ok(provider) => std::sync::Arc::new(provider),
                 Err(err) => {
@@ -42,18 +44,18 @@ async fn main() -> ExitCode {
                 .await
                 .map_err(|e| e.to_string())
         }
-        Command::Ping => ping().await,
-        Command::Rpc { stdio } => {
+        Some(Command::Ping) => ping().await,
+        Some(Command::Rpc { stdio }) => {
             if stdio {
                 proxy_stdio().await
             } else {
                 Err("only --stdio is supported".to_owned())
             }
         }
-        Command::Run { prompt } => commands::run_once(&prompt).await,
-        Command::Attach { session, new, line } => commands::attach(session, new, line).await,
-        Command::Sessions => commands::sessions().await,
-        Command::Export { session, format } => commands::export(session, &format).await,
+        Some(Command::Run { prompt }) => commands::run_once(&prompt).await,
+        Some(Command::Attach { session, new, line }) => commands::attach(session, new, line).await,
+        Some(Command::Sessions) => commands::sessions().await,
+        Some(Command::Export { session, format }) => commands::export(session, &format).await,
     };
 
     match result {

@@ -180,3 +180,27 @@ fn stdio_proxy_exits_nonzero_when_daemon_absent() {
 
     assert!(!status.success(), "proxy must fail without a daemon");
 }
+
+#[test]
+fn no_subcommand_attaches_to_the_most_recent_session() {
+    let daemon = Daemon::start();
+
+    // stdin is not a terminal here, so attach falls back to line mode; with no input it
+    // attaches, prints the banner, then exits on EOF.
+    let out = Command::new(SA)
+        .env("SA_SOCKET", &daemon.socket)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run sa with no arguments");
+
+    assert!(
+        out.status.success(),
+        "sa with no arguments must attach: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("attached to"),
+        "expected the attach banner, got: {stdout}"
+    );
+}

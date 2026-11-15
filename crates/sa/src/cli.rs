@@ -7,8 +7,9 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "sa", version, about = "daemon-first coding agent")]
 pub struct Cli {
+    /// omit to attach to the most recent session.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
