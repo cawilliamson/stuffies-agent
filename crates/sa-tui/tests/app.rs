@@ -468,3 +468,50 @@ fn an_unknown_model_falls_back_to_a_generic_label() {
     let screen = screen(&mut app, 100, 20);
     assert!(screen.contains("\u{256d}\u{2500} assistant"), "{screen}");
 }
+
+#[test]
+fn reasoning_and_its_reply_share_one_split_frame() {
+    let mut app = App::new("s", "deepseek-v4-flash");
+    app.tab_mut().push(Role::Thinking, "weighing the options");
+    app.tab_mut().push(Role::Assistant, "here is the answer");
+
+    let screen = screen(&mut app, 100, 30);
+    // one titled frame, not two.
+    // the pane border also starts with a corner, so match the frame header's space.
+    assert_eq!(
+        screen.matches("\u{256d}\u{2500} ").count(),
+        1,
+        "the turn must be a single frame:\n{screen}"
+    );
+    assert!(
+        screen.contains("\u{256d}\u{2500} deepseek-v4-flash"),
+        "{screen}"
+    );
+    assert!(screen.contains("weighing the options"), "{screen}");
+    assert!(screen.contains("here is the answer"), "{screen}");
+    assert!(
+        screen.contains('\u{251c}'),
+        "the two sections must be split by a rule:\n{screen}"
+    );
+
+    // reasoning sits above the reply.
+    let thinking_at = screen.find("weighing the options").expect("reasoning");
+    let reply_at = screen.find("here is the answer").expect("reply");
+    assert!(
+        thinking_at < reply_at,
+        "reasoning must come first:\n{screen}"
+    );
+}
+
+#[test]
+fn reasoning_without_a_reply_keeps_its_own_frame() {
+    let mut app = App::new("s", "deepseek-v4-flash");
+    app.tab_mut().push(Role::Thinking, "still thinking");
+    let screen = screen(&mut app, 100, 20);
+    assert!(screen.contains("\u{256d}\u{2500} thinking"), "{screen}");
+    assert!(screen.contains("still thinking"), "{screen}");
+    assert!(
+        !screen.contains('\u{251c}'),
+        "no divider without a reply:\n{screen}"
+    );
+}

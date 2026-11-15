@@ -530,22 +530,8 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
     (label, edge, body)
 }
 
-/// renders one transcript entry as a titled frame.
-///
-/// every row is exactly `width` cells, or the pane wraps and the transcript shears.
-fn framed(role: Role, text: &str, width: usize, model: &str) -> Vec<Line<'static>> {
-    let (label, edge, body) = role_style(role, model);
-    let mut out: Vec<Line<'static>> = Vec::new();
-
-    let head = format!("\u{256d}\u{2500} {label} ");
-    let fill = width.saturating_sub(head.chars().count() + 1);
-    out.push(Line::from(vec![
-        Span::styled(head, Style::default().fg(edge)),
-        Span::styled("\u{2500}".repeat(fill), Style::default().fg(edge)),
-        Span::styled("\u{256e}", Style::default().fg(edge)),
-    ]));
-
-    // two cells for the side borders plus one of padding on each side.
+/// pushes one body section: each row is exactly `width` cells.
+fn body(out: &mut Vec<Line<'static>>, text: &str, width: usize, edge: Color, ink: Color) {
     let room = width.saturating_sub(4);
     for raw in text.lines() {
         let mut line = raw.to_owned();
@@ -559,14 +545,37 @@ fn framed(role: Role, text: &str, width: usize, model: &str) -> Vec<Line<'static
         let pad = room.saturating_sub(line.chars().count());
         out.push(Line::from(vec![
             Span::styled("\u{2502} ", Style::default().fg(edge)),
-            Span::styled(line, Style::default().fg(body)),
+            Span::styled(line, Style::default().fg(ink)),
             Span::styled(
                 format!("{} \u{2502}", " ".repeat(pad)),
                 Style::default().fg(edge),
             ),
         ]));
     }
+}
 
+fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
+    let head = format!("\u{256d}\u{2500} {label} ");
+    let fill = width.saturating_sub(head.chars().count() + 1);
+    out.push(Line::from(vec![
+        Span::styled(head, Style::default().fg(edge)),
+        Span::styled("\u{2500}".repeat(fill), Style::default().fg(edge)),
+        Span::styled("\u{256e}", Style::default().fg(edge)),
+    ]));
+}
+
+fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
+    out.push(Line::from(vec![
+        Span::styled("\u{251c}", Style::default().fg(edge)),
+        Span::styled(
+            "\u{2500}".repeat(width.saturating_sub(2)),
+            Style::default().fg(edge),
+        ),
+        Span::styled("\u{2524}", Style::default().fg(edge)),
+    ]));
+}
+
+fn bottom(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
     out.push(Line::from(vec![
         Span::styled("\u{2570}", Style::default().fg(edge)),
         Span::styled(
@@ -575,16 +584,68 @@ fn framed(role: Role, text: &str, width: usize, model: &str) -> Vec<Line<'static
         ),
         Span::styled("\u{256f}", Style::default().fg(edge)),
     ]));
+}
+
+/// renders one transcript entry as a titled frame.
+fn framed(role: Role, text: &str, width: usize, model: &str) -> Vec<Line<'static>> {
+    let (label, edge, ink) = role_style(role, model);
+    let mut out = Vec::new();
+    top(&mut out, &label, width, edge);
+    body(&mut out, text, width, edge, ink);
+    bottom(&mut out, width, edge);
     out
 }
 
-/// the transcript of a tab as renderable lines. every entry is framed and colour-coded.
+/// renders a turn's reasoning and its reply as one frame split by a rule, rather than two
+/// separate boxes.
+fn framed_split(model: &str, thinking: &str, message: &str, width: usize) -> Vec<Line<'static>> {
+    let (label, edge, _) = role_style(Role::Assistant, model);
+    let (_, think_edge, think_ink) = role_style(Role::Thinking, model);
+    let mut out = Vec::new();
+    top(&mut out, &label, width, edge);
+    body(&mut out, thinking, width, edge, think_ink);
+    divider(&mut out, width, think_edge);
+    body(&mut out, message, width, edge, Color::Rgb(0xd8, 0xe8, 0xdc));
+    bottom(&mut out, width, edge);
+    out
+}
+
+/// the transcript of a tab as renderable lines.
+///
+/// reasoning and the reply it produced share one frame: the reasoning sits above a rule and
+/// the reply below it.
 #[must_use]
 pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
     let inner = usize::from(width).clamp(16, 160);
     let mut out: Vec<Line<'static>> = Vec::new();
-    for entry in &tab.transcript {
+    let mut index = 0;
+
+    while index < tab.transcript.len() {
+        let entry = &tab.transcript[index];
+
+        if entry.role == Role::Thinking {
+            // gather the reasoning run, then see whether a reply follows it.
+            let mut thinking = entry.text.clone();
+            let mut next = index + 1;
+            while next < tab.transcript.len() && tab.transcript[next].role == Role::Thinking {
+                thinking.push('\n');
+                thinking.push_str(&tab.transcript[next].text);
+                next += 1;
+            }
+            if next < tab.transcript.len() && tab.transcript[next].role == Role::Assistant {
+                let message = tab.transcript[next].text.clone();
+                out.extend(framed_split(&tab.status.model, &thinking, &message, inner));
+                index = next + 1;
+            } else {
+                out.extend(framed(Role::Thinking, &thinking, inner, &tab.status.model));
+                index = next;
+            }
+            continue;
+        }
+
         out.extend(framed(entry.role, &entry.text, inner, &tab.status.model));
+        index += 1;
     }
+
     out
 }
