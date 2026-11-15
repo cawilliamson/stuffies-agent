@@ -924,3 +924,75 @@ fn the_hint_offers_interrupt_while_a_turn_runs() {
         "jump hint yields:\n{busy}"
     );
 }
+
+#[test]
+fn scrolling_does_not_invalidate_the_render_cache() {
+    let mut app = App::new("s", "m");
+    for n in 0..30 {
+        app.tab_mut().push(Role::Assistant, format!("line {n}"));
+    }
+    let _ = screen(&mut app, 100, 24);
+    let before = app.tab().content_rev;
+
+    for _ in 0..10 {
+        app.on_key(key(KeyCode::Up));
+    }
+    assert_eq!(
+        app.tab().content_rev,
+        before,
+        "scrolling must reuse the cached render"
+    );
+
+    app.tab_mut().push(Role::Assistant, "new line");
+    assert_ne!(
+        app.tab().content_rev,
+        before,
+        "new content must invalidate the cache"
+    );
+}
+
+#[test]
+fn a_scrollbar_appears_when_the_transcript_scrolls() {
+    let mut app = App::new("s", "m");
+    for n in 0..60 {
+        app.tab_mut().push(Role::Assistant, format!("line {n}"));
+    }
+    let _ = screen(&mut app, 100, 24);
+    app.on_key(key(KeyCode::Up));
+    let screen = screen(&mut app, 100, 24);
+    assert!(
+        screen.contains('\u{2588}'),
+        "expected a scrollbar thumb:\n{screen}"
+    );
+}
+
+#[test]
+fn no_scrollbar_when_everything_fits() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::Assistant, "short");
+    let screen = screen(&mut app, 100, 24);
+    assert!(!screen.contains('\u{2588}'), "no thumb needed:\n{screen}");
+}
+
+#[test]
+fn tool_output_is_never_treated_as_markdown() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "echo **not bold**"}}),
+    );
+    app.tab_mut().on_event(
+        "tool.completed",
+        &json!({"output": "**literal** and *also literal*", "exit_code": 0}),
+    );
+
+    let screen = screen(&mut app, 120, 30);
+    assert!(
+        screen.contains("**literal**"),
+        "tool output must keep its markers:\n{screen}"
+    );
+    assert!(
+        screen.contains("$ echo **not bold**"),
+        "the command is literal too:\n{screen}"
+    );
+}

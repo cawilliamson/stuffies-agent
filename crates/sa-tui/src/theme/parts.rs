@@ -13,7 +13,33 @@ pub const RULE: Color = Color::Rgb(0x2a, 0x30, 0x3a);
 
 /// the transcript for a pane, pinned to the newest content when following.
 pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
-    let content = app::transcript_lines(app.tab(), area.width);
+    // rebuilding the whole transcript on every scroll keypress is what made scrolling
+    // crawl, so reuse the render until the content or the width actually changes.
+    let stale = {
+        let tab = app.tab();
+        tab.cache
+            .as_ref()
+            .is_none_or(|c| c.rev != tab.content_rev || c.width != area.width)
+    };
+    if stale {
+        let lines = {
+            let tab = app.tab();
+            app::transcript_lines(tab, area.width)
+        };
+        let tab = app.tab_mut();
+        tab.cache = Some(app::Cache {
+            rev: tab.content_rev,
+            width: area.width,
+            lines,
+        });
+    }
+
+    let tab = app.tab_mut();
+    let content = tab
+        .cache
+        .as_ref()
+        .map(|c| c.lines.clone())
+        .unwrap_or_default();
     let width = usize::from(area.width).max(1);
     let visual: usize = content
         .iter()
@@ -26,7 +52,6 @@ pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
             }
         })
         .sum();
-    let tab = app.tab_mut();
     tab.max_scroll =
         u16::try_from(visual.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX);
     if tab.follow {
@@ -35,8 +60,29 @@ pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
         tab.scroll = tab.scroll.min(tab.max_scroll);
     }
     let scroll = tab.scroll;
-    // no Wrap: every line is already measured to the pane width.
     Paragraph::new(content).scroll((scroll, 0))
+}
+
+/// draws a scrollbar down the right edge of a transcript pane when it is scrollable.
+pub fn scrollbar(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let tab = app.tab();
+    if tab.max_scroll == 0 || area.height < 3 || area.width < 3 {
+        return;
+    }
+    let height = area.height;
+    let total = u32::from(tab.max_scroll) + u32::from(height);
+    let thumb = ((u32::from(height) * u32::from(height)) / total).max(1) as u16;
+    let travel = height.saturating_sub(thumb);
+    let pos = (u32::from(tab.scroll) * u32::from(travel) / u32::from(tab.max_scroll)) as u16;
+    let x = area.x + area.width - 1;
+
+    let buffer = frame.buffer_mut();
+    for offset in 0..height {
+        let lit = offset >= pos && offset < pos + thumb;
+        let cell = &mut buffer[(x, area.y + offset)];
+        cell.set_symbol(if lit { "\u{2588}" } else { "\u{2502}" });
+        cell.set_style(Style::default().fg(if lit { app::ACCENT } else { app::FAINT }));
+    }
 }
 
 /// animation frames for the activity spinner.

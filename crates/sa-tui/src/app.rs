@@ -43,6 +43,14 @@ pub struct Entry {
     pub exit_code: Option<i32>,
 }
 
+/// a rendered transcript, reused until its content or width changes. rebuilding it on every
+/// scroll keypress is what made scrolling crawl.
+pub struct Cache {
+    pub rev: u64,
+    pub width: u16,
+    pub lines: Vec<Line<'static>>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Status {
     pub model: String,
@@ -72,6 +80,9 @@ pub struct Tab {
     frozen: Option<f32>,
     /// bumped on every visible change so the renderer can skip clean frames.
     pub revision: u64,
+    /// bumped only when transcript entries change, so scrolling can reuse the render.
+    pub content_rev: u64,
+    pub cache: Option<Cache>,
 }
 
 impl Tab {
@@ -110,6 +121,8 @@ impl Tab {
             flash: None,
             frozen: None,
             revision: 1,
+            content_rev: 1,
+            cache: None,
         }
     }
 
@@ -127,6 +140,8 @@ impl Tab {
         if self.follow {
             self.scroll = self.max_scroll;
         }
+        self.content_rev = self.content_rev.wrapping_add(1);
+        self.cache = None;
         self.touch();
     }
 
@@ -376,6 +391,8 @@ impl Tab {
         if self.follow {
             self.scroll = self.max_scroll;
         }
+        self.content_rev = self.content_rev.wrapping_add(1);
+        self.cache = None;
         self.touch();
     }
 }
@@ -681,23 +698,39 @@ fn styled(text: &str, base: Style) -> Vec<Span<'static>> {
 }
 
 /// pushes one body section: each row is exactly `width` cells.
-fn body(out: &mut Vec<Line<'static>>, text: &str, width: usize, edge: Color, ink: Color) {
+fn body(
+    out: &mut Vec<Line<'static>>,
+    text: &str,
+    width: usize,
+    edge: Color,
+    ink: Color,
+    markdown: bool,
+) {
     let room = width.saturating_sub(4);
     for raw in text.lines() {
-        // the markers are not drawn, so measure the text without them.
-        let plain = plain(raw);
-        let mut line: String = plain.chars().take(room).collect();
-        if plain.chars().count() > room {
-            line = plain
+        let mut line = raw.to_owned();
+        if line.chars().count() > room {
+            line = line
                 .chars()
                 .take(room.saturating_sub(1))
                 .collect::<String>();
             line.push('\u{2026}');
         }
-        let pad = room.saturating_sub(line.chars().count());
+        // markers are not drawn, so measure the visible text.
+        let shown = if markdown {
+            plain(&line).chars().count()
+        } else {
+            line.chars().count()
+        };
+        let pad = room.saturating_sub(shown);
 
+        let base = Style::default().fg(ink);
         let mut spans = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
-        spans.extend(styled(raw, Style::default().fg(ink)));
+        if markdown {
+            spans.extend(styled(&line, base));
+        } else {
+            spans.push(Span::styled(line, base));
+        }
         spans.push(Span::styled(
             format!("{} \u{2502}", " ".repeat(pad)),
             Style::default().fg(edge),
@@ -764,7 +797,8 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     let (_, edge, ink) = role_style(entry.role, model);
     let mut out = Vec::new();
     top(&mut out, &entry_label(entry, model), width, edge);
-    body(&mut out, &entry_body(entry), width, edge, ink);
+    let markdown = !matches!(entry.role, Role::Tool | Role::ToolOutput);
+    body(&mut out, &entry_body(entry), width, edge, ink, markdown);
     bottom(&mut out, width, edge);
     out
 }
@@ -791,9 +825,10 @@ fn framed_tool(
     } else {
         call.to_owned()
     };
-    body(&mut out, &invocation, width, edge, ink);
+    // a command and its output are literal: no markdown interpretation.
+    body(&mut out, &invocation, width, edge, ink, false);
     divider(&mut out, width, edge);
-    body(&mut out, output, width, edge, out_ink);
+    body(&mut out, output, width, edge, out_ink, false);
     bottom(&mut out, width, edge);
     out
 }
@@ -805,10 +840,17 @@ fn framed_split(model: &str, thinking: &str, message: &str, width: usize) -> Vec
     let (_, _, think_ink) = role_style(Role::Thinking, model);
     let mut out = Vec::new();
     top(&mut out, &label, width, edge);
-    body(&mut out, thinking, width, edge, think_ink);
+    body(&mut out, thinking, width, edge, think_ink, true);
     // the rule is part of this frame, so it uses the frame's colour.
     divider(&mut out, width, edge);
-    body(&mut out, message, width, edge, Color::Rgb(0xd8, 0xe8, 0xdc));
+    body(
+        &mut out,
+        message,
+        width,
+        edge,
+        Color::Rgb(0xd8, 0xe8, 0xdc),
+        true,
+    );
     bottom(&mut out, width, edge);
     out
 }
