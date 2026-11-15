@@ -924,10 +924,28 @@ fn the_hint_offers_interrupt_while_a_turn_runs() {
     app.tab_mut().status.turn_running = true;
     let busy = screen(&mut app, 160, 24);
     assert!(busy.contains("esc interrupt"), "busy hints:\n{busy}");
+    // the interrupt takes the whole hint rather than sitting beside the others.
     assert!(
         !busy.contains("ctrl+1..9 jump"),
         "jump hint yields:\n{busy}"
     );
+    assert!(!busy.contains("ctrl+t new"), "new-tab hint yields:\n{busy}");
+
+    // and it is plain text, not a highlighted chip: no accent background on the status row.
+    let backend = TestBackend::new(160, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let width = 160;
+    let status_row = 23 * width;
+    let highlighted = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .skip(status_row)
+        .take(width)
+        .any(|cell| cell.bg == sa_tui::app::ACCENT);
+    assert!(!highlighted, "the interrupt hint must not be highlighted");
 }
 
 #[test]
