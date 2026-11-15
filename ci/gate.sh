@@ -27,6 +27,14 @@ if ! command -v cargo-machete >/dev/null 2>&1; then
 fi
 cargo machete
 
+step "anti-patterns"
+if ! command -v ast-grep >/dev/null 2>&1; then
+  echo "gate: ast-grep not found. run inside the devShell:" >&2
+  echo "      nix develop -c ./ci/gate.sh" >&2
+  exit 1
+fi
+ast-grep scan --config sgconfig.yml
+
 step "supply chain"
 cargo deny check
 

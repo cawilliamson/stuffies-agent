@@ -1,0 +1,13 @@
+---
+# warning, not error: the timeout is often applied by a caller, and a
+# syntactic rule cannot see across function boundaries. treat a hit as
+# "confirm a budget encloses this".
+id: provider-stream-must-be-timed-out
+language: rust
+severity: warning
+message: confirm a timeout encloses this provider stream await
+note: >-
+  a stalled endpoint never closes the stream, so the await never
+  returns on its own.
+rule:
+  pattern: $PROVIDER.stream($$$ARGS).await

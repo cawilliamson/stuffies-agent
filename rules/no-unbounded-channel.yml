@@ -1,0 +1,16 @@
+---
+id: no-unbounded-channel
+language: rust
+severity: error
+message: >-
+  unbounded channels have no backpressure; prefer mpsc::channel
+note: >-
+  a fast producer against a slow consumer grows without limit until
+  the process dies.
+# matched on the call node, not a pattern: a bare pattern only matches
+# an unscoped name and misses tokio::sync::mpsc::unbounded_channel.
+rule:
+  kind: call_expression
+  has:
+    field: function
+    regex: unbounded_channel

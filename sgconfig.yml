@@ -1,0 +1,11 @@
+---
+# ast-grep rules encoding this project's invariants.
+#
+# clippy covers rust-wide anti-patterns. these cover the ones
+# specific to sa: the daemon must stay responsive, so nothing
+# may block or grow without bound inside a turn.
+#
+# error severity fails ci/gate.sh. warning severity is a review
+# prompt and does not fail the gate.
+ruleDirs:
+  - rules

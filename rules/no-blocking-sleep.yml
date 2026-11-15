@@ -1,0 +1,15 @@
+---
+id: no-blocking-sleep
+language: rust
+severity: error
+message: >-
+  std::thread::sleep blocks the runtime; use tokio::time::sleep
+note: >-
+  a blocking sleep inside a task starves every other task on that
+  worker. tests may block.
+ignores:
+  - "**/tests/**"
+rule:
+  any:
+    - pattern: std::thread::sleep($$$ARGS)
+    - pattern: thread::sleep($$$ARGS)
