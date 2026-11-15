@@ -131,11 +131,11 @@ pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
 /// a compact context meter: filled cells and a percentage, coloured by pressure.
 fn context_meter(used: u64, limit: u64) -> (String, Color) {
     const CELLS: usize = 10;
-    let pct = if limit == 0 {
-        0
-    } else {
-        (used.saturating_mul(100) / limit).min(100)
-    };
+    let pct = used
+        .saturating_mul(100)
+        .checked_div(limit)
+        .unwrap_or(0)
+        .min(100);
     let filled = (pct as usize * CELLS / 100).min(CELLS);
     let ink = if pct >= 85 {
         app::BAD
