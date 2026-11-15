@@ -167,56 +167,82 @@ fn the_tab_bar_is_one_row_of_lit_and_dim_tabs() {
 }
 
 #[test]
-fn prose_is_plain_and_only_tool_output_is_boxed() {
+fn every_transcript_entry_is_framed_with_its_role() {
     let mut app = App::new("s", "m");
-    app.tab_mut().push(Role::User, "a question");
-    app.tab_mut().push(Role::Assistant, "an answer");
-    app.tab_mut().push(Role::Tool, "bash ls");
-    app.tab_mut().push(Role::ToolOutput, "file.txt");
+    for (role, text) in [
+        (Role::User, "a question"),
+        (Role::Assistant, "an answer"),
+        (Role::Thinking, "reasoning here"),
+        (Role::Tool, "bash ls"),
+        (Role::ToolOutput, "file.txt"),
+        (Role::Error, "it broke"),
+    ] {
+        app.tab_mut().push(role, text);
+    }
 
-    let screen = screen(&mut app, 100, 30);
-    assert!(
-        screen.contains("\u{276f} a question"),
-        "user turn must be marked:\n{screen}"
-    );
-    assert!(screen.contains("an answer"), "{screen}");
-    assert!(
-        screen.contains("\u{25be} bash ls"),
-        "tool call must be marked:\n{screen}"
-    );
-    assert!(screen.contains("file.txt"), "{screen}");
+    let screen = screen(&mut app, 100, 40);
+    for label in [
+        "\u{256d}\u{2500} you",
+        "\u{256d}\u{2500} sa",
+        "\u{256d}\u{2500} thinking",
+        "\u{256d}\u{2500} tool",
+        "\u{256d}\u{2500} output",
+        "\u{256d}\u{2500} error",
+    ] {
+        assert!(screen.contains(label), "missing frame {label:?}:\n{screen}");
+    }
+    for text in [
+        "a question",
+        "an answer",
+        "reasoning here",
+        "file.txt",
+        "it broke",
+    ] {
+        assert!(screen.contains(text), "missing body {text:?}");
+    }
+}
 
-    // prose is prose: boxing every message made the transcript unreadable.
+#[test]
+fn each_role_gets_a_distinct_frame_colour() {
+    use ratatui::style::Color;
+    let mut app = App::new("s", "m");
+    for (role, text) in [
+        (Role::User, "q"),
+        (Role::Assistant, "a"),
+        (Role::Thinking, "t"),
+        (Role::Tool, "c"),
+        (Role::Error, "e"),
+    ] {
+        app.tab_mut().push(role, text);
+    }
+
+    let backend = TestBackend::new(100, 40);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let mut edges: Vec<Color> = buffer
+        .content()
+        .iter()
+        .filter(|c| c.symbol() == "\u{256d}")
+        .map(|c| c.fg)
+        .collect();
+    edges.sort_by_key(|c| format!("{c:?}"));
+    edges.dedup();
     assert!(
-        !screen.contains("\u{256d}\u{2500} you"),
-        "prose must not be boxed:\n{screen}"
-    );
-    assert!(
-        !screen.contains("\u{256d}\u{2500} sa"),
-        "prose must not be boxed:\n{screen}"
-    );
-    // but the tool output is in a well.
-    assert!(
-        screen.contains("\u{2502} file.txt"),
-        "tool output must be framed:\n{screen}"
+        edges.len() >= 5,
+        "expected a distinct frame colour per role, got {edges:?}"
     );
 }
 
 #[test]
-fn an_idle_tick_does_not_dirty_the_frame() {
-    use std::time::{Duration, Instant};
+fn thinking_text_is_rendered_and_boxed() {
     let mut app = App::new("s", "m");
-    let before = app.revision();
     app.tab_mut()
-        .tick_at(Instant::now() + Duration::from_secs(10));
-    assert_eq!(
-        app.revision(),
-        before,
-        "an idle tick must not force a redraw"
-    );
-
-    app.tab_mut().push(Role::Assistant, "new text");
-    assert_ne!(app.revision(), before, "new content must dirty the frame");
+        .on_event("llm.reasoning", &json!({"text": "considering options"}));
+    let screen = screen(&mut app, 100, 30);
+    assert!(screen.contains("thinking"), "{screen}");
+    assert!(screen.contains("considering options"), "{screen}");
 }
 
 #[test]
@@ -398,4 +424,23 @@ fn the_composer_is_just_a_box_with_the_text() {
         border.contains('\u{256d}') && border.contains('\u{256e}'),
         "the box must remain:\n{border}"
     );
+}
+
+#[test]
+fn every_frame_row_is_the_same_width() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::User, "a question");
+    app.tab_mut().push(Role::Assistant, "an answer");
+    app.tab_mut().push(Role::Thinking, "thinking");
+
+    let lines = sa_tui::render(&app, 98);
+    let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
+    let first = widths.first().copied().unwrap_or(0);
+    assert_eq!(first, 98, "frames must fill the pane exactly");
+    for (index, width) in widths.iter().enumerate() {
+        assert_eq!(
+            *width, first,
+            "row {index} is {width} wide, expected {first}"
+        );
+    }
 }

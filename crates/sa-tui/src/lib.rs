@@ -167,15 +167,7 @@ pub fn draw<B: ratatui::backend::Backend>(
             let pane = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(RULE))
-                .title(Line::from(vec![
-                    Span::raw(" "),
-                    Span::styled(
-                        app.tab().session.chars().take(8).collect::<String>(),
-                        Style::default().fg(app::DIM),
-                    ),
-                    Span::raw(" "),
-                ]));
+                .border_style(Style::default().fg(RULE));
             let inner = pane.inner(rows[1]);
             frame.render_widget(pane, rows[1]);
 
@@ -184,11 +176,12 @@ pub fn draw<B: ratatui::backend::Backend>(
             let visual: usize = content
                 .iter()
                 .map(|line| {
+                    // a line that exactly fills the pane is one row, not two.
                     let w = line.width();
                     if w == 0 {
                         1
                     } else {
-                        (w / width) + 1
+                        w.div_ceil(width)
                     }
                 })
                 .sum();

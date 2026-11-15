@@ -1,7 +1,7 @@
 //! the tui state machine, independent of any terminal so it can be tested.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
@@ -23,6 +23,8 @@ pub enum Role {
     Assistant,
     Tool,
     ToolOutput,
+    /// the model's reasoning trace.
+    Thinking,
     System,
     Error,
 }
@@ -251,11 +253,12 @@ impl Tab {
             "llm.delta" => {
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
                 self.note_generation(text, now);
-                self.append_stream(text);
+                self.append_stream_as(Role::Assistant, text);
             }
             "llm.reasoning" => {
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
                 self.note_generation(text, now);
+                self.append_stream_as(Role::Thinking, text);
             }
             "llm.completed" => self.close_generation(now),
             "tool.requested" => {
@@ -312,15 +315,15 @@ impl Tab {
         }
     }
 
-    fn append_stream(&mut self, text: &str) {
+    fn append_stream_as(&mut self, role: Role, text: &str) {
         match self.transcript.last_mut() {
-            Some(entry) if entry.role == Role::Assistant && !entry.text.ends_with('\n') => {
+            Some(entry) if entry.role == role && !entry.text.ends_with('\n') => {
                 entry.text.push_str(text);
             }
             _ => {
                 if !text.is_empty() {
                     self.transcript.push(Entry {
-                        role: Role::Assistant,
+                        role,
                         text: text.to_owned(),
                     });
                 }
@@ -496,95 +499,83 @@ fn indent(text: &str, max_lines: usize) -> String {
     lines.join("\n")
 }
 
-/// the transcript of a tab as renderable lines.
-///
-/// prose is prose: only tool output is boxed, so the transcript reads as a conversation
-/// rather than a wall of frames.
+/// the label and edge colour for a role.
 #[must_use]
-pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
-    let inner = usize::from(width).saturating_sub(6).clamp(12, 160);
+pub fn role_style(role: Role) -> (&'static str, Color, Color) {
+    match role {
+        Role::User => ("you", ACCENT, Color::Rgb(0xe8, 0xf0, 0xff)),
+        Role::Assistant => ("sa", OK, Color::Rgb(0xd8, 0xe8, 0xdc)),
+        Role::Thinking => (
+            "thinking",
+            Color::Rgb(0xc7, 0x9b, 0xff),
+            Color::Rgb(0xb0, 0x9c, 0xc8),
+        ),
+        Role::Tool => (
+            "tool",
+            Color::Rgb(0xe0, 0xb0, 0x60),
+            Color::Rgb(0xd8, 0xc8, 0xa8),
+        ),
+        Role::ToolOutput => ("output", FAINT, DIM),
+        Role::System => ("system", DIM, DIM),
+        Role::Error => ("error", BAD, Color::Rgb(0xf0, 0xc0, 0xc0)),
+    }
+}
+
+/// renders one transcript entry as a titled frame.
+///
+/// every row is exactly `width` cells, or the pane wraps and the transcript shears.
+fn framed(role: Role, text: &str, width: usize) -> Vec<Line<'static>> {
+    let (label, edge, body) = role_style(role);
     let mut out: Vec<Line<'static>> = Vec::new();
 
-    for entry in &tab.transcript {
-        match entry.role {
-            Role::User => {
-                if !out.is_empty() {
-                    out.push(Line::from(""));
-                }
-                for (index, raw) in entry.text.lines().enumerate() {
-                    let head = if index == 0 {
-                        Span::styled("\u{276f} ", Style::default().fg(ACCENT))
-                    } else {
-                        Span::styled("  ", Style::default())
-                    };
-                    out.push(Line::from(vec![
-                        head,
-                        Span::styled(
-                            raw.to_owned(),
-                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                }
-            }
-            Role::Assistant => {
-                if !out.is_empty() {
-                    out.push(Line::from(""));
-                }
-                for raw in entry.text.lines() {
-                    out.push(Line::from(Span::styled(
-                        raw.to_owned(),
-                        Style::default().fg(INK),
-                    )));
-                }
-            }
-            Role::Tool => {
-                out.push(Line::from(vec![
-                    Span::styled("\u{25be} ", Style::default().fg(FAINT)),
-                    Span::styled(entry.text.clone(), Style::default().fg(DIM)),
-                ]));
-            }
-            Role::ToolOutput => {
-                out.push(Line::from(Span::styled(
-                    format!("  \u{256d}{}\u{256e}", "\u{2500}".repeat(inner)),
-                    Style::default().fg(FAINT),
-                )));
-                for raw in entry.text.lines() {
-                    let mut text = raw.to_owned();
-                    if text.chars().count() > inner {
-                        text = text
-                            .chars()
-                            .take(inner.saturating_sub(1))
-                            .collect::<String>();
-                        text.push('\u{2026}');
-                    }
-                    let pad = inner.saturating_sub(text.chars().count());
-                    out.push(Line::from(vec![
-                        Span::styled("  \u{2502} ", Style::default().fg(FAINT)),
-                        Span::styled(text, Style::default().fg(DIM)),
-                        Span::styled(
-                            format!("{} \u{2502}", " ".repeat(pad)),
-                            Style::default().fg(FAINT),
-                        ),
-                    ]));
-                }
-                out.push(Line::from(Span::styled(
-                    format!("  \u{2570}{}\u{256f}", "\u{2500}".repeat(inner)),
-                    Style::default().fg(FAINT),
-                )));
-            }
-            Role::System => {
-                out.push(Line::from(vec![
-                    Span::styled("\u{00b7} ", Style::default().fg(FAINT)),
-                    Span::styled(entry.text.clone(), Style::default().fg(DIM)),
-                ]));
-            }
-            Role::Error => {
-                out.push(Line::from(vec![
-                    Span::styled("\u{2717} ", Style::default().fg(BAD)),
-                    Span::styled(entry.text.clone(), Style::default().fg(BAD)),
-                ]));
-            }
+    let head = format!("\u{256d}\u{2500} {label} ");
+    let fill = width.saturating_sub(head.chars().count() + 1);
+    out.push(Line::from(vec![
+        Span::styled(head, Style::default().fg(edge)),
+        Span::styled("\u{2500}".repeat(fill), Style::default().fg(edge)),
+        Span::styled("\u{256e}", Style::default().fg(edge)),
+    ]));
+
+    // two cells for the side borders plus one of padding on each side.
+    let room = width.saturating_sub(4);
+    for raw in text.lines() {
+        let mut line = raw.to_owned();
+        if line.chars().count() > room {
+            line = line
+                .chars()
+                .take(room.saturating_sub(1))
+                .collect::<String>();
+            line.push('\u{2026}');
         }
+        let pad = room.saturating_sub(line.chars().count());
+        out.push(Line::from(vec![
+            Span::styled("\u{2502} ", Style::default().fg(edge)),
+            Span::styled(line, Style::default().fg(body)),
+            Span::styled(
+                format!("{} \u{2502}", " ".repeat(pad)),
+                Style::default().fg(edge),
+            ),
+        ]));
+    }
+
+    out.push(Line::from(vec![
+        Span::styled("\u{2570}", Style::default().fg(edge)),
+        Span::styled(
+            "\u{2500}".repeat(width.saturating_sub(2)),
+            Style::default().fg(edge),
+        ),
+        Span::styled("\u{256f}", Style::default().fg(edge)),
+    ]));
+    out
+}
+
+/// the transcript of a tab as renderable lines. every entry is framed and colour-coded.
+#[must_use]
+pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
+    let inner = usize::from(width).clamp(16, 160);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for entry in &tab.transcript {
+        out.extend(framed(entry.role, &entry.text, inner));
     }
     out
 }
