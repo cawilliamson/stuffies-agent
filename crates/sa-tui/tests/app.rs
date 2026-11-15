@@ -828,3 +828,26 @@ fn the_tab_title_keeps_its_session_id_after_a_rename() {
     assert!(screen.contains("Fixing rust"), "{screen}");
     assert!(screen.contains("(abcdef12"), "{screen}");
 }
+
+#[test]
+fn applying_a_rename_sets_the_tab_title_with_its_id() {
+    let mut app = App::new("abcdef12-3456-7890", "m");
+    app.apply_rename("abcdef12-3456-7890", "Fixing rust bugs");
+
+    assert_eq!(app.tab().title, "Fixing rust bugs (abcdef12)");
+
+    let screen = screen(&mut app, 120, 20);
+    assert!(screen.contains("Fixing rust bugs"), "{screen}");
+    assert!(screen.contains("(abcdef12)"), "{screen}");
+}
+
+#[test]
+fn a_rename_for_an_unknown_session_is_ignored() {
+    let mut app = App::new("abcdef12-3456", "m");
+    app.apply_rename("other-session-id", "Somewhere else");
+    assert!(
+        app.tab().title.contains("abcdef12"),
+        "{:?}",
+        app.tab().title
+    );
+}

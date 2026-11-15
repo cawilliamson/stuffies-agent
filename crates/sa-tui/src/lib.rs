@@ -178,14 +178,7 @@ pub async fn run(
                         }
                         if kind == "session.renamed" {
                             if let Some(title) = frame["params"]["payload"]["title"].as_str() {
-                                let title = title.to_owned();
-                                let short: String = sid.chars().take(8).collect();
-                                if let Some(tab) = app.tab_for(sid) {
-                                    // the id always travels with the summary.
-                                    tab.title = format!("{title} ({short})");
-                                    tab.push(app::Role::System, format!("title: {title}"));
-                                }
-                                app.touch();
+                                app.apply_rename(sid, title);
                             }
                         }
                     }

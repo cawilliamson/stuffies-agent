@@ -696,3 +696,65 @@ async fn a_session_without_a_title_gets_one_generated() {
 
     daemon.stop().await;
 }
+
+#[tokio::test]
+async fn a_rename_is_pushed_to_subscribers() {
+    let reply = |text: &str| {
+        vec![
+            Delta::Text(text.to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ]
+    };
+    let daemon = Harness::start(vec![reply("Fixing rust bugs"), reply("done")]).await;
+    let mut client = daemon.connect().await;
+    let cwd = daemon.root().display().to_string();
+
+    let created = call(&mut client, 1, "session.create", json!({"cwd": cwd})).await;
+    let session = created["result"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+
+    call(
+        &mut client,
+        2,
+        "events.subscribe",
+        json!({"session_id": session, "from_seq": 0}),
+    )
+    .await;
+    call(
+        &mut client,
+        3,
+        "turn.start",
+        json!({"session_id": session, "prompt": "fix the bug", "detach": true}),
+    )
+    .await;
+
+    // the client must be told, live, that its tab has been renamed.
+    let mut title = None;
+    for _ in 0..500 {
+        let Some(Ok(raw)) = client.next().await else {
+            break;
+        };
+        let Ok(frame) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if frame["method"] == "event" && frame["params"]["kind"] == "session.renamed" {
+            title = frame["params"]["payload"]["title"]
+                .as_str()
+                .map(str::to_owned);
+            break;
+        }
+    }
+    assert_eq!(
+        title.as_deref(),
+        Some("Fixing rust bugs"),
+        "the rename must reach the subscriber"
+    );
+
+    daemon.stop().await;
+}

@@ -469,6 +469,17 @@ impl App {
         Some(removed.session)
     }
 
+    /// applies a generated session title to the tab that owns it. the id is always kept,
+    /// so a tab stays identifiable after it is renamed.
+    pub fn apply_rename(&mut self, session: &str, title: &str) {
+        let short: String = session.chars().take(8).collect();
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.session == session) {
+            tab.title = format!("{title} ({short})");
+            tab.push(Role::System, format!("title: {title}"));
+        }
+        self.touch();
+    }
+
     /// replaces the active tab with a fresh one, keeping the strip non-empty.
     pub fn replace_active(&mut self, session: impl Into<String>, model: impl Into<String>) {
         let index = self.active.min(self.tabs.len().saturating_sub(1));
