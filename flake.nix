@@ -18,6 +18,7 @@
           packages = with pkgs; [
             cargo
             cargo-deny
+            cargo-mutants
             clippy
             marksman
             rustc

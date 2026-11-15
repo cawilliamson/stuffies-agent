@@ -1,0 +1,11 @@
+# mutation-testing scope for the tdd gate.
+#
+# a surviving mutant is a behaviour change no test noticed, which is exactly what a
+# test-driven build is supposed to prevent. run it with `./ci/tdd.sh`.
+timeout_multiplier = 3.0
+
+exclude_globs = [
+  # binary entry points: wiring, not logic.
+  "crates/sa/src/main.rs",
+  "crates/sa-daemon/src/main.rs",
+]

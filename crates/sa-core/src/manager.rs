@@ -727,7 +727,14 @@ impl Manager {
             .iter()
             .filter(|e| e.kind == kinds::TURN_COMPLETED)
             .count();
-        if turns == 0 || (turns != 1 && turns % 4 != 0) {
+        if turns == 0 {
+            return;
+        }
+
+        // a session that has never been renamed still carries its default directory-derived
+        // title, so generate one on any turn. after that, refresh periodically.
+        let renamed = events.iter().any(|e| e.kind == kinds::SESSION_RENAMED);
+        if renamed && turns % 4 != 0 {
             return;
         }
 
@@ -756,6 +763,7 @@ impl Manager {
             }
         }
         if digest.is_empty() {
+            tracing::debug!(%session_id, "retitle skipped: empty digest");
             return;
         }
 
@@ -774,6 +782,7 @@ impl Manager {
             })
             .await
         else {
+            tracing::debug!(%session_id, "retitle skipped: provider unavailable");
             return;
         };
 
@@ -785,9 +794,13 @@ impl Manager {
         }
         let title = title.trim().trim_matches('"').trim().replace('\n', " ");
         if title.is_empty() || title.chars().count() > 60 {
+            tracing::debug!(%session_id, %title, "retitle skipped: unusable title");
             return;
         }
-        let _ = self.rename_session(&session_id, &title);
+        match self.rename_session(&session_id, &title) {
+            Ok(()) => tracing::debug!(%session_id, %title, "retitled"),
+            Err(err) => tracing::debug!(%session_id, %err, "retitle failed"),
+        }
     }
 
     // ---- compaction --------------------------------------------------

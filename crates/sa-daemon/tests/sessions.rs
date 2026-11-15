@@ -646,3 +646,52 @@ async fn the_daemon_resolves_the_real_model_from_the_endpoint() {
     let _ = session;
     daemon.stop().await;
 }
+
+#[tokio::test]
+async fn a_session_without_a_title_gets_one_generated() {
+    let reply = |text: &str| {
+        vec![
+            Delta::Text(text.to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ]
+    };
+    let daemon = Harness::start(vec![reply("done"), reply("Fixing rust bugs")]).await;
+    let mut client = daemon.connect().await;
+    let cwd = daemon.root().display().to_string();
+    // no explicit title: the session starts with its default id-derived title.
+    let created = call(&mut client, 1, "session.create", json!({"cwd": cwd})).await;
+    let session = created["result"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+
+    call(
+        &mut client,
+        2,
+        "turn.start",
+        json!({"session_id": session, "prompt": "fix the rust bug", "detach": true}),
+    )
+    .await;
+    wait_for_kind(&mut client, &session, "turn.completed").await;
+
+    // the retitle runs in the background after the turn.
+    let mut title = String::new();
+    for _ in 0..300 {
+        let list = call(&mut client, 9, "session.list", json!({})).await;
+        title = list["result"][0]["title"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        if title == "Fixing rust bugs" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(title, "Fixing rust bugs", "the session must be retitled");
+
+    daemon.stop().await;
+}
