@@ -521,7 +521,7 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
     let (edge, body) = match role {
         Role::User => (ACCENT, Color::Rgb(0xe8, 0xf0, 0xff)),
         Role::Assistant => (OK, Color::Rgb(0xd8, 0xe8, 0xdc)),
-        Role::Thinking => (Color::Rgb(0xc7, 0x9b, 0xff), Color::Rgb(0xb0, 0x9c, 0xc8)),
+        Role::Thinking => (DIM, Color::Rgb(0x8a, 0x93, 0xa0)),
         Role::Tool => (Color::Rgb(0xe0, 0xb0, 0x60), Color::Rgb(0xd8, 0xc8, 0xa8)),
         Role::ToolOutput => (FAINT, DIM),
         Role::System => (DIM, DIM),
@@ -600,11 +600,12 @@ fn framed(role: Role, text: &str, width: usize, model: &str) -> Vec<Line<'static
 /// separate boxes.
 fn framed_split(model: &str, thinking: &str, message: &str, width: usize) -> Vec<Line<'static>> {
     let (label, edge, _) = role_style(Role::Assistant, model);
-    let (_, think_edge, think_ink) = role_style(Role::Thinking, model);
+    let (_, _, think_ink) = role_style(Role::Thinking, model);
     let mut out = Vec::new();
     top(&mut out, &label, width, edge);
     body(&mut out, thinking, width, edge, think_ink);
-    divider(&mut out, width, think_edge);
+    // the rule is part of this frame, so it uses the frame's colour.
+    divider(&mut out, width, edge);
     body(&mut out, message, width, edge, Color::Rgb(0xd8, 0xe8, 0xdc));
     bottom(&mut out, width, edge);
     out

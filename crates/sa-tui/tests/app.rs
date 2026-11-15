@@ -515,3 +515,66 @@ fn reasoning_without_a_reply_keeps_its_own_frame() {
         "no divider without a reply:\n{screen}"
     );
 }
+
+#[test]
+fn reasoning_is_always_grey_and_the_divider_matches_its_frame() {
+    use ratatui::style::Color;
+
+    let mut app = App::new("s", "deepseek-v4");
+    app.tab_mut().push(Role::Thinking, "weighing");
+    app.tab_mut().push(Role::Assistant, "answer");
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let fg_of = |symbol: &str| -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|c| c.symbol() == symbol)
+            .map(|c| c.fg)
+    };
+
+    // the rule belongs to the assistant frame, so it carries that frame's colour.
+    assert_eq!(
+        fg_of("\u{251c}"),
+        Some(sa_tui::app::OK),
+        "the divider must match the frame it splits"
+    );
+
+    // reasoning is neutral grey, never tinted.
+    assert_eq!(
+        fg_of("w"),
+        Some(Color::Rgb(0x8a, 0x93, 0xa0)),
+        "reasoning text must be grey"
+    );
+    assert_ne!(
+        fg_of("w"),
+        Some(Color::Rgb(0xc7, 0x9b, 0xff)),
+        "reasoning text must not be violet"
+    );
+}
+
+#[test]
+fn a_standalone_reasoning_frame_is_grey() {
+    let mut app = App::new("s", "deepseek-v4");
+    app.tab_mut().push(Role::Thinking, "pondering");
+
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let edge = buffer
+        .content()
+        .iter()
+        .find(|c| c.symbol() == "\u{256d}" && c.fg == sa_tui::app::DIM)
+        .map(|c| c.fg);
+    assert_eq!(
+        edge,
+        Some(sa_tui::app::DIM),
+        "a thinking frame must be grey"
+    );
+}
