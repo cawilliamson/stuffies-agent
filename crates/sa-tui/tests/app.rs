@@ -755,3 +755,33 @@ fn markdown_bold_is_rendered_as_bold_without_markers() {
         .any(|c| c.symbol() == "S" && c.modifier.contains(Modifier::BOLD));
     assert!(bold, "the wrapped run must actually be bold");
 }
+
+#[test]
+fn long_text_is_truncated_inside_the_frame_not_wrapped_outside_it() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(
+        Role::Assistant,
+        "The user just says hello. I should respond briefly. Maybe check the workspace? \
+         A simple greeting response is fine, but perhaps I should be a bit useful. Keep concise.",
+    );
+
+    let width = 60u16;
+    let backend = TestBackend::new(width, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    // every drawn row must start and end with a frame border, at the frame width.
+    let mut rows = 0;
+    for y in 0..20u16 {
+        let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+        if row.starts_with('\u{2502}') || row.starts_with('\u{256d}') {
+            rows += 1;
+            assert!(
+                row.ends_with('\u{2502}') || row.ends_with('\u{256e}'),
+                "row {y} lost its right border: {row:?}"
+            );
+        }
+    }
+    assert!(rows >= 3, "expected a framed message, got {rows} rows");
+}

@@ -15,7 +15,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Terminal;
 use sa_client::Client;
 use serde_json::{json, Value};
@@ -200,12 +200,9 @@ pub fn draw<B: ratatui::backend::Backend>(
             }
             let scroll = tab.scroll;
 
-            frame.render_widget(
-                Paragraph::new(content)
-                    .wrap(Wrap { trim: false })
-                    .scroll((scroll, 0)),
-                inner,
-            );
+            // no Wrap here: every line is already measured to the frame width, and
+            // wrapping again spills text outside the frame.
+            frame.render_widget(Paragraph::new(content).scroll((scroll, 0)), inner);
 
             let tab = app.tab();
             let field_width = usize::from(rows[2].width.saturating_sub(4));
