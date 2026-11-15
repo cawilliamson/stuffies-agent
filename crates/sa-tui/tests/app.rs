@@ -368,3 +368,30 @@ fn the_layout_renders_at_several_sizes() {
         let _ = screen(&mut app, width, height);
     }
 }
+
+#[test]
+fn the_composer_has_no_prompt_prefix_and_a_caret_after_the_text() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "hello");
+
+    let height = 24u16;
+    let backend = TestBackend::new(100, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let composer: String = (0..100).map(|x| buffer[(x, height - 3)].symbol()).collect();
+
+    assert!(
+        composer.contains("hello|"),
+        "caret must follow the text:\n{composer}"
+    );
+    assert!(
+        !composer.contains('\u{276f}'),
+        "the prompt glyph must be gone:\n{composer}"
+    );
+    let border: String = (0..100).map(|x| buffer[(x, height - 4)].symbol()).collect();
+    assert!(
+        border.contains('\u{256d}') && border.contains('\u{256e}'),
+        "the box must remain:\n{border}"
+    );
+}

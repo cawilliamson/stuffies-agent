@@ -212,10 +212,12 @@ pub fn draw<B: ratatui::backend::Backend>(
             let tab = app.tab();
             let field_width = usize::from(rows[2].width.saturating_sub(4));
             let (hscroll, column) = tab.input_view(field_width);
+            let (before, after) = tab.input_parts();
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("\u{276f} ", Style::default().fg(app::ACCENT)),
-                    Span::raw(tab.input_text().to_owned()),
+                    Span::raw(before),
+                    Span::styled("|", Style::default().fg(app::ACCENT)),
+                    Span::raw(after),
                 ]))
                 .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
                 .block(
@@ -227,8 +229,9 @@ pub fn draw<B: ratatui::backend::Backend>(
                 ),
                 rows[2],
             );
+            // the terminal cursor sits on the marker so the two never double up.
             frame.set_cursor_position((
-                rows[2].x + 3 + u16::try_from(column).unwrap_or(0),
+                rows[2].x + 2 + u16::try_from(column).unwrap_or(0),
                 rows[2].y + 1,
             ));
 
