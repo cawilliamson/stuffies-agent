@@ -1313,3 +1313,69 @@ fn deleting_the_path_drops_the_attachment() {
         "attachment follows the text"
     );
 }
+
+/// types `text` into the composer, one key at a time.
+fn type_text(app: &mut App, text: &str) {
+    for character in text.chars() {
+        app.on_key(key(KeyCode::Char(character)));
+    }
+}
+
+#[test]
+fn tab_completes_a_directory_path() {
+    let dir = std::env::temp_dir().join("sa-tui-complete");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Downloads")).expect("dirs");
+
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &format!("{}/Down", dir.display()));
+    app.on_key(key(KeyCode::Tab));
+
+    assert_eq!(
+        app.tab().input_text(),
+        format!("{}/Downloads/", dir.display()),
+        "a unique match completes, with the trailing slash"
+    );
+}
+
+#[test]
+fn tab_extends_to_the_shared_prefix_when_ambiguous() {
+    let dir = std::env::temp_dir().join("sa-tui-complete-ambiguous");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dirs");
+    std::fs::write(dir.join("ab-one.txt"), b"x").expect("write");
+    std::fs::write(dir.join("ab-two.txt"), b"x").expect("write");
+
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &format!("{}/a", dir.display()));
+    app.on_key(key(KeyCode::Tab));
+
+    assert_eq!(
+        app.tab().input_text(),
+        format!("{}/ab-", dir.display()),
+        "ambiguous input extends to the shared prefix"
+    );
+}
+
+#[test]
+fn tab_without_a_match_leaves_the_text_alone() {
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "hello");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.tab().input_text(), "hello");
+}
+
+#[test]
+fn tab_completion_keeps_the_home_form() {
+    // home is process-global, so this asserts the form is preserved rather than which
+    // entry wins. the absolute-path tests cover the matching itself.
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "~/Down");
+    app.on_key(key(KeyCode::Tab));
+    let text = app.tab().input_text().to_owned();
+    assert!(
+        text.starts_with("~/"),
+        "the operator's home form must survive completion: {text}"
+    );
+    assert!(!text.contains("//"), "no doubled slashes: {text}");
+}

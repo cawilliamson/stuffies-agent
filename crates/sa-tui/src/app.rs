@@ -302,6 +302,35 @@ impl Tab {
         self.touch();
     }
 
+    /// completes the path token at the cursor. returns true when the text changed, so
+    /// tab keeps its other meanings when there is nothing to complete.
+    fn complete_path(&mut self) -> bool {
+        let text = self.input.value().to_owned();
+        let cursor = self.input.cursor();
+        let byte = text
+            .char_indices()
+            .nth(cursor)
+            .map_or(text.len(), |(index, _)| index);
+        let before = &text[..byte];
+        let start = before
+            .char_indices()
+            .rev()
+            .find(|(_, character)| character.is_whitespace())
+            .map_or(0, |(index, character)| index + character.len_utf8());
+        let token = &text[start..byte];
+        let Some(completed) = complete_token(token) else {
+            return false;
+        };
+        let replacement = completed;
+        let new_text = format!("{}{}{}", &text[..start], replacement, &text[byte..]);
+        let new_cursor = text[..start].chars().count() + replacement.chars().count();
+        self.input = std::mem::take(&mut self.input)
+            .with_value(new_text)
+            .with_cursor(new_cursor);
+        self.touch();
+        true
+    }
+
     fn submit(&mut self) -> Action {
         let text = self.input.value().trim().to_owned();
         if text.is_empty() {
@@ -809,6 +838,12 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Tab => {
+                if self.tab_mut().complete_path() {
+                    self.refresh_attachments();
+                }
+                Action::None
+            }
             KeyCode::BackTab => Action::NextTab,
             KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.tab_mut().submit(),
             KeyCode::Up => {
@@ -1320,4 +1355,61 @@ fn load_attachment(
         data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
         protocol,
     })
+}
+
+/// completes `token` against the filesystem, keeping the form the operator typed so
+/// `~/Dow` becomes `~/Downloads/` rather than an absolute path.
+fn complete_token(token: &str) -> Option<String> {
+    let (shown_dir, prefix) = token
+        .rfind('/')
+        .map_or(("", token), |index| (&token[..=index], &token[index + 1..]));
+    let lookup = if shown_dir.is_empty() {
+        std::path::PathBuf::from(".")
+    } else {
+        std::path::PathBuf::from(expand_home(shown_dir))
+    };
+
+    let mut matches: Vec<String> = std::fs::read_dir(&lookup)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(prefix) {
+                return None;
+            }
+            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            Some(if is_dir { format!("{name}/") } else { name })
+        })
+        .collect();
+    matches.sort();
+
+    match matches.len() {
+        0 => None,
+        1 => Some(format!("{shown_dir}{}", matches[0])),
+        _ => {
+            // more than one: extend to the longest shared prefix, which is what the
+            // operator expects from a second tab press.
+            let shared = longest_common_prefix(&matches);
+            (shared.chars().count() > prefix.chars().count())
+                .then(|| format!("{shown_dir}{shared}"))
+        }
+    }
+}
+
+fn longest_common_prefix(values: &[String]) -> String {
+    let Some(first) = values.first() else {
+        return String::new();
+    };
+    let mut end = first.len();
+    for value in values.iter().skip(1) {
+        let shared = first
+            .char_indices()
+            .zip(value.chars())
+            .take_while(|((_, a), b)| a == b)
+            .map(|((index, character), _)| index + character.len_utf8())
+            .last()
+            .unwrap_or(0);
+        end = end.min(shared);
+    }
+    first[..end].to_owned()
 }
