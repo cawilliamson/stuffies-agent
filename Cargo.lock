@@ -1989,7 +1989,6 @@ dependencies = [
  "futures-util",
  "ratatui",
  "sa-client",
- "sa-proto",
  "serde_json",
  "tokio",
  "tui-input",
