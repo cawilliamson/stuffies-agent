@@ -18,6 +18,49 @@ use ratatui::Terminal;
 use sa_client::Client;
 use serde_json::{json, Value};
 
+/// the fastest a frame may be rebuilt. streamed deltas invalidate the render on every
+/// token, so an unthrottled loop spends all its time rebuilding the transcript and the UI
+/// stops answering keys.
+const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// frame pacing: only rebuild when the view changed, and never faster than the interval.
+struct Frame {
+    drawn: u64,
+    last: std::time::Instant,
+}
+
+impl Frame {
+    fn new() -> Self {
+        Self {
+            drawn: 0,
+            // the first frame is always due: otherwise the screen stays blank for one
+            // interval before anything appears.
+            last: std::time::Instant::now()
+                .checked_sub(FRAME_INTERVAL)
+                .unwrap_or_else(std::time::Instant::now),
+        }
+    }
+
+    /// makes the next render unconditional, so input is never starved by the throttle.
+    fn force(&mut self) {
+        self.drawn = 0;
+    }
+
+    fn render<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        app: &mut App,
+    ) -> std::io::Result<()> {
+        let revision = app.revision();
+        if revision == self.drawn || self.last.elapsed() < FRAME_INTERVAL {
+            return Ok(());
+        }
+        self.drawn = revision;
+        self.last = std::time::Instant::now();
+        draw(terminal, app)
+    }
+}
+
 struct Restore;
 
 impl Drop for Restore {
@@ -65,7 +108,7 @@ pub async fn run(
     app.workspace = (!workspace.is_empty()).then_some(workspace);
     app.tab_mut().status.effort = effort;
     if app.tab().status.model.is_empty() {
-        if let Ok(list) = client.call("model.list", json!({})).await {
+        if let Ok(list) = rpc(client, "model.list", json!({})).await {
             if let Some(id) = list
                 .as_array()
                 .and_then(|m| m.first())
@@ -76,12 +119,12 @@ pub async fn run(
         }
     }
 
-    if let Ok(replay) = client
-        .call(
-            "events.replay",
-            json!({"session_id": session, "from_seq": 0, "limit": 5000}),
-        )
-        .await
+    if let Ok(replay) = rpc(
+        client,
+        "events.replay",
+        json!({"session_id": session, "from_seq": 0, "limit": 5000}),
+    )
+    .await
     {
         if let Some(events) = replay["events"].as_array() {
             for event in events {
@@ -90,29 +133,22 @@ pub async fn run(
             }
         }
     }
-    client
-        .call(
-            "events.subscribe",
-            json!({"session_id": session, "from_seq": 0}),
-        )
-        .await
-        .map_err(|e| format!("subscribe failed: {e}"))?;
+    rpc(
+        client,
+        "events.subscribe",
+        json!({"session_id": session, "from_seq": 0}),
+    )
+    .await
+    .map_err(|e| format!("subscribe failed: {e}"))?;
 
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // only build a frame when something visible changed.
-    let mut drawn = 0u64;
-    let mut render = |terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App| {
-        let revision = app.revision();
-        if revision == drawn {
-            return Ok(());
-        }
-        drawn = revision;
-        draw(terminal, app)
-    };
-    render(&mut terminal, &mut app).map_err(|e| e.to_string())?;
+    let mut frame = Frame::new();
+    frame
+        .render(&mut terminal, &mut app)
+        .map_err(|e| e.to_string())?;
 
     loop {
         enum Incoming {
@@ -138,6 +174,7 @@ pub async fn run(
         };
 
         let mut action = Action::None;
+        let mut force_draw = false;
         match incoming {
             Incoming::Tick => {
                 for tab in &mut app.tabs {
@@ -150,7 +187,11 @@ pub async fn run(
                 }
             }
             Incoming::Resize => app.touch(),
-            Incoming::Key(key) => action = app.on_key(key),
+            Incoming::Key(key) => {
+                action = app.on_key(key);
+                // a key press must always produce a frame, even inside the throttle window.
+                force_draw = true;
+            }
             Incoming::Frame(frame) => {
                 let method = frame
                     .get("method")
@@ -202,13 +243,16 @@ pub async fn run(
                 let cwd = std::env::current_dir()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                match client.call("session.create", json!({"cwd": cwd})).await {
+                match rpc(client, "session.create", json!({"cwd": cwd})).await {
                     Ok(created) => {
                         if let Some(id) = created["session_id"].as_str() {
                             app.add_tab(id.to_owned(), model.clone());
-                            let _ = client
-                                .call("events.subscribe", json!({"session_id": id, "from_seq": 0}))
-                                .await;
+                            let _ = rpc(
+                                client,
+                                "events.subscribe",
+                                json!({"session_id": id, "from_seq": 0}),
+                            )
+                            .await;
                         }
                     }
                     Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
@@ -220,37 +264,35 @@ pub async fn run(
                     let cwd = std::env::current_dir()
                         .map(|p| p.display().to_string())
                         .unwrap_or_default();
-                    match client.call("session.create", json!({"cwd": cwd})).await {
+                    match rpc(client, "session.create", json!({"cwd": cwd})).await {
                         Ok(created) => {
                             if let Some(id) = created["session_id"].as_str() {
                                 let id = id.to_owned();
                                 let previous = app.tab().session.clone();
                                 app.replace_active(id.clone(), model.clone());
-                                let _ = client
-                                    .call("session.delete", json!({"session_id": previous}))
-                                    .await;
-                                let _ = client
-                                    .call(
-                                        "events.subscribe",
-                                        json!({"session_id": id, "from_seq": 0}),
-                                    )
-                                    .await;
+                                let _ =
+                                    rpc(client, "session.delete", json!({"session_id": previous}))
+                                        .await;
+                                let _ = rpc(
+                                    client,
+                                    "events.subscribe",
+                                    json!({"session_id": id, "from_seq": 0}),
+                                )
+                                .await;
                             }
                         }
                         Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
                     }
                 } else if let Some(closed) = app.close_tab() {
                     // a closed tab is retired, not parked: sessions are tabs, not history.
-                    let _ = client
-                        .call("session.delete", json!({"session_id": closed}))
-                        .await;
+                    let _ = rpc(client, "session.delete", json!({"session_id": closed})).await;
                 }
             }
             Action::Cancel => {
                 let tab = app.tab();
                 if tab.status.turn_running {
                     let sid = tab.session.clone();
-                    let _ = client.call("turn.cancel", json!({"session_id": sid})).await;
+                    let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
                     app.tab_mut().push(app::Role::System, "interrupting");
                 }
             }
@@ -258,12 +300,12 @@ pub async fn run(
                 let sid = app.tab().session.clone();
                 app.tab_mut().status.turn_running = true;
                 app.touch();
-                match client
-                    .call(
-                        "turn.start",
-                        json!({"session_id": sid, "prompt": prompt, "detach": false}),
-                    )
-                    .await
+                match rpc(
+                    client,
+                    "turn.start",
+                    json!({"session_id": sid, "prompt": prompt, "detach": false}),
+                )
+                .await
                 {
                     Ok(_) => {}
                     Err(err) => {
@@ -286,11 +328,10 @@ pub async fn run(
                     ),
                     "/new" => {
                         let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-                        if let Ok(created) = client.call("session.create", json!({"cwd": cwd})).await {
+                        if let Ok(created) = rpc(client, "session.create", json!({"cwd": cwd})).await {
                             if let Some(id) = created["session_id"].as_str() {
                                 app.add_tab(id.to_owned(), model.clone());
-                                let _ = client
-                                    .call("events.subscribe", json!({"session_id": id, "from_seq": 0}))
+                                let _ = rpc(client, "events.subscribe", json!({"session_id": id, "from_seq": 0}))
                                     .await;
                             }
                         }
@@ -323,8 +364,7 @@ pub async fn run(
                             "effort levels: low, medium, high",
                         );
                     }
-                    "/effort" => match client
-                        .call("model.effort", json!({"session_id": sid, "effort": arg}))
+                    "/effort" => match rpc(client, "model.effort", json!({"session_id": sid, "effort": arg}))
                         .await
                     {
                         Ok(_) => {
@@ -335,8 +375,7 @@ pub async fn run(
                         Err(err) => app.tab_mut().push(app::Role::Error, err.to_string()),
                     },
                     "/model" if !arg.is_empty() => {
-                        let _ = client
-                            .call("model.select", json!({"session_id": sid, "model": arg}))
+                        let _ = rpc(client, "model.select", json!({"session_id": sid, "model": arg}))
                             .await;
                         app.tab_mut().status.model = arg.to_owned();
                         app.touch();
@@ -350,27 +389,74 @@ pub async fn run(
                         app.tab_mut().push(app::Role::System, text);
                     }
                     "/cancel" => {
-                        let _ = client.call("turn.cancel", json!({"session_id": sid})).await;
+                        let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
                     }
                     _ => app.tab_mut().push(app::Role::System, "unknown command, /help"),
                 }
             }
         }
 
-        render(&mut terminal, &mut app).map_err(|e| e.to_string())?;
+        if force_draw {
+            frame.force();
+        }
+        frame
+            .render(&mut terminal, &mut app)
+            .map_err(|e| e.to_string())?;
         let _ = std::io::stdout().flush();
     }
 
     for tab in &app.tabs {
-        let _ = client
-            .call("session.detach", json!({"session_id": tab.session}))
-            .await;
+        let _ = rpc(client, "session.detach", json!({"session_id": tab.session})).await;
     }
     Ok(())
+}
+
+/// how long a ui-initiated rpc may take before the front end gives up on it.
+const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// calls the daemon with a deadline, so a stalled daemon cannot freeze the interface.
+async fn rpc(client: &mut Client, method: &str, params: Value) -> Result<Value, String> {
+    match tokio::time::timeout(RPC_TIMEOUT, client.call(method, params)).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(format!(
+            "{method} timed out after {}s",
+            RPC_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 /// the transcript of the active tab as renderable lines, for tests.
 #[must_use]
 pub fn render(app: &App, width: u16) -> Vec<Line<'static>> {
     app::transcript_lines(app.tab(), width)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_frame_throttle_bounds_redraws_and_input_can_force_one() {
+        let backend = ratatui::backend::TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::new("s", "m");
+        let mut frame = Frame::new();
+
+        frame.render(&mut terminal, &mut app).expect("draw");
+        let first = frame.drawn;
+        assert_ne!(first, 0, "the first frame must draw");
+
+        app.touch();
+        frame.render(&mut terminal, &mut app).expect("draw");
+        assert_eq!(
+            frame.drawn, first,
+            "a redraw inside the interval must be skipped"
+        );
+
+        // input forces the next frame regardless of the interval.
+        frame.force();
+        frame.render(&mut terminal, &mut app).expect("draw");
+        assert_ne!(frame.drawn, first, "forcing must redraw");
+    }
 }

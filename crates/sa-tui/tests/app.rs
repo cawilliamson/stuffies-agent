@@ -1039,3 +1039,26 @@ fn patch_lines_are_coloured_by_their_marker() {
     );
     assert_ne!(added, removed, "additions and removals differ in colour");
 }
+
+#[test]
+fn rebuilding_a_large_transcript_stays_within_a_frame() {
+    let mut app = App::new("s", "m");
+    for n in 0..400 {
+        app.tab_mut().push(
+            Role::Assistant,
+            format!("line {n} with some prose to pad it out"),
+        );
+    }
+
+    let started = std::time::Instant::now();
+    let lines = sa_tui::render(&app, 120);
+    let once = started.elapsed();
+
+    assert!(lines.len() > 1000, "expected a large transcript");
+    // a rebuild must stay well under the frame interval, or the loop starves.
+    assert!(
+        once < std::time::Duration::from_millis(50),
+        "rebuilding {} lines took {once:?}",
+        lines.len()
+    );
+}
