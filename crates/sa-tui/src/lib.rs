@@ -206,14 +206,13 @@ pub async fn run(
                         }
                         // the title call is announced, then its result, then applied.
                         if kind == "title.generating" {
-                            let model = frame["params"]["payload"]["model"]
-                                .as_str()
-                                .unwrap_or("model")
-                                .to_owned();
+                            let payload = &frame["params"]["payload"];
+                            let model = payload["model"].as_str().unwrap_or("model");
+                            let effort = payload["effort"].as_str().unwrap_or("low");
                             if let Some(tab) = app.tab_for(sid) {
                                 tab.push(
                                     app::Role::System,
-                                    format!("generating a session title with {model} (low effort)"),
+                                    format!("generating a session title with {model}:{effort}"),
                                 );
                             }
                         }
