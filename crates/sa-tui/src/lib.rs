@@ -81,6 +81,8 @@ pub fn draw<B: ratatui::backend::Backend>(
             if let Some((x, y)) = theme::at(app.theme).render(frame, app) {
                 frame.set_cursor_position((x, y));
             }
+            crate::theme::parts::attachment_preview(frame, app);
+            crate::theme::parts::picker(frame, app);
         })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
@@ -104,6 +106,7 @@ pub async fn run(
     terminal.clear().map_err(|e| e.to_string())?;
 
     let mut app = App::new(session.clone(), model.clone());
+    app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
     app.branch = branch;
     app.workspace = (!workspace.is_empty()).then_some(workspace);
     app.tab_mut().status.effort = effort;
@@ -257,6 +260,35 @@ pub async fn run(
                     Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                 }
             }
+            Action::ResumePicked(id) => {
+                if let Some(index) = app.tabs.iter().position(|tab| tab.session == id) {
+                    app.switch_tab(index);
+                } else {
+                    app.add_tab(id.clone(), model.clone());
+                    if let Ok(replay) = rpc(
+                        client,
+                        "events.replay",
+                        json!({"session_id": id, "from_seq": 0, "limit": 5000}),
+                    )
+                    .await
+                    {
+                        if let Some(events) = replay["events"].as_array() {
+                            for event in events {
+                                let kind = event["kind"].as_str().unwrap_or_default();
+                                if let Some(tab) = app.tab_for(&id) {
+                                    tab.on_event(kind, &event["payload"]);
+                                }
+                            }
+                        }
+                    }
+                    let _ = rpc(
+                        client,
+                        "events.subscribe",
+                        json!({"session_id": id, "from_seq": 0}),
+                    )
+                    .await;
+                }
+            }
             Action::CloseTab => {
                 if app.tabs.len() <= 1 {
                     // closing the last tab leaves a fresh one rather than an empty screen.
@@ -297,17 +329,28 @@ pub async fn run(
             }
             Action::Submit(prompt) => {
                 let sid = app.tab().session.clone();
+                let images: Vec<serde_json::Value> = app
+                    .tab()
+                    .attachments
+                    .iter()
+                    .map(|a| json!({"media_type": a.media_type, "data": a.data}))
+                    .collect();
                 app.tab_mut().status.turn_running = true;
                 app.tab_mut().working = Some(app::working_word());
                 app.touch();
                 match rpc(
                     client,
                     "turn.start",
-                    json!({"session_id": sid, "prompt": prompt, "detach": false}),
+                    json!({
+                        "session_id": sid,
+                        "prompt": prompt,
+                        "detach": false,
+                        "images": images,
+                    }),
                 )
                 .await
                 {
-                    Ok(_) => {}
+                    Ok(_) => app.tab_mut().attachments.clear(),
                     Err(err) => {
                         app.tab_mut().status.turn_running = false;
                         app.tab_mut().working = None;
@@ -392,6 +435,33 @@ pub async fn run(
                     "/cancel" => {
                         let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
                     }
+                    "/resume" => match rpc(client, "session.list", json!({})).await {
+                        Ok(list) => {
+                            let items: Vec<app::PickerItem> = list
+                                .as_array()
+                                .map(|rows| {
+                                    rows.iter()
+                                        .filter_map(|row| {
+                                            let id = row["id"].as_str()?;
+                                            let title =
+                                                row["title"].as_str().unwrap_or("(untitled)");
+                                            let short: String = id.chars().take(8).collect();
+                                            Some(app::PickerItem {
+                                                id: id.to_owned(),
+                                                label: format!("{title} ({short})"),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if items.is_empty() {
+                                app.tab_mut().push(app::Role::System, "no sessions to resume");
+                            } else {
+                                app.open_picker("resume", items);
+                            }
+                        }
+                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
+                    },
                     _ => app.tab_mut().push(app::Role::System, "unknown command, /help"),
                 }
             }

@@ -573,7 +573,7 @@ async fn a_second_turn_sees_the_first_turns_context() {
         if seen.iter().any(|r| {
             r.messages
                 .iter()
-                .any(|m| m.content.as_deref() == Some("second prompt"))
+                .any(|m| m.content.as_ref().and_then(|c| c.as_text()) == Some("second prompt"))
         }) {
             break;
         }
@@ -587,13 +587,12 @@ async fn a_second_turn_sees_the_first_turns_context() {
         .find(|r| {
             r.messages
                 .iter()
-                .any(|m| m.content.as_deref() == Some("second prompt"))
+                .any(|m| m.content.as_ref().and_then(|c| c.as_text()) == Some("second prompt"))
         })
         .expect("the second turn must reach the provider");
-    let carried = second
-        .messages
-        .iter()
-        .any(|m| m.role == "user" && m.content.as_deref() == Some("first prompt"));
+    let carried = second.messages.iter().any(|m| {
+        m.role == "user" && m.content.as_ref().and_then(|c| c.as_text()) == Some("first prompt")
+    });
     assert!(
         carried,
         "the second turn must carry the first prompt: {:?}",

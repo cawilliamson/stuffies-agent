@@ -25,6 +25,39 @@ pub enum LlmError {
     Truncated,
 }
 
+/// one part of a multimodal message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
+/// message content: text, or text with images. serialised as a bare string when it is
+/// only text, which is what every endpoint expects for the ordinary case.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl MessageContent {
+    /// the text, when the content is text only.
+    #[must_use]
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Parts(_) => None,
+        }
+    }
+}
+
 /// one message in the openai chat-completions shape.
 ///
 /// tool results must carry the `tool_call_id` of the call they answer, and the assistant
@@ -34,7 +67,7 @@ pub enum LlmError {
 pub struct ChatMessage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_calls: Option<Vec<WireToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -73,7 +106,7 @@ impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".to_owned(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
         }
@@ -83,7 +116,31 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".to_owned(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// a user turn carrying images alongside its text.
+    #[must_use]
+    pub fn user_with_images(
+        content: impl Into<String>,
+        images: &[sa_proto::session::ImageAttachment],
+    ) -> Self {
+        let mut parts = vec![ContentPart::Text {
+            text: content.into(),
+        }];
+        for image in images {
+            parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: image.data_url(),
+                },
+            });
+        }
+        Self {
+            role: "user".to_owned(),
+            content: Some(MessageContent::Parts(parts)),
             tool_calls: None,
             tool_call_id: None,
         }
@@ -93,7 +150,7 @@ impl ChatMessage {
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".to_owned(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
         }
@@ -107,7 +164,7 @@ impl ChatMessage {
             content: if content.is_empty() {
                 None
             } else {
-                Some(content.to_owned())
+                Some(MessageContent::Text(content.to_owned()))
             },
             tool_calls: Some(calls.iter().map(WireToolCall::from).collect()),
             tool_call_id: None,
@@ -119,7 +176,7 @@ impl ChatMessage {
     pub fn tool(call_id: &str, content: impl Into<String>) -> Self {
         Self {
             role: "tool".to_owned(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: Some(call_id.to_owned()),
         }

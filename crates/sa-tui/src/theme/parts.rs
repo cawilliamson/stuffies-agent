@@ -4,7 +4,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState,
 };
 use ratatui::Frame;
 
@@ -341,4 +342,97 @@ pub fn pane(title: &str, edge: Color) -> Block<'static> {
         .borders(Borders::ALL)
         .title(format!(" {title} "))
         .border_style(Style::default().fg(edge))
+}
+
+/// draws the open picker over the interface. shared, so every theme gets it.
+pub fn picker(frame: &mut Frame<'_>, app: &App) {
+    let Some(picker) = &app.picker else {
+        return;
+    };
+    let screen = frame.area();
+    let width = screen
+        .width
+        .saturating_sub(8)
+        .clamp(24, 72)
+        .min(screen.width);
+    let wanted = u16::try_from(picker.items.len().clamp(1, 12)).unwrap_or(12);
+    let height = (wanted + 3).min(screen.height);
+    let rect = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app::ACCENT))
+        .title(Line::from(format!(" {} ", picker.title)).style(Style::default().fg(app::ACCENT)));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    // keep the selection on screen without scrolling the whole list into view.
+    let visible = usize::from(inner.height).max(1);
+    let offset = picker.selected.saturating_sub(visible.saturating_sub(1));
+    let lines: Vec<Line<'static>> = picker
+        .items
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible)
+        .map(|(index, item)| {
+            let chosen = index == picker.selected;
+            let mark = if chosen { "\u{25b8} " } else { "  " };
+            let style = if chosen {
+                Style::default()
+                    .fg(app::ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app::FAINT)
+            };
+            Line::from(format!("{mark}{}", item.label)).style(style)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// draws the queued attachment over the interface, so the operator sees what is about to
+/// be sent. skipped when the terminal has no image protocol.
+pub fn attachment_preview(frame: &mut Frame<'_>, app: &mut App) {
+    let Some(attachment) = app.tab_mut().attachments.last_mut() else {
+        return;
+    };
+    let Some(protocol) = attachment.protocol.as_mut() else {
+        return;
+    };
+    let screen = frame.area();
+    let width = screen
+        .width
+        .saturating_sub(8)
+        .clamp(16, 56)
+        .min(screen.width);
+    let height = screen
+        .height
+        .saturating_sub(6)
+        .clamp(8, 22)
+        .min(screen.height);
+    let rect = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app::ACCENT))
+        .title(
+            Line::from(format!(" {} ", attachment.name)).style(Style::default().fg(app::ACCENT)),
+        );
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_stateful_widget(ratatui_image::StatefulImage::default(), inner, protocol);
 }

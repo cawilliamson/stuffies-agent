@@ -455,6 +455,7 @@ impl Manager {
         self: &Arc<Self>,
         session_id: &str,
         prompt: &str,
+        images: &[sa_proto::session::ImageAttachment],
         detach: bool,
         attached_client: Option<&str>,
     ) -> Result<TurnStartResult, ManagerError> {
@@ -515,21 +516,25 @@ impl Manager {
         let manager = Arc::clone(self);
         let session = session_id.to_owned();
         let prompt = prompt.to_owned();
+        let images = images.to_vec();
         let turn = turn_id.clone();
         tokio::spawn(async move {
             manager
-                .run_turn(session, turn, prompt, row, cancel, detach)
+                .run_turn(session, turn, prompt, images, row, cancel, detach)
                 .await;
         });
 
         Ok(TurnStartResult { turn_id, seq })
     }
 
+    // the turn's inputs are independent; bundling them would only move the list.
+    #[allow(clippy::too_many_arguments)]
     async fn run_turn(
         self: Arc<Self>,
         session_id: String,
         turn_id: String,
         prompt: String,
+        images: Vec<sa_proto::session::ImageAttachment>,
         row: SessionRow,
         cancel: Arc<AtomicBool>,
         detach: bool,
@@ -653,6 +658,7 @@ impl Manager {
                 let cwd = std::env::current_dir().ok();
                 crate::workspace::context(&workspace, cwd.as_deref())
             },
+            images,
             max_tokens: self.config.max_tokens,
             reasoning_effort: row
                 .effort
@@ -1012,7 +1018,7 @@ impl Manager {
 
         self.store
             .set_session_state(session_id, SessionState::Active)?;
-        self.start_turn(session_id, &prompt, true, Some(&resumed_from))
+        self.start_turn(session_id, &prompt, &[], true, Some(&resumed_from))
     }
 
     // ---- recovery ----------------------------------------------------

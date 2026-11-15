@@ -195,6 +195,8 @@ pub struct Tab {
     /// the word in the in-progress header. cleared when the turn ends, which is what
     /// makes the header disappear.
     pub working: Option<String>,
+    /// images queued for the next prompt.
+    pub attachments: Vec<Attachment>,
     pub scroll: u16,
     pub max_scroll: u16,
     /// when the operator last scrolled. drives the scrollbar's appearance.
@@ -240,6 +242,7 @@ impl Tab {
                 ..Status::default()
             },
             working: None,
+            attachments: Vec::new(),
             scroll_touched: None,
             scroll: 0,
             max_scroll: 0,
@@ -551,6 +554,32 @@ impl Tab {
     }
 }
 
+/// an image attached to the next prompt. `protocol` is the terminal's own encoding, so
+/// the preview is drawn without decoding twice.
+pub struct Attachment {
+    /// the path as typed, so the list can follow the composer.
+    pub path: String,
+    pub name: String,
+    pub media_type: String,
+    pub data: String,
+    pub protocol: Option<ratatui_image::protocol::StatefulProtocol>,
+}
+
+/// one selectable row in a picker.
+#[derive(Debug, Clone)]
+pub struct PickerItem {
+    pub id: String,
+    pub label: String,
+}
+
+/// a list the operator chooses from, drawn over the interface.
+#[derive(Debug, Clone)]
+pub struct Picker {
+    pub title: String,
+    pub items: Vec<PickerItem>,
+    pub selected: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     None,
@@ -563,6 +592,8 @@ pub enum Action {
     CloseTab,
     /// jump straight to a tab by index.
     SwitchTab(usize),
+    /// the operator chose a session to resume.
+    ResumePicked(String),
 }
 
 pub struct App {
@@ -575,6 +606,11 @@ pub struct App {
     pub theme: usize,
     /// animation frame for the activity spinner.
     pub spinner: usize,
+    /// the open picker, if any. keys route to it while it is up.
+    pub picker: Option<Picker>,
+    /// the terminal's image protocol, resolved once at startup. none means the terminal
+    /// cannot show pictures, so attachments still send but do not preview.
+    pub image_picker: Option<ratatui_image::picker::Picker>,
 }
 
 impl App {
@@ -589,6 +625,8 @@ impl App {
             revision: 1,
             theme: crate::theme::default_index(),
             spinner: 0,
+            picker: None,
+            image_picker: None,
         }
     }
 
@@ -673,7 +711,83 @@ impl App {
         }
     }
 
+    /// opens a picker over the interface, replacing any that is already up.
+    pub fn open_picker(&mut self, title: impl Into<String>, items: Vec<PickerItem>) {
+        self.picker = Some(Picker {
+            title: title.into(),
+            items,
+            selected: 0,
+        });
+        self.touch();
+    }
+
+    /// keeps attachments in step with the image paths in the composer, so the operator
+    /// just types a filename rather than running a command.
+    fn refresh_attachments(&mut self) {
+        let wanted = attachment_paths(self.tab().input_text());
+        let Self {
+            tabs,
+            active,
+            image_picker,
+            ..
+        } = self;
+        let index = (*active).min(tabs.len().saturating_sub(1));
+        let Some(tab) = tabs.get_mut(index) else {
+            return;
+        };
+        tab.attachments.retain(|held| wanted.contains(&held.path));
+        for path in wanted {
+            if tab.attachments.iter().any(|held| held.path == path) {
+                continue;
+            }
+            if let Some(attachment) = load_attachment(&path, image_picker.as_ref()) {
+                tab.attachments.push(attachment);
+            }
+        }
+    }
+
+    /// keys belong to the picker while it is open, so the composer never sees them.
+    fn on_picker_key(&mut self, key: KeyEvent) -> Action {
+        let count = self.picker.as_ref().map_or(0, |p| p.items.len());
+        match key.code {
+            KeyCode::Up => {
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.selected = picker.selected.saturating_sub(1);
+                }
+                self.touch();
+                Action::None
+            }
+            KeyCode::Down => {
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.selected = (picker.selected + 1).min(count.saturating_sub(1));
+                }
+                self.touch();
+                Action::None
+            }
+            KeyCode::Enter => {
+                let picked = self
+                    .picker
+                    .as_ref()
+                    .and_then(|p| p.items.get(p.selected))
+                    .map(|item| item.id.clone());
+                self.picker = None;
+                self.touch();
+                picked.map_or(Action::None, Action::ResumePicked)
+            }
+            KeyCode::Esc => {
+                self.picker = None;
+                self.touch();
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        if self.picker.is_some() {
+            return self.on_picker_key(key);
+        }
+
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -728,6 +842,7 @@ impl App {
             KeyCode::Esc => Action::Cancel,
             _ => {
                 self.tab_mut().edit(key);
+                self.refresh_attachments();
                 Action::None
             }
         }
@@ -1142,4 +1257,67 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
     }
 
     out
+}
+
+/// image paths mentioned in a prompt. quoted, punctuated and home-relative forms all
+/// appear in real use, so the token is cleaned before it is tested.
+fn attachment_paths(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|token| {
+            token.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ',' | ';' | '(' | ')'))
+        })
+        .filter(|token| {
+            let lower = token.to_ascii_lowercase();
+            [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                .iter()
+                .any(|ext| lower.ends_with(ext))
+        })
+        .map(expand_home)
+        .filter(|path| std::path::Path::new(path).is_file())
+        .collect()
+}
+
+fn expand_home(token: &str) -> String {
+    if let Some(rest) = token.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::Path::new(&home).join(rest).display().to_string();
+        }
+    }
+    token.to_owned()
+}
+
+fn media_type_for(path: &str) -> &'static str {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("gif") => "image/gif",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    }
+}
+
+fn load_attachment(
+    path: &str,
+    picker: Option<&ratatui_image::picker::Picker>,
+) -> Option<Attachment> {
+    let bytes = std::fs::read(path).ok()?;
+    let protocol = picker.and_then(|picker| {
+        image::load_from_memory(&bytes)
+            .ok()
+            .map(|decoded| picker.new_resize_protocol(decoded))
+    });
+    Some(Attachment {
+        path: path.to_owned(),
+        name: std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path)
+            .to_owned(),
+        media_type: media_type_for(path).to_owned(),
+        data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+        protocol,
+    })
 }

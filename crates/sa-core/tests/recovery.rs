@@ -64,7 +64,7 @@ async fn an_interrupted_session_can_take_a_new_turn() {
         .set_session_state(&session, SessionState::Interrupted)
         .expect("interrupt");
 
-    let started = manager.start_turn(&session, "keep going", true, None);
+    let started = manager.start_turn(&session, "keep going", &[], true, None);
     assert!(
         started.is_ok(),
         "an interrupted session must accept a turn: {:?}",
@@ -94,6 +94,6 @@ async fn a_relocated_session_still_refuses_a_turn() {
         .set_session_state(&session, SessionState::Relocated)
         .expect("relocate");
 
-    let started = manager.start_turn(&session, "nope", true, None);
+    let started = manager.start_turn(&session, "nope", &[], true, None);
     assert!(started.is_err(), "a relocated session is read-only");
 }

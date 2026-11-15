@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use sa_core::agent::{
     Agent, AgentError, BoxFuture, EventSink, ToolExecutor, ToolOutcome, TurnRequest,
 };
-use sa_core::llm::{ChatRequest, Delta, Provider, ScriptedProvider, ToolCall, ToolSpec};
+use sa_core::llm::{
+    ChatMessage, ChatRequest, Delta, Provider, ScriptedProvider, ToolCall, ToolSpec,
+};
 use sa_core::store::StoreError;
 use serde_json::{json, Value};
 
@@ -60,6 +62,7 @@ fn request() -> TurnRequest {
         context: None,
         max_tokens: None,
         reasoning_effort: None,
+        images: Vec::new(),
     }
 }
 
@@ -121,14 +124,18 @@ async fn tool_results_are_addressed_to_the_call_that_requested_them() {
         Some("call_abc"),
         "the result must name the call it answers"
     );
-    assert_eq!(result.content.as_deref(), Some("file contents"));
+    assert_eq!(
+        result.content.as_ref().and_then(|c| c.as_text()),
+        Some("file contents")
+    );
 
     // the old shape smuggled results in as user turns, which made the model re-issue calls.
     assert!(
-        !messages
-            .iter()
-            .any(|m| m.role == "user"
-                && m.content.as_deref().is_some_and(|c| c.starts_with("tool "))),
+        !messages.iter().any(|m| m.role == "user"
+            && m.content
+                .as_ref()
+                .and_then(|c| c.as_text())
+                .is_some_and(|c| c.starts_with("tool "))),
         "tool results must not masquerade as user messages"
     );
 
@@ -194,7 +201,8 @@ async fn a_failed_tool_still_answers_the_call() {
     assert!(
         result
             .content
-            .as_deref()
+            .as_ref()
+            .and_then(|c| c.as_text())
             .is_some_and(|c| c.contains("permission denied")),
         "the failure must reach the model"
     );
@@ -258,5 +266,25 @@ async fn escape_interrupts_a_stalled_turn_without_waiting_for_a_delta() {
     assert!(
         elapsed < std::time::Duration::from_secs(2),
         "took {elapsed:?}"
+    );
+}
+
+#[test]
+fn images_serialise_as_content_parts_and_plain_text_stays_a_string() {
+    let plain = serde_json::to_value(ChatMessage::user("hello")).expect("json");
+    assert_eq!(plain["content"], "hello", "text-only stays a bare string");
+
+    let image = sa_proto::session::ImageAttachment {
+        media_type: "image/png".to_owned(),
+        data: "QUJD".to_owned(),
+    };
+    let with_image =
+        serde_json::to_value(ChatMessage::user_with_images("look", &[image])).expect("json");
+    assert_eq!(with_image["content"][0]["type"], "text");
+    assert_eq!(with_image["content"][0]["text"], "look");
+    assert_eq!(with_image["content"][1]["type"], "image_url");
+    assert_eq!(
+        with_image["content"][1]["image_url"]["url"],
+        "data:image/png;base64,QUJD"
     );
 }

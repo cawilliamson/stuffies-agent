@@ -253,6 +253,7 @@ impl Dispatcher {
             .start_turn(
                 &params.session_id,
                 &params.prompt,
+                &params.images,
                 params.detach,
                 Some(conn.client()),
             )

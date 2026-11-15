@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use sa_tui::app::{transcript_lines, Action, App, Role};
+use sa_tui::app::{transcript_lines, Action, App, PickerItem, Role};
 use serde_json::json;
 
 const fn key(code: KeyCode) -> KeyEvent {
@@ -1213,5 +1213,103 @@ fn a_short_transcript_never_shows_a_scrollbar() {
     assert!(
         !screen.contains('\u{2503}'),
         "no bar without overflow:\n{screen}"
+    );
+}
+
+#[test]
+fn the_picker_routes_keys_and_returns_the_chosen_session() {
+    let mut app = App::new("session-abcdef", "m");
+    app.open_picker(
+        "resume",
+        vec![
+            PickerItem {
+                id: "aaa".to_owned(),
+                label: "first".to_owned(),
+            },
+            PickerItem {
+                id: "bbb".to_owned(),
+                label: "second".to_owned(),
+            },
+        ],
+    );
+    let shown = screen(&mut app, 100, 20);
+    assert!(shown.contains("resume"), "{shown}");
+    assert!(shown.contains("first"), "{shown}");
+
+    assert_eq!(app.on_key(key(KeyCode::Down)), Action::None);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::ResumePicked("bbb".to_owned())
+    );
+    assert!(app.picker.is_none(), "the picker closes on choice");
+}
+
+#[test]
+fn escape_closes_the_picker_without_choosing() {
+    let mut app = App::new("session-abcdef", "m");
+    app.open_picker(
+        "resume",
+        vec![PickerItem {
+            id: "aaa".to_owned(),
+            label: "first".to_owned(),
+        }],
+    );
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert!(app.picker.is_none());
+}
+
+#[test]
+fn keys_go_to_the_picker_not_the_composer() {
+    let mut app = App::new("session-abcdef", "m");
+    app.open_picker(
+        "resume",
+        vec![PickerItem {
+            id: "aaa".to_owned(),
+            label: "first".to_owned(),
+        }],
+    );
+    app.on_key(key(KeyCode::Char('x')));
+    assert_eq!(app.tab().input_text(), "", "the composer must not see keys");
+}
+
+#[test]
+fn typing_an_image_path_attaches_it() {
+    let dir = std::env::temp_dir().join("sa-tui-attach-test");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("shot.png");
+    std::fs::write(&path, [0x89, b'P', b'N', b'G']).expect("write png");
+
+    let mut app = App::new("session-abcdef", "m");
+    for character in path.display().to_string().chars() {
+        app.on_key(key(KeyCode::Char(character)));
+    }
+
+    let attachments = &app.tab().attachments;
+    assert_eq!(attachments.len(), 1, "the path is picked up as it is typed");
+    assert_eq!(attachments[0].media_type, "image/png");
+    assert_eq!(attachments[0].name, "shot.png");
+    assert!(!attachments[0].data.is_empty(), "the bytes are carried");
+}
+
+#[test]
+fn deleting_the_path_drops_the_attachment() {
+    let dir = std::env::temp_dir().join("sa-tui-attach-test");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("shot2.png");
+    std::fs::write(&path, [0x89, b'P', b'N', b'G']).expect("write png");
+
+    let mut app = App::new("session-abcdef", "m");
+    let text = path.display().to_string();
+    for character in text.chars() {
+        app.on_key(key(KeyCode::Char(character)));
+    }
+    assert_eq!(app.tab().attachments.len(), 1);
+
+    for _ in 0..text.chars().count() {
+        app.on_key(key(KeyCode::Backspace));
+    }
+    assert!(
+        app.tab().attachments.is_empty(),
+        "attachment follows the text"
     );
 }

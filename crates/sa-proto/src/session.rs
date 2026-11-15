@@ -135,12 +135,32 @@ pub struct ReplayResult {
     pub next_seq: u64,
 }
 
+/// an image attached to a turn. `data` is base64, as every openai-compatible endpoint
+/// expects it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    /// e.g. `image/png`.
+    pub media_type: String,
+    pub data: String,
+}
+
+impl ImageAttachment {
+    /// the data url the model api takes.
+    #[must_use]
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.data)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnStartParams {
     pub session_id: String,
     pub prompt: String,
     #[serde(default)]
     pub detach: bool,
+    /// images the operator attached to this prompt.
+    #[serde(default)]
+    pub images: Vec<ImageAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

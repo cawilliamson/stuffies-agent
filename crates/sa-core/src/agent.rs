@@ -80,6 +80,8 @@ pub struct TurnRequest {
     pub context: Option<String>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
+    /// images attached to this prompt.
+    pub images: Vec<sa_proto::session::ImageAttachment>,
 }
 
 #[derive(Debug, Clone)]
@@ -324,7 +326,11 @@ impl Agent {
             }
         }
 
-        messages.push(ChatMessage::user(request.prompt.clone()));
+        messages.push(if request.images.is_empty() {
+            ChatMessage::user(request.prompt.clone())
+        } else {
+            ChatMessage::user_with_images(request.prompt.clone(), &request.images)
+        });
         messages
     }
 }
