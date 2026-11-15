@@ -501,31 +501,40 @@ fn indent(text: &str, max_lines: usize) -> String {
 
 /// the label and edge colour for a role.
 #[must_use]
-pub fn role_style(role: Role) -> (&'static str, Color, Color) {
-    match role {
-        Role::User => ("you", ACCENT, Color::Rgb(0xe8, 0xf0, 0xff)),
-        Role::Assistant => ("sa", OK, Color::Rgb(0xd8, 0xe8, 0xdc)),
-        Role::Thinking => (
-            "thinking",
-            Color::Rgb(0xc7, 0x9b, 0xff),
-            Color::Rgb(0xb0, 0x9c, 0xc8),
-        ),
-        Role::Tool => (
-            "tool",
-            Color::Rgb(0xe0, 0xb0, 0x60),
-            Color::Rgb(0xd8, 0xc8, 0xa8),
-        ),
-        Role::ToolOutput => ("output", FAINT, DIM),
-        Role::System => ("system", DIM, DIM),
-        Role::Error => ("error", BAD, Color::Rgb(0xf0, 0xc0, 0xc0)),
-    }
+pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
+    let label = match role {
+        Role::User => "you".to_owned(),
+        // the assistant speaks as whichever model produced it.
+        Role::Assistant => {
+            if model.is_empty() {
+                "assistant".to_owned()
+            } else {
+                model.to_owned()
+            }
+        }
+        Role::Thinking => "thinking".to_owned(),
+        Role::Tool => "tool".to_owned(),
+        Role::ToolOutput => "output".to_owned(),
+        Role::System => "system".to_owned(),
+        Role::Error => "error".to_owned(),
+    };
+    let (edge, body) = match role {
+        Role::User => (ACCENT, Color::Rgb(0xe8, 0xf0, 0xff)),
+        Role::Assistant => (OK, Color::Rgb(0xd8, 0xe8, 0xdc)),
+        Role::Thinking => (Color::Rgb(0xc7, 0x9b, 0xff), Color::Rgb(0xb0, 0x9c, 0xc8)),
+        Role::Tool => (Color::Rgb(0xe0, 0xb0, 0x60), Color::Rgb(0xd8, 0xc8, 0xa8)),
+        Role::ToolOutput => (FAINT, DIM),
+        Role::System => (DIM, DIM),
+        Role::Error => (BAD, Color::Rgb(0xf0, 0xc0, 0xc0)),
+    };
+    (label, edge, body)
 }
 
 /// renders one transcript entry as a titled frame.
 ///
 /// every row is exactly `width` cells, or the pane wraps and the transcript shears.
-fn framed(role: Role, text: &str, width: usize) -> Vec<Line<'static>> {
-    let (label, edge, body) = role_style(role);
+fn framed(role: Role, text: &str, width: usize, model: &str) -> Vec<Line<'static>> {
+    let (label, edge, body) = role_style(role, model);
     let mut out: Vec<Line<'static>> = Vec::new();
 
     let head = format!("\u{256d}\u{2500} {label} ");
@@ -575,7 +584,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
     let inner = usize::from(width).clamp(16, 160);
     let mut out: Vec<Line<'static>> = Vec::new();
     for entry in &tab.transcript {
-        out.extend(framed(entry.role, &entry.text, inner));
+        out.extend(framed(entry.role, &entry.text, inner, &tab.status.model));
     }
     out
 }

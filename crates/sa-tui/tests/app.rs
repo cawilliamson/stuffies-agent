@@ -168,7 +168,7 @@ fn the_tab_bar_is_one_row_of_lit_and_dim_tabs() {
 
 #[test]
 fn every_transcript_entry_is_framed_with_its_role() {
-    let mut app = App::new("s", "m");
+    let mut app = App::new("s", "deepseek-v4-flash");
     for (role, text) in [
         (Role::User, "a question"),
         (Role::Assistant, "an answer"),
@@ -183,7 +183,7 @@ fn every_transcript_entry_is_framed_with_its_role() {
     let screen = screen(&mut app, 100, 40);
     for label in [
         "\u{256d}\u{2500} you",
-        "\u{256d}\u{2500} sa",
+        "\u{256d}\u{2500} deepseek-v4-flash",
         "\u{256d}\u{2500} thinking",
         "\u{256d}\u{2500} tool",
         "\u{256d}\u{2500} output",
@@ -443,4 +443,28 @@ fn every_frame_row_is_the_same_width() {
             "row {index} is {width} wide, expected {first}"
         );
     }
+}
+
+#[test]
+fn the_assistant_frame_is_labelled_with_the_model_not_the_agent() {
+    let mut app = App::new("s", "deepseek-v4-flash");
+    app.tab_mut().push(Role::Assistant, "an answer");
+    let screen = screen(&mut app, 100, 20);
+
+    assert!(
+        screen.contains("\u{256d}\u{2500} deepseek-v4-flash"),
+        "the model must label its own output:\n{screen}"
+    );
+    assert!(
+        !screen.contains("\u{256d}\u{2500} sa "),
+        "the agent's own name must not appear:\n{screen}"
+    );
+}
+
+#[test]
+fn an_unknown_model_falls_back_to_a_generic_label() {
+    let mut app = App::new("s", "");
+    app.tab_mut().push(Role::Assistant, "an answer");
+    let screen = screen(&mut app, 100, 20);
+    assert!(screen.contains("\u{256d}\u{2500} assistant"), "{screen}");
 }
