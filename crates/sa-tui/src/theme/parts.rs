@@ -63,68 +63,6 @@ pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
     Paragraph::new(content).scroll((scroll, 0))
 }
 
-/// how long the scrollbar stays at full strength after a scroll.
-const BAR_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
-/// how long it then takes to fade out.
-const BAR_FADE: std::time::Duration = std::time::Duration::from_millis(1200);
-
-fn blend(from: Color, to: Color, t: f32) -> Color {
-    let (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) = (from, to) else {
-        return from;
-    };
-    let mix = |a: u8, b: u8| {
-        let a = f32::from(a);
-        let b = f32::from(b);
-        (a + (b - a) * t.clamp(0.0, 1.0)).round() as u8
-    };
-    Color::Rgb(mix(fr, tr), mix(fg, tg), mix(fb, tb))
-}
-
-/// draws a scrollbar down the right edge of a transcript pane, fading out after a scroll.
-pub fn scrollbar(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let tab = app.tab();
-    if tab.max_scroll == 0 || area.height < 3 || area.width < 3 {
-        return;
-    }
-    // the bar is only wanted while the operator is actually scrolling.
-    let Some(at) = tab.scrolled_at else {
-        return;
-    };
-    let age = at.elapsed();
-    if age > BAR_HOLD + BAR_FADE {
-        return;
-    }
-    let alpha = if age < BAR_HOLD {
-        1.0
-    } else {
-        1.0 - (age - BAR_HOLD).as_secs_f32() / BAR_FADE.as_secs_f32()
-    };
-
-    let height = area.height;
-    let total = u32::from(tab.max_scroll) + u32::from(height);
-    let thumb = ((u32::from(height) * u32::from(height)) / total).max(1) as u16;
-    let travel = height.saturating_sub(thumb);
-    let pos = (u32::from(tab.scroll) * u32::from(travel) / u32::from(tab.max_scroll)) as u16;
-    let x = area.x + area.width - 1;
-
-    let buffer = frame.buffer_mut();
-    for offset in 0..height {
-        let lit = offset >= pos && offset < pos + thumb;
-        let base = if lit { app::ACCENT } else { app::FAINT };
-        let cell = &mut buffer[(x, area.y + offset)];
-        cell.set_symbol(if lit { "\u{2588}" } else { "\u{2502}" });
-        cell.set_style(Style::default().fg(blend(app::FAINT, base, alpha)));
-    }
-}
-
-/// true while a scrollbar is still visible and the frame must keep redrawing.
-#[must_use]
-pub fn scrollbar_fading(app: &App) -> bool {
-    app.tab()
-        .scrolled_at
-        .is_some_and(|at| at.elapsed() < BAR_HOLD + BAR_FADE)
-}
-
 /// animation frames for the activity spinner.
 const SPINNER: [&str; 10] = [
     "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",

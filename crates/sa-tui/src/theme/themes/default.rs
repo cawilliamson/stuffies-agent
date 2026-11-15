@@ -37,7 +37,6 @@ impl crate::theme::Theme for Theme {
         let inner = border.inner(rows[1]);
         frame.render_widget(border, rows[1]);
         frame.render_widget(parts::transcript(app, inner), inner);
-        parts::scrollbar(frame, inner, app);
 
         let cursor = parts::composer(frame, rows[2], app);
         frame.render_widget(

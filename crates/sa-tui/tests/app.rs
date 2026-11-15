@@ -952,29 +952,6 @@ fn scrolling_does_not_invalidate_the_render_cache() {
 }
 
 #[test]
-fn a_scrollbar_appears_when_the_transcript_scrolls() {
-    let mut app = App::new("s", "m");
-    for n in 0..60 {
-        app.tab_mut().push(Role::Assistant, format!("line {n}"));
-    }
-    let _ = screen(&mut app, 100, 24);
-    app.on_key(key(KeyCode::Up));
-    let screen = screen(&mut app, 100, 24);
-    assert!(
-        screen.contains('\u{2588}'),
-        "expected a scrollbar thumb:\n{screen}"
-    );
-}
-
-#[test]
-fn no_scrollbar_when_everything_fits() {
-    let mut app = App::new("s", "m");
-    app.tab_mut().push(Role::Assistant, "short");
-    let screen = screen(&mut app, 100, 24);
-    assert!(!screen.contains('\u{2588}'), "no thumb needed:\n{screen}");
-}
-
-#[test]
 fn tool_output_is_never_treated_as_markdown() {
     let mut app = App::new("s", "m");
     app.tab_mut().on_event(
@@ -994,28 +971,6 @@ fn tool_output_is_never_treated_as_markdown() {
     assert!(
         screen.contains("$ echo **not bold**"),
         "the command is literal too:\n{screen}"
-    );
-}
-
-#[test]
-fn the_scrollbar_fades_after_scrolling_stops() {
-    let mut app = App::new("s", "m");
-    for n in 0..60 {
-        app.tab_mut().push(Role::Assistant, format!("line {n}"));
-    }
-    let _ = screen(&mut app, 100, 24);
-    app.on_key(key(KeyCode::Up));
-    assert!(
-        screen(&mut app, 100, 24).contains('\u{2588}'),
-        "the bar must show while scrolling"
-    );
-
-    // pretend the scroll happened long ago.
-    app.tab_mut().scrolled_at =
-        Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
-    assert!(
-        !screen(&mut app, 100, 24).contains('\u{2588}'),
-        "the bar must fade away"
     );
 }
 

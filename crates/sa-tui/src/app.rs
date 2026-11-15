@@ -83,8 +83,6 @@ pub struct Tab {
     /// bumped only when transcript entries change, so scrolling can reuse the render.
     pub content_rev: u64,
     pub cache: Option<Cache>,
-    /// when the transcript was last scrolled, for the scrollbar's fade-out.
-    pub scrolled_at: Option<std::time::Instant>,
 }
 
 impl Tab {
@@ -125,7 +123,6 @@ impl Tab {
             revision: 1,
             content_rev: 1,
             cache: None,
-            scrolled_at: None,
         }
     }
 
@@ -551,7 +548,6 @@ impl App {
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(SCROLL_STEP);
                 tab.touch();
-                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::Down => {
@@ -559,7 +555,6 @@ impl App {
                 tab.scroll = (tab.scroll + SCROLL_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
                 tab.touch();
-                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::PageUp => {
@@ -567,7 +562,6 @@ impl App {
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(PAGE_STEP);
                 tab.touch();
-                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::PageDown => {
@@ -575,7 +569,6 @@ impl App {
                 tab.scroll = (tab.scroll + PAGE_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
                 tab.touch();
-                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::Esc => Action::Cancel,
