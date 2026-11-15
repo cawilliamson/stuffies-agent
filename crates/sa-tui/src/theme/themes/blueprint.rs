@@ -58,7 +58,7 @@ impl crate::theme::Theme for Theme {
                 .style(Style::default().bg(PAPER)),
             rows[1],
         );
-        frame.render_widget(parts::transcript(app, inner), inner);
+        parts::transcript(frame, inner, app);
 
         let cursor = parts::composer(frame, rows[2], app);
         frame.render_widget(

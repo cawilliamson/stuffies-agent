@@ -31,7 +31,7 @@ impl crate::theme::Theme for Theme {
         frame.render_widget(Paragraph::new(parts::status_bar(app, rows[0].width)), rows[0]);
         frame.render_widget(Paragraph::new(parts::tab_bar(app, rows[1].width)), rows[1]);
         let cursor = parts::composer(frame, rows[2], app);
-        frame.render_widget(parts::transcript(app, rows[3]), rows[3]);
+        parts::transcript(frame, rows[3], app);
         cursor
     }
 }

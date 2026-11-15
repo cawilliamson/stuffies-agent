@@ -49,7 +49,7 @@ impl crate::theme::Theme for Theme {
         frame.render_widget(Paragraph::new(gutter), cols[0]);
 
         frame.render_widget(Paragraph::new(parts::tab_bar(app, right[0].width)), right[0]);
-        frame.render_widget(parts::transcript(app, right[1]), right[1]);
+        parts::transcript(frame, right[1], app);
         parts::composer(frame, right[2], app)
     }
 }

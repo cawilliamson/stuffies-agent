@@ -44,7 +44,7 @@ impl crate::theme::Theme for Theme {
             .title(" transcript ");
         let inner = border.inner(rows[1]);
         frame.render_widget(border, rows[1]);
-        frame.render_widget(parts::transcript(app, inner), inner);
+        parts::transcript(frame, inner, app);
 
         let tab = app.tab();
         let field = usize::from(rows[2].width.saturating_sub(4));

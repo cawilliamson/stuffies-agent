@@ -29,7 +29,7 @@ impl crate::theme::Theme for Theme {
 
         let inner = parts::pane("1 transcript", parts::RULE).inner(rows[0]);
         frame.render_widget(parts::pane("1 transcript", parts::RULE), rows[0]);
-        frame.render_widget(parts::transcript(app, inner), inner);
+        parts::transcript(frame, inner, app);
         let cursor = parts::composer(frame, rows[1], app);
 
         let bar = parts::status_bar(app, rows[2].width.saturating_sub(2));

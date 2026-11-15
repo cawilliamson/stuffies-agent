@@ -58,7 +58,7 @@ impl crate::theme::Theme for Theme {
             cols[0],
         );
 
-        frame.render_widget(parts::transcript(app, right[0]), right[0]);
+        parts::transcript(frame, right[0], app);
         parts::composer(frame, right[1], app)
     }
 }

@@ -47,7 +47,7 @@ impl crate::theme::Theme for Theme {
             Paragraph::new(parts::status_bar(app, rows[0].width)),
             rows[0],
         );
-        frame.render_widget(parts::transcript(app, rows[1]), rows[1]);
+        parts::transcript(frame, rows[1], app);
 
         let tab = app.tab();
         let field = usize::from(rows[2].width.saturating_sub(3));

@@ -45,7 +45,7 @@ impl crate::theme::Theme for Theme {
             ])
             .split(inner);
         frame.render_widget(Paragraph::new(parts::tab_bar(app, rows[0].width)), rows[0]);
-        frame.render_widget(parts::transcript(app, rows[1]), rows[1]);
+        parts::transcript(frame, rows[1], app);
         let cursor = parts::composer(frame, rows[2], app);
         frame.render_widget(Paragraph::new(parts::status_bar(app, rows[3].width)), rows[3]);
         cursor

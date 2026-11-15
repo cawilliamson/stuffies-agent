@@ -31,10 +31,9 @@ impl crate::theme::Theme for Theme {
             ])
             .split(cols[1]);
 
-        frame.render_widget(
-            parts::transcript(app, cols[0]).block(parts::pane("transcript", parts::RULE)),
-            cols[0],
-        );
+        parts::transcript_with(frame, cols[0], app, |p| {
+            p.block(parts::pane("transcript", parts::RULE))
+        });
         frame.render_widget(Paragraph::new(parts::tab_bar(app, right[0].width)), right[0]);
         let cursor = parts::composer(frame, right[1], app);
 

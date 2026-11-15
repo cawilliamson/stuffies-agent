@@ -11,6 +11,9 @@ const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 const CHARS_PER_TOKEN: f32 = 4.0;
 /// lines moved per arrow key.
 const SCROLL_STEP: u16 = 3;
+
+/// how long the scrollbar stays up after the last scroll. it is a hint, not furniture.
+const SCROLLBAR_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
 /// lines moved per page key.
 const PAGE_STEP: u16 = 20;
 
@@ -194,6 +197,8 @@ pub struct Tab {
     pub working: Option<String>,
     pub scroll: u16,
     pub max_scroll: u16,
+    /// when the operator last scrolled. drives the scrollbar's appearance.
+    pub scroll_touched: Option<std::time::Instant>,
     pub follow: bool,
     pub tok_per_sec: f32,
     pub flash_highlight: bool,
@@ -235,6 +240,7 @@ impl Tab {
                 ..Status::default()
             },
             working: None,
+            scroll_touched: None,
             scroll: 0,
             max_scroll: 0,
             follow: true,
@@ -357,7 +363,22 @@ impl Tab {
         self.tick_at(std::time::Instant::now());
     }
 
+    /// records a scroll. the bar appears on the first one and the tick clears it.
+    fn scrolled(&mut self) {
+        self.scroll_touched = Some(std::time::Instant::now());
+        self.touch();
+    }
+
     pub fn tick_at(&mut self, now: std::time::Instant) {
+        // the bar is transient: drop it once the operator has stopped scrolling. this runs
+        // before the early return below, or a busy tab would keep the bar up forever.
+        if let Some(at) = self.scroll_touched {
+            if now.duration_since(at) >= SCROLLBAR_HOLD {
+                self.scroll_touched = None;
+                self.touch();
+            }
+        }
+
         let before = (self.tok_per_sec * 10.0) as i64;
         let lit_before = self.flash_highlight;
 
@@ -680,28 +701,28 @@ impl App {
                 let tab = self.tab_mut();
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(SCROLL_STEP);
-                tab.touch();
+                tab.scrolled();
                 Action::None
             }
             KeyCode::Down => {
                 let tab = self.tab_mut();
                 tab.scroll = (tab.scroll + SCROLL_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
-                tab.touch();
+                tab.scrolled();
                 Action::None
             }
             KeyCode::PageUp => {
                 let tab = self.tab_mut();
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(PAGE_STEP);
-                tab.touch();
+                tab.scrolled();
                 Action::None
             }
             KeyCode::PageDown => {
                 let tab = self.tab_mut();
                 tab.scroll = (tab.scroll + PAGE_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
-                tab.touch();
+                tab.scrolled();
                 Action::None
             }
             KeyCode::Esc => Action::Cancel,

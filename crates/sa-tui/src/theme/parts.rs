@@ -3,7 +3,9 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
 
 use crate::app::{self, App};
@@ -12,7 +14,27 @@ use crate::app::{self, App};
 pub const RULE: Color = Color::Rgb(0x2a, 0x30, 0x3a);
 
 /// the transcript for a pane, pinned to the newest content when following.
-pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
+pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    transcript_with(frame, area, app, std::convert::identity);
+}
+
+/// as [`transcript`], for the themes that decorate the paragraph themselves.
+pub fn transcript_with<F>(frame: &mut Frame<'_>, area: Rect, app: &mut App, decorate: F)
+where
+    F: FnOnce(Paragraph<'static>) -> Paragraph<'static>,
+{
+    // the bar column is reserved even while the bar is hidden: reflowing the text as it
+    // appears would invalidate the render cache and make the whole pane jump.
+    let bar_column = area.width > 1;
+    let text_area = if bar_column {
+        Rect {
+            width: area.width - 1,
+            ..area
+        }
+    } else {
+        area
+    };
+    let area = text_area;
     // rebuilding the whole transcript on every scroll keypress is what made scrolling
     // crawl, so reuse the render until the content or the width actually changes.
     let stale = {
@@ -60,7 +82,28 @@ pub fn transcript(app: &mut App, area: Rect) -> Paragraph<'static> {
         tab.scroll = tab.scroll.min(tab.max_scroll);
     }
     let scroll = tab.scroll;
-    Paragraph::new(content).scroll((scroll, 0))
+    let span = tab.max_scroll;
+    let visible = tab.scroll_touched.is_some() && span > 0;
+    let paragraph = decorate(Paragraph::new(content).scroll((scroll, 0)));
+    frame.render_widget(paragraph, area);
+
+    if visible {
+        let mut bar_state =
+            ScrollbarState::new(usize::from(span)).position(usize::from(scroll.min(span)));
+        let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(RULE))
+            .thumb_symbol("\u{2503}")
+            .track_symbol(Some(" "))
+            .begin_symbol(None)
+            .end_symbol(None);
+        let bar_area = Rect {
+            x: area.x + area.width,
+            y: area.y,
+            width: 1,
+            height: area.height,
+        };
+        frame.render_stateful_widget(bar, bar_area, &mut bar_state);
+    }
 }
 
 /// animation frames for the activity spinner.

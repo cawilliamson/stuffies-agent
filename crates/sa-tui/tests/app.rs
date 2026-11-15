@@ -1178,3 +1178,40 @@ fn every_working_word_is_distinct_and_non_empty() {
         .all(|w| !w.trim().is_empty()));
     assert_ne!(sa_tui::app::working_word().len(), 0);
 }
+
+#[test]
+fn the_scrollbar_appears_only_while_scrolling() {
+    let mut app = App::new("session-abcdef", "m");
+    for line in 0..60 {
+        app.tab_mut().push(Role::System, format!("line {line}"));
+    }
+
+    // nothing to show until the operator actually scrolls.
+    let idle = screen(&mut app, 80, 12);
+    assert!(!idle.contains('\u{2503}'), "no bar when idle:\n{idle}");
+
+    app.tab_mut().scroll_touched = Some(std::time::Instant::now());
+    let scrolled = screen(&mut app, 80, 12);
+    assert!(
+        scrolled.contains('\u{2503}'),
+        "bar while scrolling:\n{scrolled}"
+    );
+
+    // the tick clears it once the hold has passed, so it is not permanent furniture.
+    app.tab_mut()
+        .tick_at(std::time::Instant::now() + std::time::Duration::from_secs(2));
+    let after = screen(&mut app, 80, 12);
+    assert!(!after.contains('\u{2503}'), "bar clears:\n{after}");
+}
+
+#[test]
+fn a_short_transcript_never_shows_a_scrollbar() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().push(Role::System, "only one line".to_owned());
+    app.tab_mut().scroll_touched = Some(std::time::Instant::now());
+    let screen = screen(&mut app, 80, 20);
+    assert!(
+        !screen.contains('\u{2503}'),
+        "no bar without overflow:\n{screen}"
+    );
+}

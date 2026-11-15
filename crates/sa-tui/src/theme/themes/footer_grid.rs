@@ -37,7 +37,7 @@ impl crate::theme::Theme for Theme {
             .split(frame.area());
 
         frame.render_widget(Paragraph::new(parts::tab_bar(app, rows[0].width)), rows[0]);
-        frame.render_widget(parts::transcript(app, rows[1]), rows[1]);
+        parts::transcript(frame, rows[1], app);
 
         let grid = Layout::default()
             .direction(Direction::Horizontal)

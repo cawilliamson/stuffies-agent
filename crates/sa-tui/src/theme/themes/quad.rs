@@ -34,7 +34,7 @@ impl crate::theme::Theme for Theme {
         let border = parts::pane("transcript", Color::Rgb(0x44, 0x66, 0x88));
         let inner = border.inner(top[0]);
         frame.render_widget(border, top[0]);
-        frame.render_widget(parts::transcript(app, inner), inner);
+        parts::transcript(frame, inner, app);
 
         let facts: Vec<Line<'static>> = parts::facts(app)
             .into_iter()

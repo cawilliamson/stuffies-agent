@@ -39,10 +39,9 @@ impl crate::theme::Theme for Theme {
                 .style(Style::default().fg(INK).bg(SHEET)),
             rows[0],
         );
-        frame.render_widget(
-            parts::transcript(app, rows[1]).style(Style::default().bg(SHEET).fg(INK)),
-            rows[1],
-        );
+        parts::transcript_with(frame, rows[1], app, |p| {
+            p.style(Style::default().bg(SHEET).fg(INK))
+        });
 
         let tab = app.tab();
         let field = usize::from(rows[2].width.saturating_sub(4));

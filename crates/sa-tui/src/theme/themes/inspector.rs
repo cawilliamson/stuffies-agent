@@ -32,7 +32,7 @@ impl crate::theme::Theme for Theme {
         let border = parts::pane("conversation", parts::RULE);
         let inner = border.inner(rows[1]);
         frame.render_widget(border, rows[1]);
-        frame.render_widget(parts::transcript(app, inner), inner);
+        parts::transcript(frame, inner, app);
 
         let tail: Vec<Line<'static>> = app
             .tab()

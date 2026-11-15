@@ -63,7 +63,7 @@ impl crate::theme::Theme for Theme {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(2), Constraint::Length(1)])
             .split(body);
-        frame.render_widget(parts::transcript(app, rows[0]), rows[0]);
+        parts::transcript(frame, rows[0], app);
 
         let tab = app.tab();
         let field = usize::from(rows[1].width.saturating_sub(2));

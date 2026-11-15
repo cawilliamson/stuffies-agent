@@ -33,7 +33,7 @@ impl crate::theme::Theme for Theme {
             .split(cols[0]);
 
         frame.render_widget(Paragraph::new(parts::tab_bar(app, left[0].width)), left[0]);
-        frame.render_widget(parts::transcript(app, left[1]), left[1]);
+        parts::transcript(frame, left[1], app);
         let cursor = parts::composer(frame, left[2], app);
         frame.render_widget(Paragraph::new(parts::status_bar(app, left[3].width)), left[3]);
 
