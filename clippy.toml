@@ -1,0 +1,10 @@
+# clippy configuration. see Cargo.toml for the enforced lint levels.
+
+# keep lint suggestions within the declared minimum supported rust version.
+msrv = "1.89"
+
+# calls that are almost always a mistake here.
+disallowed-methods = [
+  { path = "std::process::exit", reason = "return an exit code from main; exit skips destructors" },
+  { path = "std::env::set_var", reason = "unsound once the runtime is multi-threaded" },
+]

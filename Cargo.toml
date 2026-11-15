@@ -62,6 +62,7 @@ pedantic = { level = "deny", priority = -1 }
 dbg_macro = "deny"
 expect_used = "deny"
 mem_forget = "deny"
+panic = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
 todo = "deny"

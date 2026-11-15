@@ -1,5 +1,5 @@
 //! session, turn and recovery behaviour (spec 14, v1.0 tasks 2-3).
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 use std::sync::Arc;

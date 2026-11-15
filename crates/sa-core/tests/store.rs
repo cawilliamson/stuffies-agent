@@ -1,5 +1,5 @@
 //! behaviour tests for the event log (spec 14, v1.0 task 2).
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use sa_core::store::{NewSession, Store, BLOB_THRESHOLD};
 use sa_proto::session::SessionState;

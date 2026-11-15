@@ -1,5 +1,5 @@
 //! the tabbed tui: key handling, tab lifecycle, transcript framing and rate accounting.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;

@@ -1,5 +1,5 @@
 //! the turn loop must speak the openai tool-calling protocol (spec 10.2).
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};
 

@@ -1,5 +1,5 @@
 //! tool execution against a real filesystem (spec 9).
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 

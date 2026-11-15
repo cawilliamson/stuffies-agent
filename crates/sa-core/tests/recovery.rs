@@ -1,5 +1,5 @@
 //! an interrupted session must be resumable (spec 5.4, 5.6).
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 

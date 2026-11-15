@@ -1,5 +1,5 @@
 //! behaviour tests for the v1.0 daemon skeleton (spec 14, appendix A).
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
