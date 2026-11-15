@@ -1,0 +1,21 @@
+--- crates/sa-proto/src/session.rs
++++ delete match arm "quiescing" in SessionState::parse
+@@ -27,17 +27,17 @@
+             Self::Deleted => "deleted",
+         }
+     }
+ 
+     #[must_use]
+     pub fn parse(raw: &str) -> Option<Self> {
+         Some(match raw {
+             "active" => Self::Active,
+-            "quiescing" => Self::Quiescing,
++             /* ~ changed by cargo-mutants ~ */
+             "relocating" => Self::Relocating,
+             "relocated" => Self::Relocated,
+             "interrupted" => Self::Interrupted,
+             "deleted" => Self::Deleted,
+             _ => return None,
+         })
+     }
+ 

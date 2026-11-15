@@ -1,0 +1,26 @@
+--- crates/sa-proto/src/rpc.rs
++++ replace Response::ok -> Self with Default::default()
+@@ -78,22 +78,17 @@
+     pub result: Option<Value>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub error: Option<RpcError>,
+ }
+ 
+ impl Response {
+     #[must_use]
+     pub fn ok(id: Option<Id>, result: Value) -> Self {
+-        Self {
+-            jsonrpc: JsonRpc,
+-            id,
+-            result: Some(result),
+-            error: None,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     #[must_use]
+     pub fn err(id: Option<Id>, error: RpcError) -> Self {
+         Self {
+             jsonrpc: JsonRpc,
+             id,
+             result: None,

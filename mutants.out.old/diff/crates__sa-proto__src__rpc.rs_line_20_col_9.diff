@@ -1,0 +1,21 @@
+--- crates/sa-proto/src/rpc.rs
++++ replace <impl Serialize for JsonRpc>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())
+@@ -12,17 +12,17 @@
+ pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+ 
+ /// the mandatory `"jsonrpc": "2.0"` member.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct JsonRpc;
+ 
+ impl Serialize for JsonRpc {
+     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+-        serializer.serialize_str("2.0")
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<'de> Deserialize<'de> for JsonRpc {
+     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+         let raw = String::deserialize(deserializer)?;
+         if raw == "2.0" {
+             Ok(JsonRpc)

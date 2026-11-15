@@ -125,3 +125,16 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    #[test]
+    fn display_includes_the_code_and_message() {
+        let err = RpcError::new(code::HANDSHAKE_REQUIRED, "hello first");
+        let text = err.to_string();
+        assert!(text.contains("-32003"), "{text}");
+        assert!(text.contains("hello first"), "{text}");
+    }
+}

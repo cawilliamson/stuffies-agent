@@ -11,3 +11,14 @@ pub mod session;
 ///
 /// a longer line is a protocol error, never a truncated read (spec 3.1).
 pub const MAX_LINE_LEN: usize = 1024 * 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_line_len_is_exactly_one_mebibyte() {
+        // the protocol bound in spec 3.1: any other value silently changes what is legal.
+        assert_eq!(MAX_LINE_LEN, 1_048_576);
+    }
+}

@@ -1,0 +1,66 @@
+
+*** crates/sa-proto/src/rpc.rs:20:9: replace <impl Serialize for JsonRpc>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())
+
+*** mutation diff:
+--- crates/sa-proto/src/rpc.rs
++++ replace <impl Serialize for JsonRpc>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())
+@@ -12,17 +12,17 @@
+ pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+ 
+ /// the mandatory `"jsonrpc": "2.0"` member.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct JsonRpc;
+ 
+ impl Serialize for JsonRpc {
+     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+-        serializer.serialize_str("2.0")
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<'de> Deserialize<'de> for JsonRpc {
+     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+         let raw = String::deserialize(deserializer)?;
+         if raw == "2.0" {
+             Ok(JsonRpc)
+
+
+*** /nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo test --no-run --verbose --package=sa-proto@0.1.0
+       Fresh unicode-ident v1.0.27
+       Fresh proc-macro2 v1.0.107
+       Fresh quote v1.0.47
+       Fresh syn v3.0.10
+       Fresh serde_core v1.0.229
+       Fresh itoa v1.0.19
+       Fresh zmij v1.0.23
+       Fresh serde_derive v1.0.229
+       Fresh memchr v2.8.3
+       Fresh serde v1.0.229
+       Fresh serde_json v1.0.154
+       Dirty sa-proto v0.1.0 (/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/crates/sa-proto): the file `crates/sa-proto/src/rpc.rs` has changed (1794742019.980094111s, 408089003ns after last build at 1794742019.572005108s)
+   Compiling sa-proto v0.1.0 (/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/crates/sa-proto)
+     Running `rustc --crate-name sa_proto --edition=2021 crates/sa-proto/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --forbid=unsafe_code '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=29508eb055440dfa -C extra-filename=-f86719d8d2edc2bd --out-dir /tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps -C incremental=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/incremental -L dependency=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps --extern serde=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde-20c80892f5c6b91d.rlib --extern serde_json=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde_json-f40a5ab5b6e7c5a1.rlib`
+     Running `rustc --crate-name sa_proto --edition=2021 crates/sa-proto/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --forbid=unsafe_code '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4492f57db34c9cf8 -C extra-filename=-d0e49e6dda98d562 --out-dir /tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps -C incremental=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/incremental -L dependency=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps --extern serde=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde-20c80892f5c6b91d.rmeta --extern serde_json=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde_json-f40a5ab5b6e7c5a1.rmeta`
+error[E0277]: the trait bound `<S as error::_::_serde::Serializer>::Ok: Default` is not satisfied
+  --> crates/sa-proto/src/rpc.rs:20:12
+   |
+20 |         Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+   |            ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `<S as error::_::_serde::Serializer>::Ok`
+   |
+help: consider further restricting the associated type
+   |
+19 |     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> where <S as _serde::Serializer>::Ok: Default {
+   |                                                                                  ++++++++++++++++++++++++++++++++++++++++++++
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `sa-proto` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `rustc --crate-name sa_proto --edition=2021 crates/sa-proto/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --forbid=unsafe_code '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4492f57db34c9cf8 -C extra-filename=-d0e49e6dda98d562 --out-dir /tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps -C incremental=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/incremental -L dependency=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps --extern serde=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde-20c80892f5c6b91d.rmeta --extern serde_json=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde_json-f40a5ab5b6e7c5a1.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `sa-proto` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `rustc --crate-name sa_proto --edition=2021 crates/sa-proto/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --forbid=unsafe_code '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=29508eb055440dfa -C extra-filename=-f86719d8d2edc2bd --out-dir /tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps -C incremental=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/incremental -L dependency=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps --extern serde=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde-20c80892f5c6b91d.rlib --extern serde_json=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde_json-f40a5ab5b6e7c5a1.rlib` (exit status: 1)
+
+*** result: Failure(101)

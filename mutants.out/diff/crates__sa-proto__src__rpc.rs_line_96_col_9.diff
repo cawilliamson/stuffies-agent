@@ -1,0 +1,26 @@
+--- crates/sa-proto/src/rpc.rs
++++ replace Response::err -> Self with Default::default()
+@@ -88,22 +88,17 @@
+             id,
+             result: Some(result),
+             error: None,
+         }
+     }
+ 
+     #[must_use]
+     pub fn err(id: Option<Id>, error: RpcError) -> Self {
+-        Self {
+-            jsonrpc: JsonRpc,
+-            id,
+-            result: None,
+-            error: Some(error),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// the successful result, or the carried error.
+     pub fn into_result(self) -> Result<Value, RpcError> {
+         match (self.result, self.error) {
+             (_, Some(error)) => Err(error),
+             (Some(result), None) => Ok(result),
+             (None, None) => Err(RpcError::new(

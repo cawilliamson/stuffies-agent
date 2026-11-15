@@ -1,0 +1,21 @@
+--- crates/sa-proto/src/error.rs
++++ delete -
+@@ -16,17 +16,17 @@
+     pub const LINE_TOO_LONG: i32 = -32002;
+     pub const HANDSHAKE_REQUIRED: i32 = -32003;
+     pub const SESSION_BUSY: i32 = -32004;
+     pub const SESSION_NOT_FOUND: i32 = -32005;
+     pub const STALE_OWNER: i32 = -32006;
+     pub const WORKSPACE_DIVERGED: i32 = -32007;
+     pub const WORKSPACE_UNREACHABLE: i32 = -32008;
+     pub const CONTEXT_EXHAUSTED: i32 = -32009;
+-    pub const BUNDLE_INVALID: i32 = -32011;
++    pub const BUNDLE_INVALID: i32 =  /* ~ changed by cargo-mutants ~ */32011;
+     pub const KNOWLEDGE_DENIED: i32 = -32012;
+     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;
+     pub const NOT_IMPLEMENTED: i32 = -32014;
+ }
+ 
+ /// an error carried in a json-rpc `error` member.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct RpcError {

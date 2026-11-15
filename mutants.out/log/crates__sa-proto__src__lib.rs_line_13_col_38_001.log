@@ -1,0 +1,97 @@
+
+*** crates/sa-proto/src/lib.rs:13:38: replace * with /
+
+*** mutation diff:
+--- crates/sa-proto/src/lib.rs
++++ replace * with /
+@@ -5,17 +5,17 @@
+ 
+ pub mod error;
+ pub mod rpc;
+ pub mod session;
+ 
+ /// maximum length of a single newline-delimited frame, excluding the newline.
+ ///
+ /// a longer line is a protocol error, never a truncated read (spec 3.1).
+-pub const MAX_LINE_LEN: usize = 1024 * 1024;
++pub const MAX_LINE_LEN: usize = 1024 / /* ~ changed by cargo-mutants ~ */ 1024;
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn max_line_len_is_exactly_one_mebibyte() {
+         // the protocol bound in spec 3.1: any other value silently changes what is legal.
+
+
+*** /nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo test --no-run --verbose --package=sa-proto@0.1.0
+       Fresh unicode-ident v1.0.27
+       Fresh proc-macro2 v1.0.107
+       Fresh quote v1.0.47
+       Fresh itoa v1.0.19
+       Fresh memchr v2.8.3
+       Fresh syn v3.0.10
+       Fresh serde_core v1.0.229
+       Fresh zmij v1.0.23
+       Fresh serde_derive v1.0.229
+       Fresh serde v1.0.229
+       Fresh serde_json v1.0.154
+       Dirty sa-proto v0.1.0 (/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/crates/sa-proto): the file `crates/sa-proto/src/lib.rs` has changed (1794742009.816737851s, 352087587ns after last build at 1794742009.464650264s)
+   Compiling sa-proto v0.1.0 (/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/crates/sa-proto)
+     Running `rustc --crate-name sa_proto --edition=2021 crates/sa-proto/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --forbid=unsafe_code '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=29508eb055440dfa -C extra-filename=-f86719d8d2edc2bd --out-dir /tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps -C incremental=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/incremental -L dependency=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps --extern serde=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde-20c80892f5c6b91d.rlib --extern serde_json=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde_json-f40a5ab5b6e7c5a1.rlib`
+     Running `rustc --crate-name sa_proto --edition=2021 crates/sa-proto/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --forbid=unsafe_code '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4492f57db34c9cf8 -C extra-filename=-d0e49e6dda98d562 --out-dir /tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps -C incremental=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/incremental -L dependency=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps --extern serde=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde-20c80892f5c6b91d.rmeta --extern serde_json=/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/libserde_json-f40a5ab5b6e7c5a1.rmeta`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+  Executable `/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/sa_proto-f86719d8d2edc2bd`
+
+*** result: Success
+
+*** /nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo test --verbose --package=sa-proto@0.1.0
+       Fresh unicode-ident v1.0.27
+       Fresh proc-macro2 v1.0.107
+       Fresh itoa v1.0.19
+       Fresh memchr v2.8.3
+       Fresh quote v1.0.47
+       Fresh serde_core v1.0.229
+       Fresh syn v3.0.10
+       Fresh zmij v1.0.23
+       Fresh serde_derive v1.0.229
+       Fresh serde_json v1.0.154
+       Fresh serde v1.0.229
+       Fresh sa-proto v0.1.0 (/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/crates/sa-proto)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `/tmp/nix-shell.JICiyw/cargo-mutants-stuffies-agent-EDQNfV.tmp/target/debug/deps/sa_proto-f86719d8d2edc2bd`
+
+running 12 tests
+test error::display_tests::display_includes_the_code_and_message ... ok
+test error::tests::application_codes_do_not_collide ... ok
+test error::tests::method_not_found_carries_the_reserved_code ... ok
+test rpc::tests::rejects_a_missing_jsonrpc_member ... ok
+test rpc::tests::an_ok_response_yields_the_result ... ok
+test error::tests::error_round_trips_without_a_data_member_when_absent ... ok
+test rpc::tests::rejects_a_wrong_jsonrpc_member ... ok
+test rpc::tests::a_request_without_an_id_is_a_notification ... ok
+test rpc::tests::an_error_response_yields_the_error ... ok
+test session::tests::session_state_parses_and_only_active_is_writable ... ok
+test rpc::tests::round_trips_a_request ... ok
+test tests::max_line_len_is_exactly_one_mebibyte ... FAILED
+
+failures:
+
+---- tests::max_line_len_is_exactly_one_mebibyte stdout ----
+
+thread 'tests::max_line_len_is_exactly_one_mebibyte' (903627) panicked at crates/sa-proto/src/lib.rs:22:9:
+assertion `left == right` failed
+  left: 1
+ right: 1048576
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::max_line_len_is_exactly_one_mebibyte
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sa-proto --lib`
+
+*** result: Failure(101)

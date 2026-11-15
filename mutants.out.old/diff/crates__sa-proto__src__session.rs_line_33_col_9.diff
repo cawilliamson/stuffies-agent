@@ -1,0 +1,29 @@
+--- crates/sa-proto/src/session.rs
++++ replace SessionState::parse -> Option<Self> with None
+@@ -25,25 +25,17 @@
+             Self::Relocated => "relocated",
+             Self::Interrupted => "interrupted",
+             Self::Deleted => "deleted",
+         }
+     }
+ 
+     #[must_use]
+     pub fn parse(raw: &str) -> Option<Self> {
+-        Some(match raw {
+-            "active" => Self::Active,
+-            "quiescing" => Self::Quiescing,
+-            "relocating" => Self::Relocating,
+-            "relocated" => Self::Relocated,
+-            "interrupted" => Self::Interrupted,
+-            "deleted" => Self::Deleted,
+-            _ => return None,
+-        })
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// whether a turn may start.
+     #[must_use]
+     pub fn is_writable(self) -> bool {
+         matches!(self, Self::Active)
+     }
+ }

@@ -1,0 +1,2548 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 4.708778871,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.201458865,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/lib.rs:13:38: replace * with +",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/lib.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 13,
+              "column": 38
+            },
+            "end": {
+              "line": 13,
+              "column": 39
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/crates__sa-proto__src__lib.rs_line_13_col_38.log",
+      "diff_path": "diff/crates__sa-proto__src__lib.rs_line_13_col_38.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351519339,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151393427,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/lib.rs:13:38: replace * with /",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/lib.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 13,
+              "column": 38
+            },
+            "end": {
+              "line": 13,
+              "column": 39
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/crates__sa-proto__src__lib.rs_line_13_col_38_001.log",
+      "diff_path": "diff/crates__sa-proto__src__lib.rs_line_13_col_38_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301923987,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151267331,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:8:34: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 8,
+              "column": 34
+            },
+            "end": {
+              "line": 8,
+              "column": 35
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_8_col_34.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_8_col_34.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301227754,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.100874804,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:9:38: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 9,
+              "column": 38
+            },
+            "end": {
+              "line": 9,
+              "column": 39
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_9_col_38.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_9_col_38.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301365883,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101023981,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:10:39: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 10,
+              "column": 39
+            },
+            "end": {
+              "line": 10,
+              "column": 40
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_10_col_39.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_10_col_39.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351691602,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101087935,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:11:37: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 11,
+              "column": 37
+            },
+            "end": {
+              "line": 11,
+              "column": 38
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_11_col_37.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_11_col_37.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351510873,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.10152703,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:12:37: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 12,
+              "column": 37
+            },
+            "end": {
+              "line": 12,
+              "column": 38
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_12_col_37.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_12_col_37.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401432642,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101391256,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:14:39: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 39
+            },
+            "end": {
+              "line": 14,
+              "column": 40
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_14_col_39.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_14_col_39.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301470068,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.050926431,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:15:40: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 15,
+              "column": 40
+            },
+            "end": {
+              "line": 15,
+              "column": 41
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_15_col_40.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_15_col_40.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351244043,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.050943189,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:16:36: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 16,
+              "column": 36
+            },
+            "end": {
+              "line": 16,
+              "column": 37
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_16_col_36.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_16_col_36.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401349398,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101548894,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:17:41: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 17,
+              "column": 41
+            },
+            "end": {
+              "line": 17,
+              "column": 42
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_17_col_41.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_17_col_41.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401631924,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.10171132,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:18:35: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 18,
+              "column": 35
+            },
+            "end": {
+              "line": 18,
+              "column": 36
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_18_col_35.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_18_col_35.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351739105,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101644324,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:19:40: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 19,
+              "column": 40
+            },
+            "end": {
+              "line": 19,
+              "column": 41
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_19_col_40.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_19_col_40.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.40162766,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101092717,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:20:34: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 20,
+              "column": 34
+            },
+            "end": {
+              "line": 20,
+              "column": 35
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_20_col_34.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_20_col_34.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401748239,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.051411612,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:21:41: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 21,
+              "column": 41
+            },
+            "end": {
+              "line": 21,
+              "column": 42
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_21_col_41.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_21_col_41.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401340216,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101526885,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:22:44: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 22,
+              "column": 44
+            },
+            "end": {
+              "line": 22,
+              "column": 45
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_22_col_44.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_22_col_44.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351506251,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101336703,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:23:40: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 23,
+              "column": 40
+            },
+            "end": {
+              "line": 23,
+              "column": 41
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_23_col_40.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_23_col_40.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301656537,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.050884764,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:24:37: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 24,
+              "column": 37
+            },
+            "end": {
+              "line": 24,
+              "column": 38
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_24_col_37.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_24_col_37.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401281179,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101186588,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:25:39: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 25,
+              "column": 39
+            },
+            "end": {
+              "line": 25,
+              "column": 40
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_25_col_39.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_25_col_39.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.402171357,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.051217961,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:26:44: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 26,
+              "column": 44
+            },
+            "end": {
+              "line": 26,
+              "column": 45
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_26_col_44.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_26_col_44.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351190624,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101116723,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:27:38: delete -",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 27,
+              "column": 38
+            },
+            "end": {
+              "line": 27,
+              "column": 39
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_27_col_38.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_27_col_38.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351450938,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101427555,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:51:9: replace RpcError::with_data -> Self with Default::default()",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": {
+            "function_name": "RpcError::with_data",
+            "return_type": "-> Self",
+            "span": {
+              "start": {
+                "line": 49,
+                "column": 5
+              },
+              "end": {
+                "line": 53,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 51,
+              "column": 9
+            },
+            "end": {
+              "line": 52,
+              "column": 13
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_51_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_51_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.251195517,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:57:9: replace RpcError::method_not_found -> Self with Default::default()",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": {
+            "function_name": "RpcError::method_not_found",
+            "return_type": "-> Self",
+            "span": {
+              "start": {
+                "line": 55,
+                "column": 5
+              },
+              "end": {
+                "line": 61,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 57,
+              "column": 9
+            },
+            "end": {
+              "line": 60,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_57_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_57_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.251259959,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/error.rs:66:9: replace <impl std::fmt::Display for RpcError>::fmt -> std::fmt::Result with Ok(Default::default())",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/error.rs",
+          "function": {
+            "function_name": "<impl std::fmt::Display for RpcError>::fmt",
+            "return_type": "-> std::fmt::Result",
+            "span": {
+              "start": {
+                "line": 65,
+                "column": 5
+              },
+              "end": {
+                "line": 67,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 66,
+              "column": 9
+            },
+            "end": {
+              "line": 66,
+              "column": 54
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/crates__sa-proto__src__error.rs_line_66_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__error.rs_line_66_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401405777,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151053161,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:20:9: replace <impl Serialize for JsonRpc>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "<impl Serialize for JsonRpc>::serialize",
+            "return_type": "-> Result<S::Ok, S::Error>",
+            "span": {
+              "start": {
+                "line": 19,
+                "column": 5
+              },
+              "end": {
+                "line": 21,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 20,
+              "column": 9
+            },
+            "end": {
+              "line": 20,
+              "column": 40
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_20_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_20_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.251227205,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:26:9: replace <impl Deserialize<'de> for JsonRpc>::deserialize -> Result<Self, D::Error> with Ok(Default::default())",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "<impl Deserialize<'de> for JsonRpc>::deserialize",
+            "return_type": "-> Result<Self, D::Error>",
+            "span": {
+              "start": {
+                "line": 25,
+                "column": 5
+              },
+              "end": {
+                "line": 34,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 26,
+              "column": 9
+            },
+            "end": {
+              "line": 33,
+              "column": 10
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_26_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_26_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301274989,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:27:16: replace == with != in <impl Deserialize<'de> for JsonRpc>::deserialize",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "<impl Deserialize<'de> for JsonRpc>::deserialize",
+            "return_type": "-> Result<Self, D::Error>",
+            "span": {
+              "start": {
+                "line": 25,
+                "column": 5
+              },
+              "end": {
+                "line": 34,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 27,
+              "column": 16
+            },
+            "end": {
+              "line": 27,
+              "column": 18
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_27_col_16.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_27_col_16.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.35128179,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101089408,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:68:9: replace Request::is_notification -> bool with true",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "Request::is_notification",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 66,
+                "column": 5
+              },
+              "end": {
+                "line": 69,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 68,
+              "column": 9
+            },
+            "end": {
+              "line": 68,
+              "column": 26
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_68_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_68_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.40189688,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101019302,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:68:9: replace Request::is_notification -> bool with false",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "Request::is_notification",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 66,
+                "column": 5
+              },
+              "end": {
+                "line": 69,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 68,
+              "column": 9
+            },
+            "end": {
+              "line": 68,
+              "column": 26
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_68_col_9_001.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_68_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351416012,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.10153686,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:86:9: replace Response::ok -> Self with Default::default()",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "Response::ok",
+            "return_type": "-> Self",
+            "span": {
+              "start": {
+                "line": 84,
+                "column": 5
+              },
+              "end": {
+                "line": 92,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 86,
+              "column": 9
+            },
+            "end": {
+              "line": 91,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_86_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_86_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.30122682,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:96:9: replace Response::err -> Self with Default::default()",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "Response::err",
+            "return_type": "-> Self",
+            "span": {
+              "start": {
+                "line": 94,
+                "column": 5
+              },
+              "end": {
+                "line": 102,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 96,
+              "column": 9
+            },
+            "end": {
+              "line": 101,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_96_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_96_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351278986,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/rpc.rs:106:9: replace Response::into_result -> Result<Value, RpcError> with Ok(Default::default())",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/rpc.rs",
+          "function": {
+            "function_name": "Response::into_result",
+            "return_type": "-> Result<Value, RpcError>",
+            "span": {
+              "start": {
+                "line": 104,
+                "column": 5
+              },
+              "end": {
+                "line": 114,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 106,
+              "column": 9
+            },
+            "end": {
+              "line": 113,
+              "column": 10
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__rpc.rs_line_106_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__rpc.rs_line_106_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.502045863,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101088601,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:21:9: replace SessionState::as_str -> &'static str with \"\"",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::as_str",
+            "return_type": "-> &'static str",
+            "span": {
+              "start": {
+                "line": 19,
+                "column": 5
+              },
+              "end": {
+                "line": 29,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 21,
+              "column": 9
+            },
+            "end": {
+              "line": 28,
+              "column": 10
+            }
+          },
+          "replacement": "\"\"",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_21_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_21_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.501502846,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101008313,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:21:9: replace SessionState::as_str -> &'static str with \"xyzzy\"",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::as_str",
+            "return_type": "-> &'static str",
+            "span": {
+              "start": {
+                "line": 19,
+                "column": 5
+              },
+              "end": {
+                "line": 29,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 21,
+              "column": 9
+            },
+            "end": {
+              "line": 28,
+              "column": 10
+            }
+          },
+          "replacement": "\"xyzzy\"",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_21_col_9_001.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_21_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.352077399,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101094071,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:33:9: replace SessionState::parse -> Option<Self> with None",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 33,
+              "column": 9
+            },
+            "end": {
+              "line": 41,
+              "column": 11
+            }
+          },
+          "replacement": "None",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_33_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_33_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.451540908,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101223952,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:33:9: replace SessionState::parse -> Option<Self> with Some(Default::default())",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 33,
+              "column": 9
+            },
+            "end": {
+              "line": 41,
+              "column": 11
+            }
+          },
+          "replacement": "Some(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_33_col_9_001.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_33_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.201275472,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:34:13: delete match arm \"active\" in SessionState::parse",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 34,
+              "column": 13
+            },
+            "end": {
+              "line": 34,
+              "column": 38
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_34_col_13.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_34_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.45186588,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101111768,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:35:13: delete match arm \"quiescing\" in SessionState::parse",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 35,
+              "column": 13
+            },
+            "end": {
+              "line": 35,
+              "column": 44
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_35_col_13.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_35_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401818628,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.051066411,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:36:13: delete match arm \"relocating\" in SessionState::parse",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 36,
+              "column": 13
+            },
+            "end": {
+              "line": 36,
+              "column": 46
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_36_col_13.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_36_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.401297927,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101049471,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:37:13: delete match arm \"relocated\" in SessionState::parse",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 37,
+              "column": 13
+            },
+            "end": {
+              "line": 37,
+              "column": 44
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_37_col_13.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_37_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.40172862,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101207287,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:38:13: delete match arm \"interrupted\" in SessionState::parse",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 38,
+              "column": 13
+            },
+            "end": {
+              "line": 38,
+              "column": 48
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_38_col_13.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_38_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301514614,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.050982025,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:39:13: delete match arm \"deleted\" in SessionState::parse",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::parse",
+            "return_type": "-> Option<Self>",
+            "span": {
+              "start": {
+                "line": 31,
+                "column": 5
+              },
+              "end": {
+                "line": 42,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 39,
+              "column": 13
+            },
+            "end": {
+              "line": 39,
+              "column": 40
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_39_col_13.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_39_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351287472,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101498948,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:47:9: replace SessionState::is_writable -> bool with true",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::is_writable",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 44,
+                "column": 5
+              },
+              "end": {
+                "line": 48,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 47,
+              "column": 9
+            },
+            "end": {
+              "line": 47,
+              "column": 37
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_47_col_9.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_47_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.301581458,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.050888713,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/sa-proto/src/session.rs:47:9: replace SessionState::is_writable -> bool with false",
+          "package": "sa-proto",
+          "file": "crates/sa-proto/src/session.rs",
+          "function": {
+            "function_name": "SessionState::is_writable",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 44,
+                "column": 5
+              },
+              "end": {
+                "line": 48,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 47,
+              "column": 9
+            },
+            "end": {
+              "line": 47,
+              "column": 37
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__sa-proto__src__session.rs_line_47_col_9_001.log",
+      "diff_path": "diff/crates__sa-proto__src__session.rs_line_47_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.351328007,
+          "process_status": "Success",
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101104311,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/nix/store/c2ii5nkzv440xj9igxsd49i8f5y2vr6f-cargo-1.99.1/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=sa-proto@0.1.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 44,
+  "missed": 3,
+  "caught": 34,
+  "timeout": 0,
+  "unviable": 7,
+  "success": 0,
+  "start_time": "2026-11-15T11:26:09.975544273Z",
+  "end_time": "2026-11-15T11:26:34.32068789Z",
+  "cargo_mutants_version": "27.1.0"
+}

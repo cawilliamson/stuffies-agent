@@ -1,0 +1,28 @@
+--- crates/sa-proto/src/rpc.rs
++++ replace <impl Deserialize<'de> for JsonRpc>::deserialize -> Result<Self, D::Error> with Ok(Default::default())
+@@ -18,24 +18,17 @@
+ impl Serialize for JsonRpc {
+     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+         serializer.serialize_str("2.0")
+     }
+ }
+ 
+ impl<'de> Deserialize<'de> for JsonRpc {
+     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+-        let raw = String::deserialize(deserializer)?;
+-        if raw == "2.0" {
+-            Ok(JsonRpc)
+-        } else {
+-            Err(de::Error::custom(format!(
+-                "expected jsonrpc \"2.0\", got {raw:?}"
+-            )))
+-        }
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// a request identifier. absent on notifications.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(untagged)]
+ pub enum Id {
+     Number(i64),

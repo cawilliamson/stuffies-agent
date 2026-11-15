@@ -1,0 +1,22 @@
+--- crates/sa-proto/src/error.rs
++++ replace RpcError::with_data -> Self with Default::default()
+@@ -43,18 +43,17 @@
+             code,
+             message: message.into(),
+             data: None,
+         }
+     }
+ 
+     #[must_use]
+     pub fn with_data(mut self, data: Value) -> Self {
+-        self.data = Some(data);
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     #[must_use]
+     pub fn method_not_found(method: &str) -> Self {
+         Self::new(
+             code::METHOD_NOT_FOUND,
+             format!("method not found: {method}"),
+         )

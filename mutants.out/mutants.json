@@ -1,0 +1,1137 @@
+[
+  {
+    "diff": "--- crates/sa-proto/src/lib.rs\n+++ replace * with +\n@@ -5,17 +5,17 @@\n \n pub mod error;\n pub mod rpc;\n pub mod session;\n \n /// maximum length of a single newline-delimited frame, excluding the newline.\n ///\n /// a longer line is a protocol error, never a truncated read (spec 3.1).\n-pub const MAX_LINE_LEN: usize = 1024 * 1024;\n+pub const MAX_LINE_LEN: usize = 1024 + /* ~ changed by cargo-mutants ~ */ 1024;\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn max_line_len_is_exactly_one_mebibyte() {\n         // the protocol bound in spec 3.1: any other value silently changes what is legal.\n",
+    "file": "crates/sa-proto/src/lib.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/sa-proto/src/lib.rs:13:38: replace * with +",
+    "package": "sa-proto",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 13
+      },
+      "start": {
+        "column": 38,
+        "line": 13
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/lib.rs\n+++ replace * with /\n@@ -5,17 +5,17 @@\n \n pub mod error;\n pub mod rpc;\n pub mod session;\n \n /// maximum length of a single newline-delimited frame, excluding the newline.\n ///\n /// a longer line is a protocol error, never a truncated read (spec 3.1).\n-pub const MAX_LINE_LEN: usize = 1024 * 1024;\n+pub const MAX_LINE_LEN: usize = 1024 / /* ~ changed by cargo-mutants ~ */ 1024;\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn max_line_len_is_exactly_one_mebibyte() {\n         // the protocol bound in spec 3.1: any other value silently changes what is legal.\n",
+    "file": "crates/sa-proto/src/lib.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/sa-proto/src/lib.rs:13:38: replace * with /",
+    "package": "sa-proto",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 13
+      },
+      "start": {
+        "column": 38,
+        "line": 13
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -1,16 +1,16 @@\n //! json-rpc error codes and the wire error type.\n \n use serde::{Deserialize, Serialize};\n use serde_json::Value;\n \n /// json-rpc 2.0 reserved codes, plus the application range from -32000.\n pub mod code {\n-    pub const PARSE_ERROR: i32 = -32700;\n+    pub const PARSE_ERROR: i32 =  /* ~ changed by cargo-mutants ~ */32700;\n     pub const INVALID_REQUEST: i32 = -32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:8:34: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 8
+      },
+      "start": {
+        "column": 34,
+        "line": 8
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -1,17 +1,17 @@\n //! json-rpc error codes and the wire error type.\n \n use serde::{Deserialize, Serialize};\n use serde_json::Value;\n \n /// json-rpc 2.0 reserved codes, plus the application range from -32000.\n pub mod code {\n     pub const PARSE_ERROR: i32 = -32700;\n-    pub const INVALID_REQUEST: i32 = -32600;\n+    pub const INVALID_REQUEST: i32 =  /* ~ changed by cargo-mutants ~ */32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:9:38: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 9
+      },
+      "start": {
+        "column": 38,
+        "line": 9
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -2,17 +2,17 @@\n \n use serde::{Deserialize, Serialize};\n use serde_json::Value;\n \n /// json-rpc 2.0 reserved codes, plus the application range from -32000.\n pub mod code {\n     pub const PARSE_ERROR: i32 = -32700;\n     pub const INVALID_REQUEST: i32 = -32600;\n-    pub const METHOD_NOT_FOUND: i32 = -32601;\n+    pub const METHOD_NOT_FOUND: i32 =  /* ~ changed by cargo-mutants ~ */32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:10:39: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 10
+      },
+      "start": {
+        "column": 39,
+        "line": 10
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -3,17 +3,17 @@\n use serde::{Deserialize, Serialize};\n use serde_json::Value;\n \n /// json-rpc 2.0 reserved codes, plus the application range from -32000.\n pub mod code {\n     pub const PARSE_ERROR: i32 = -32700;\n     pub const INVALID_REQUEST: i32 = -32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n-    pub const INVALID_PARAMS: i32 = -32602;\n+    pub const INVALID_PARAMS: i32 =  /* ~ changed by cargo-mutants ~ */32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:11:37: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 11
+      },
+      "start": {
+        "column": 37,
+        "line": 11
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -4,17 +4,17 @@\n use serde_json::Value;\n \n /// json-rpc 2.0 reserved codes, plus the application range from -32000.\n pub mod code {\n     pub const PARSE_ERROR: i32 = -32700;\n     pub const INVALID_REQUEST: i32 = -32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n-    pub const INTERNAL_ERROR: i32 = -32603;\n+    pub const INTERNAL_ERROR: i32 =  /* ~ changed by cargo-mutants ~ */32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:12:37: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 12
+      },
+      "start": {
+        "column": 37,
+        "line": 12
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -6,17 +6,17 @@\n /// json-rpc 2.0 reserved codes, plus the application range from -32000.\n pub mod code {\n     pub const PARSE_ERROR: i32 = -32700;\n     pub const INVALID_REQUEST: i32 = -32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n-    pub const VERSION_MISMATCH: i32 = -32000;\n+    pub const VERSION_MISMATCH: i32 =  /* ~ changed by cargo-mutants ~ */32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:14:39: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 14
+      },
+      "start": {
+        "column": 39,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -7,17 +7,17 @@\n pub mod code {\n     pub const PARSE_ERROR: i32 = -32700;\n     pub const INVALID_REQUEST: i32 = -32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n-    pub const PEER_UID_MISMATCH: i32 = -32001;\n+    pub const PEER_UID_MISMATCH: i32 =  /* ~ changed by cargo-mutants ~ */32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:15:40: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 41,
+        "line": 15
+      },
+      "start": {
+        "column": 40,
+        "line": 15
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -8,17 +8,17 @@\n     pub const PARSE_ERROR: i32 = -32700;\n     pub const INVALID_REQUEST: i32 = -32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n-    pub const LINE_TOO_LONG: i32 = -32002;\n+    pub const LINE_TOO_LONG: i32 =  /* ~ changed by cargo-mutants ~ */32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:16:36: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 16
+      },
+      "start": {
+        "column": 36,
+        "line": 16
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -9,17 +9,17 @@\n     pub const INVALID_REQUEST: i32 = -32600;\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n-    pub const HANDSHAKE_REQUIRED: i32 = -32003;\n+    pub const HANDSHAKE_REQUIRED: i32 =  /* ~ changed by cargo-mutants ~ */32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:17:41: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 42,
+        "line": 17
+      },
+      "start": {
+        "column": 41,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -10,17 +10,17 @@\n     pub const METHOD_NOT_FOUND: i32 = -32601;\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n-    pub const SESSION_BUSY: i32 = -32004;\n+    pub const SESSION_BUSY: i32 =  /* ~ changed by cargo-mutants ~ */32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:18:35: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 36,
+        "line": 18
+      },
+      "start": {
+        "column": 35,
+        "line": 18
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -11,17 +11,17 @@\n     pub const INVALID_PARAMS: i32 = -32602;\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n-    pub const SESSION_NOT_FOUND: i32 = -32005;\n+    pub const SESSION_NOT_FOUND: i32 =  /* ~ changed by cargo-mutants ~ */32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:19:40: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 41,
+        "line": 19
+      },
+      "start": {
+        "column": 40,
+        "line": 19
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -12,17 +12,17 @@\n     pub const INTERNAL_ERROR: i32 = -32603;\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n-    pub const STALE_OWNER: i32 = -32006;\n+    pub const STALE_OWNER: i32 =  /* ~ changed by cargo-mutants ~ */32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n }\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:20:34: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 20
+      },
+      "start": {
+        "column": 34,
+        "line": 20
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -13,17 +13,17 @@\n \n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n-    pub const WORKSPACE_DIVERGED: i32 = -32007;\n+    pub const WORKSPACE_DIVERGED: i32 =  /* ~ changed by cargo-mutants ~ */32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n }\n \n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:21:41: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 42,
+        "line": 21
+      },
+      "start": {
+        "column": 41,
+        "line": 21
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -14,17 +14,17 @@\n     pub const VERSION_MISMATCH: i32 = -32000;\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n-    pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n+    pub const WORKSPACE_UNREACHABLE: i32 =  /* ~ changed by cargo-mutants ~ */32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n }\n \n /// an error carried in a json-rpc `error` member.\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:22:44: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 45,
+        "line": 22
+      },
+      "start": {
+        "column": 44,
+        "line": 22
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -15,17 +15,17 @@\n     pub const PEER_UID_MISMATCH: i32 = -32001;\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n-    pub const CONTEXT_EXHAUSTED: i32 = -32009;\n+    pub const CONTEXT_EXHAUSTED: i32 =  /* ~ changed by cargo-mutants ~ */32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n }\n \n /// an error carried in a json-rpc `error` member.\n #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:23:40: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 41,
+        "line": 23
+      },
+      "start": {
+        "column": 40,
+        "line": 23
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -16,17 +16,17 @@\n     pub const LINE_TOO_LONG: i32 = -32002;\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n-    pub const BUNDLE_INVALID: i32 = -32011;\n+    pub const BUNDLE_INVALID: i32 =  /* ~ changed by cargo-mutants ~ */32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n }\n \n /// an error carried in a json-rpc `error` member.\n #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n pub struct RpcError {\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:24:37: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 24
+      },
+      "start": {
+        "column": 37,
+        "line": 24
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -17,17 +17,17 @@\n     pub const HANDSHAKE_REQUIRED: i32 = -32003;\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n-    pub const KNOWLEDGE_DENIED: i32 = -32012;\n+    pub const KNOWLEDGE_DENIED: i32 =  /* ~ changed by cargo-mutants ~ */32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n }\n \n /// an error carried in a json-rpc `error` member.\n #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n pub struct RpcError {\n     pub code: i32,\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:25:39: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 25
+      },
+      "start": {
+        "column": 39,
+        "line": 25
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -18,17 +18,17 @@\n     pub const SESSION_BUSY: i32 = -32004;\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n-    pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n+    pub const KNOWLEDGE_UNAVAILABLE: i32 =  /* ~ changed by cargo-mutants ~ */32013;\n     pub const NOT_IMPLEMENTED: i32 = -32014;\n }\n \n /// an error carried in a json-rpc `error` member.\n #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n pub struct RpcError {\n     pub code: i32,\n     pub message: String,\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:26:44: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 45,
+        "line": 26
+      },
+      "start": {
+        "column": 44,
+        "line": 26
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ delete -\n@@ -19,17 +19,17 @@\n     pub const SESSION_NOT_FOUND: i32 = -32005;\n     pub const STALE_OWNER: i32 = -32006;\n     pub const WORKSPACE_DIVERGED: i32 = -32007;\n     pub const WORKSPACE_UNREACHABLE: i32 = -32008;\n     pub const CONTEXT_EXHAUSTED: i32 = -32009;\n     pub const BUNDLE_INVALID: i32 = -32011;\n     pub const KNOWLEDGE_DENIED: i32 = -32012;\n     pub const KNOWLEDGE_UNAVAILABLE: i32 = -32013;\n-    pub const NOT_IMPLEMENTED: i32 = -32014;\n+    pub const NOT_IMPLEMENTED: i32 =  /* ~ changed by cargo-mutants ~ */32014;\n }\n \n /// an error carried in a json-rpc `error` member.\n #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n pub struct RpcError {\n     pub code: i32,\n     pub message: String,\n     #[serde(skip_serializing_if = \"Option::is_none\")]\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": null,
+    "genre": "UnaryOperator",
+    "name": "crates/sa-proto/src/error.rs:27:38: delete -",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 27
+      },
+      "start": {
+        "column": 38,
+        "line": 27
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ replace RpcError::with_data -> Self with Default::default()\n@@ -43,18 +43,17 @@\n             code,\n             message: message.into(),\n             data: None,\n         }\n     }\n \n     #[must_use]\n     pub fn with_data(mut self, data: Value) -> Self {\n-        self.data = Some(data);\n-        self\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     #[must_use]\n     pub fn method_not_found(method: &str) -> Self {\n         Self::new(\n             code::METHOD_NOT_FOUND,\n             format!(\"method not found: {method}\"),\n         )\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": {
+      "function_name": "RpcError::with_data",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 53
+        },
+        "start": {
+          "column": 5,
+          "line": 49
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/error.rs:51:9: replace RpcError::with_data -> Self with Default::default()",
+    "package": "sa-proto",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 52
+      },
+      "start": {
+        "column": 9,
+        "line": 51
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ replace RpcError::method_not_found -> Self with Default::default()\n@@ -49,20 +49,17 @@\n     #[must_use]\n     pub fn with_data(mut self, data: Value) -> Self {\n         self.data = Some(data);\n         self\n     }\n \n     #[must_use]\n     pub fn method_not_found(method: &str) -> Self {\n-        Self::new(\n-            code::METHOD_NOT_FOUND,\n-            format!(\"method not found: {method}\"),\n-        )\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl std::fmt::Display for RpcError {\n     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n         write!(f, \"[{}] {}\", self.code, self.message)\n     }\n }\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": {
+      "function_name": "RpcError::method_not_found",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 61
+        },
+        "start": {
+          "column": 5,
+          "line": 55
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/error.rs:57:9: replace RpcError::method_not_found -> Self with Default::default()",
+    "package": "sa-proto",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 60
+      },
+      "start": {
+        "column": 9,
+        "line": 57
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/error.rs\n+++ replace <impl std::fmt::Display for RpcError>::fmt -> std::fmt::Result with Ok(Default::default())\n@@ -58,17 +58,17 @@\n             code::METHOD_NOT_FOUND,\n             format!(\"method not found: {method}\"),\n         )\n     }\n }\n \n impl std::fmt::Display for RpcError {\n     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n-        write!(f, \"[{}] {}\", self.code, self.message)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl std::error::Error for RpcError {}\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n",
+    "file": "crates/sa-proto/src/error.rs",
+    "function": {
+      "function_name": "<impl std::fmt::Display for RpcError>::fmt",
+      "return_type": "-> std::fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 67
+        },
+        "start": {
+          "column": 5,
+          "line": 65
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/error.rs:66:9: replace <impl std::fmt::Display for RpcError>::fmt -> std::fmt::Result with Ok(Default::default())",
+    "package": "sa-proto",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 54,
+        "line": 66
+      },
+      "start": {
+        "column": 9,
+        "line": 66
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace <impl Serialize for JsonRpc>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())\n@@ -12,17 +12,17 @@\n pub const DAEMON_VERSION: &str = env!(\"CARGO_PKG_VERSION\");\n \n /// the mandatory `\"jsonrpc\": \"2.0\"` member.\n #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n pub struct JsonRpc;\n \n impl Serialize for JsonRpc {\n     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {\n-        serializer.serialize_str(\"2.0\")\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl<'de> Deserialize<'de> for JsonRpc {\n     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {\n         let raw = String::deserialize(deserializer)?;\n         if raw == \"2.0\" {\n             Ok(JsonRpc)\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "<impl Serialize for JsonRpc>::serialize",
+      "return_type": "-> Result<S::Ok, S::Error>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 21
+        },
+        "start": {
+          "column": 5,
+          "line": 19
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/rpc.rs:20:9: replace <impl Serialize for JsonRpc>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())",
+    "package": "sa-proto",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 20
+      },
+      "start": {
+        "column": 9,
+        "line": 20
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace <impl Deserialize<'de> for JsonRpc>::deserialize -> Result<Self, D::Error> with Ok(Default::default())\n@@ -18,24 +18,17 @@\n impl Serialize for JsonRpc {\n     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {\n         serializer.serialize_str(\"2.0\")\n     }\n }\n \n impl<'de> Deserialize<'de> for JsonRpc {\n     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {\n-        let raw = String::deserialize(deserializer)?;\n-        if raw == \"2.0\" {\n-            Ok(JsonRpc)\n-        } else {\n-            Err(de::Error::custom(format!(\n-                \"expected jsonrpc \\\"2.0\\\", got {raw:?}\"\n-            )))\n-        }\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// a request identifier. absent on notifications.\n #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n #[serde(untagged)]\n pub enum Id {\n     Number(i64),\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "<impl Deserialize<'de> for JsonRpc>::deserialize",
+      "return_type": "-> Result<Self, D::Error>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 34
+        },
+        "start": {
+          "column": 5,
+          "line": 25
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/rpc.rs:26:9: replace <impl Deserialize<'de> for JsonRpc>::deserialize -> Result<Self, D::Error> with Ok(Default::default())",
+    "package": "sa-proto",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 33
+      },
+      "start": {
+        "column": 9,
+        "line": 26
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace == with != in <impl Deserialize<'de> for JsonRpc>::deserialize\n@@ -19,17 +19,17 @@\n     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {\n         serializer.serialize_str(\"2.0\")\n     }\n }\n \n impl<'de> Deserialize<'de> for JsonRpc {\n     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {\n         let raw = String::deserialize(deserializer)?;\n-        if raw == \"2.0\" {\n+        if raw != /* ~ changed by cargo-mutants ~ */ \"2.0\" {\n             Ok(JsonRpc)\n         } else {\n             Err(de::Error::custom(format!(\n                 \"expected jsonrpc \\\"2.0\\\", got {raw:?}\"\n             )))\n         }\n     }\n }\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "<impl Deserialize<'de> for JsonRpc>::deserialize",
+      "return_type": "-> Result<Self, D::Error>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 34
+        },
+        "start": {
+          "column": 5,
+          "line": 25
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/sa-proto/src/rpc.rs:27:16: replace == with != in <impl Deserialize<'de> for JsonRpc>::deserialize",
+    "package": "sa-proto",
+    "replacement": "!=",
+    "span": {
+      "end": {
+        "column": 18,
+        "line": 27
+      },
+      "start": {
+        "column": 16,
+        "line": 27
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace Request::is_notification -> bool with true\n@@ -60,17 +60,17 @@\n             id: Some(id),\n             method: method.into(),\n             params,\n         }\n     }\n \n     #[must_use]\n     pub fn is_notification(&self) -> bool {\n-        self.id.is_none()\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n #[derive(Debug, Clone, Serialize, Deserialize)]\n pub struct Response {\n     pub jsonrpc: JsonRpc,\n     #[serde(skip_serializing_if = \"Option::is_none\")]\n     pub id: Option<Id>,\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "Request::is_notification",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 69
+        },
+        "start": {
+          "column": 5,
+          "line": 66
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/rpc.rs:68:9: replace Request::is_notification -> bool with true",
+    "package": "sa-proto",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 26,
+        "line": 68
+      },
+      "start": {
+        "column": 9,
+        "line": 68
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace Request::is_notification -> bool with false\n@@ -60,17 +60,17 @@\n             id: Some(id),\n             method: method.into(),\n             params,\n         }\n     }\n \n     #[must_use]\n     pub fn is_notification(&self) -> bool {\n-        self.id.is_none()\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n #[derive(Debug, Clone, Serialize, Deserialize)]\n pub struct Response {\n     pub jsonrpc: JsonRpc,\n     #[serde(skip_serializing_if = \"Option::is_none\")]\n     pub id: Option<Id>,\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "Request::is_notification",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 69
+        },
+        "start": {
+          "column": 5,
+          "line": 66
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/rpc.rs:68:9: replace Request::is_notification -> bool with false",
+    "package": "sa-proto",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 26,
+        "line": 68
+      },
+      "start": {
+        "column": 9,
+        "line": 68
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace Response::ok -> Self with Default::default()\n@@ -78,22 +78,17 @@\n     pub result: Option<Value>,\n     #[serde(skip_serializing_if = \"Option::is_none\")]\n     pub error: Option<RpcError>,\n }\n \n impl Response {\n     #[must_use]\n     pub fn ok(id: Option<Id>, result: Value) -> Self {\n-        Self {\n-            jsonrpc: JsonRpc,\n-            id,\n-            result: Some(result),\n-            error: None,\n-        }\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     #[must_use]\n     pub fn err(id: Option<Id>, error: RpcError) -> Self {\n         Self {\n             jsonrpc: JsonRpc,\n             id,\n             result: None,\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "Response::ok",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 92
+        },
+        "start": {
+          "column": 5,
+          "line": 84
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/rpc.rs:86:9: replace Response::ok -> Self with Default::default()",
+    "package": "sa-proto",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 91
+      },
+      "start": {
+        "column": 9,
+        "line": 86
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace Response::err -> Self with Default::default()\n@@ -88,22 +88,17 @@\n             id,\n             result: Some(result),\n             error: None,\n         }\n     }\n \n     #[must_use]\n     pub fn err(id: Option<Id>, error: RpcError) -> Self {\n-        Self {\n-            jsonrpc: JsonRpc,\n-            id,\n-            result: None,\n-            error: Some(error),\n-        }\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// the successful result, or the carried error.\n     pub fn into_result(self) -> Result<Value, RpcError> {\n         match (self.result, self.error) {\n             (_, Some(error)) => Err(error),\n             (Some(result), None) => Ok(result),\n             (None, None) => Err(RpcError::new(\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "Response::err",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 102
+        },
+        "start": {
+          "column": 5,
+          "line": 94
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/rpc.rs:96:9: replace Response::err -> Self with Default::default()",
+    "package": "sa-proto",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 101
+      },
+      "start": {
+        "column": 9,
+        "line": 96
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/rpc.rs\n+++ replace Response::into_result -> Result<Value, RpcError> with Ok(Default::default())\n@@ -98,24 +98,17 @@\n             id,\n             result: None,\n             error: Some(error),\n         }\n     }\n \n     /// the successful result, or the carried error.\n     pub fn into_result(self) -> Result<Value, RpcError> {\n-        match (self.result, self.error) {\n-            (_, Some(error)) => Err(error),\n-            (Some(result), None) => Ok(result),\n-            (None, None) => Err(RpcError::new(\n-                crate::error::code::INTERNAL_ERROR,\n-                \"response carried neither result nor error\",\n-            )),\n-        }\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// parameters of the mandatory first message on every connection.\n #[derive(Debug, Clone, Serialize, Deserialize)]\n pub struct HelloParams {\n     pub protocol: u32,\n     pub client: String,\n",
+    "file": "crates/sa-proto/src/rpc.rs",
+    "function": {
+      "function_name": "Response::into_result",
+      "return_type": "-> Result<Value, RpcError>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 114
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/rpc.rs:106:9: replace Response::into_result -> Result<Value, RpcError> with Ok(Default::default())",
+    "package": "sa-proto",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 113
+      },
+      "start": {
+        "column": 9,
+        "line": 106
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ replace SessionState::as_str -> &'static str with \"\"\n@@ -13,24 +13,17 @@\n     Relocated,\n     Interrupted,\n     Deleted,\n }\n \n impl SessionState {\n     #[must_use]\n     pub fn as_str(self) -> &'static str {\n-        match self {\n-            Self::Active => \"active\",\n-            Self::Quiescing => \"quiescing\",\n-            Self::Relocating => \"relocating\",\n-            Self::Relocated => \"relocated\",\n-            Self::Interrupted => \"interrupted\",\n-            Self::Deleted => \"deleted\",\n-        }\n+        \"\" /* ~ changed by cargo-mutants ~ */\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n             \"active\" => Self::Active,\n             \"quiescing\" => Self::Quiescing,\n             \"relocating\" => Self::Relocating,\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::as_str",
+      "return_type": "-> &'static str",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 29
+        },
+        "start": {
+          "column": 5,
+          "line": 19
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/session.rs:21:9: replace SessionState::as_str -> &'static str with \"\"",
+    "package": "sa-proto",
+    "replacement": "\"\"",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 28
+      },
+      "start": {
+        "column": 9,
+        "line": 21
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ replace SessionState::as_str -> &'static str with \"xyzzy\"\n@@ -13,24 +13,17 @@\n     Relocated,\n     Interrupted,\n     Deleted,\n }\n \n impl SessionState {\n     #[must_use]\n     pub fn as_str(self) -> &'static str {\n-        match self {\n-            Self::Active => \"active\",\n-            Self::Quiescing => \"quiescing\",\n-            Self::Relocating => \"relocating\",\n-            Self::Relocated => \"relocated\",\n-            Self::Interrupted => \"interrupted\",\n-            Self::Deleted => \"deleted\",\n-        }\n+        \"xyzzy\" /* ~ changed by cargo-mutants ~ */\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n             \"active\" => Self::Active,\n             \"quiescing\" => Self::Quiescing,\n             \"relocating\" => Self::Relocating,\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::as_str",
+      "return_type": "-> &'static str",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 29
+        },
+        "start": {
+          "column": 5,
+          "line": 19
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/session.rs:21:9: replace SessionState::as_str -> &'static str with \"xyzzy\"",
+    "package": "sa-proto",
+    "replacement": "\"xyzzy\"",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 28
+      },
+      "start": {
+        "column": 9,
+        "line": 21
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ replace SessionState::parse -> Option<Self> with None\n@@ -25,25 +25,17 @@\n             Self::Relocated => \"relocated\",\n             Self::Interrupted => \"interrupted\",\n             Self::Deleted => \"deleted\",\n         }\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n-        Some(match raw {\n-            \"active\" => Self::Active,\n-            \"quiescing\" => Self::Quiescing,\n-            \"relocating\" => Self::Relocating,\n-            \"relocated\" => Self::Relocated,\n-            \"interrupted\" => Self::Interrupted,\n-            \"deleted\" => Self::Deleted,\n-            _ => return None,\n-        })\n+        None /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// whether a turn may start.\n     #[must_use]\n     pub fn is_writable(self) -> bool {\n         matches!(self, Self::Active)\n     }\n }\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/session.rs:33:9: replace SessionState::parse -> Option<Self> with None",
+    "package": "sa-proto",
+    "replacement": "None",
+    "span": {
+      "end": {
+        "column": 11,
+        "line": 41
+      },
+      "start": {
+        "column": 9,
+        "line": 33
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ replace SessionState::parse -> Option<Self> with Some(Default::default())\n@@ -25,25 +25,17 @@\n             Self::Relocated => \"relocated\",\n             Self::Interrupted => \"interrupted\",\n             Self::Deleted => \"deleted\",\n         }\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n-        Some(match raw {\n-            \"active\" => Self::Active,\n-            \"quiescing\" => Self::Quiescing,\n-            \"relocating\" => Self::Relocating,\n-            \"relocated\" => Self::Relocated,\n-            \"interrupted\" => Self::Interrupted,\n-            \"deleted\" => Self::Deleted,\n-            _ => return None,\n-        })\n+        Some(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// whether a turn may start.\n     #[must_use]\n     pub fn is_writable(self) -> bool {\n         matches!(self, Self::Active)\n     }\n }\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/session.rs:33:9: replace SessionState::parse -> Option<Self> with Some(Default::default())",
+    "package": "sa-proto",
+    "replacement": "Some(Default::default())",
+    "span": {
+      "end": {
+        "column": 11,
+        "line": 41
+      },
+      "start": {
+        "column": 9,
+        "line": 33
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ delete match arm \"active\" in SessionState::parse\n@@ -26,17 +26,17 @@\n             Self::Interrupted => \"interrupted\",\n             Self::Deleted => \"deleted\",\n         }\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n-            \"active\" => Self::Active,\n+             /* ~ changed by cargo-mutants ~ */\n             \"quiescing\" => Self::Quiescing,\n             \"relocating\" => Self::Relocating,\n             \"relocated\" => Self::Relocated,\n             \"interrupted\" => Self::Interrupted,\n             \"deleted\" => Self::Deleted,\n             _ => return None,\n         })\n     }\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "crates/sa-proto/src/session.rs:34:13: delete match arm \"active\" in SessionState::parse",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 34
+      },
+      "start": {
+        "column": 13,
+        "line": 34
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ delete match arm \"quiescing\" in SessionState::parse\n@@ -27,17 +27,17 @@\n             Self::Deleted => \"deleted\",\n         }\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n             \"active\" => Self::Active,\n-            \"quiescing\" => Self::Quiescing,\n+             /* ~ changed by cargo-mutants ~ */\n             \"relocating\" => Self::Relocating,\n             \"relocated\" => Self::Relocated,\n             \"interrupted\" => Self::Interrupted,\n             \"deleted\" => Self::Deleted,\n             _ => return None,\n         })\n     }\n \n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "crates/sa-proto/src/session.rs:35:13: delete match arm \"quiescing\" in SessionState::parse",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 44,
+        "line": 35
+      },
+      "start": {
+        "column": 13,
+        "line": 35
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ delete match arm \"relocating\" in SessionState::parse\n@@ -28,17 +28,17 @@\n         }\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n             \"active\" => Self::Active,\n             \"quiescing\" => Self::Quiescing,\n-            \"relocating\" => Self::Relocating,\n+             /* ~ changed by cargo-mutants ~ */\n             \"relocated\" => Self::Relocated,\n             \"interrupted\" => Self::Interrupted,\n             \"deleted\" => Self::Deleted,\n             _ => return None,\n         })\n     }\n \n     /// whether a turn may start.\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "crates/sa-proto/src/session.rs:36:13: delete match arm \"relocating\" in SessionState::parse",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 46,
+        "line": 36
+      },
+      "start": {
+        "column": 13,
+        "line": 36
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ delete match arm \"relocated\" in SessionState::parse\n@@ -29,17 +29,17 @@\n     }\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n             \"active\" => Self::Active,\n             \"quiescing\" => Self::Quiescing,\n             \"relocating\" => Self::Relocating,\n-            \"relocated\" => Self::Relocated,\n+             /* ~ changed by cargo-mutants ~ */\n             \"interrupted\" => Self::Interrupted,\n             \"deleted\" => Self::Deleted,\n             _ => return None,\n         })\n     }\n \n     /// whether a turn may start.\n     #[must_use]\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "crates/sa-proto/src/session.rs:37:13: delete match arm \"relocated\" in SessionState::parse",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 44,
+        "line": 37
+      },
+      "start": {
+        "column": 13,
+        "line": 37
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ delete match arm \"interrupted\" in SessionState::parse\n@@ -30,17 +30,17 @@\n \n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n             \"active\" => Self::Active,\n             \"quiescing\" => Self::Quiescing,\n             \"relocating\" => Self::Relocating,\n             \"relocated\" => Self::Relocated,\n-            \"interrupted\" => Self::Interrupted,\n+             /* ~ changed by cargo-mutants ~ */\n             \"deleted\" => Self::Deleted,\n             _ => return None,\n         })\n     }\n \n     /// whether a turn may start.\n     #[must_use]\n     pub fn is_writable(self) -> bool {\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "crates/sa-proto/src/session.rs:38:13: delete match arm \"interrupted\" in SessionState::parse",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 48,
+        "line": 38
+      },
+      "start": {
+        "column": 13,
+        "line": 38
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ delete match arm \"deleted\" in SessionState::parse\n@@ -31,17 +31,17 @@\n     #[must_use]\n     pub fn parse(raw: &str) -> Option<Self> {\n         Some(match raw {\n             \"active\" => Self::Active,\n             \"quiescing\" => Self::Quiescing,\n             \"relocating\" => Self::Relocating,\n             \"relocated\" => Self::Relocated,\n             \"interrupted\" => Self::Interrupted,\n-            \"deleted\" => Self::Deleted,\n+             /* ~ changed by cargo-mutants ~ */\n             _ => return None,\n         })\n     }\n \n     /// whether a turn may start.\n     #[must_use]\n     pub fn is_writable(self) -> bool {\n         matches!(self, Self::Active)\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::parse",
+      "return_type": "-> Option<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 42
+        },
+        "start": {
+          "column": 5,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "crates/sa-proto/src/session.rs:39:13: delete match arm \"deleted\" in SessionState::parse",
+    "package": "sa-proto",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 39
+      },
+      "start": {
+        "column": 13,
+        "line": 39
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ replace SessionState::is_writable -> bool with true\n@@ -39,17 +39,17 @@\n             \"deleted\" => Self::Deleted,\n             _ => return None,\n         })\n     }\n \n     /// whether a turn may start.\n     #[must_use]\n     pub fn is_writable(self) -> bool {\n-        matches!(self, Self::Active)\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// an append-only log record (spec 5.2).\n #[derive(Debug, Clone, Serialize, Deserialize)]\n pub struct Event {\n     pub session_id: String,\n     pub seq: u64,\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::is_writable",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 48
+        },
+        "start": {
+          "column": 5,
+          "line": 44
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/session.rs:47:9: replace SessionState::is_writable -> bool with true",
+    "package": "sa-proto",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 47
+      },
+      "start": {
+        "column": 9,
+        "line": 47
+      }
+    }
+  },
+  {
+    "diff": "--- crates/sa-proto/src/session.rs\n+++ replace SessionState::is_writable -> bool with false\n@@ -39,17 +39,17 @@\n             \"deleted\" => Self::Deleted,\n             _ => return None,\n         })\n     }\n \n     /// whether a turn may start.\n     #[must_use]\n     pub fn is_writable(self) -> bool {\n-        matches!(self, Self::Active)\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// an append-only log record (spec 5.2).\n #[derive(Debug, Clone, Serialize, Deserialize)]\n pub struct Event {\n     pub session_id: String,\n     pub seq: u64,\n",
+    "file": "crates/sa-proto/src/session.rs",
+    "function": {
+      "function_name": "SessionState::is_writable",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 48
+        },
+        "start": {
+          "column": 5,
+          "line": 44
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/sa-proto/src/session.rs:47:9: replace SessionState::is_writable -> bool with false",
+    "package": "sa-proto",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 47
+      },
+      "start": {
+        "column": 9,
+        "line": 47
+      }
+    }
+  }
+]
