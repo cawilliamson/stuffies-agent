@@ -996,3 +996,91 @@ fn tool_output_is_never_treated_as_markdown() {
         "the command is literal too:\n{screen}"
     );
 }
+
+#[test]
+fn the_scrollbar_fades_after_scrolling_stops() {
+    let mut app = App::new("s", "m");
+    for n in 0..60 {
+        app.tab_mut().push(Role::Assistant, format!("line {n}"));
+    }
+    let _ = screen(&mut app, 100, 24);
+    app.on_key(key(KeyCode::Up));
+    assert!(
+        screen(&mut app, 100, 24).contains('\u{2588}'),
+        "the bar must show while scrolling"
+    );
+
+    // pretend the scroll happened long ago.
+    app.tab_mut().scrolled_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
+    assert!(
+        !screen(&mut app, 100, 24).contains('\u{2588}'),
+        "the bar must fade away"
+    );
+}
+
+#[test]
+fn ansi_colour_in_command_output_is_honoured() {
+    use ratatui::style::Color;
+
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "ls --color"}}),
+    );
+    app.tab_mut().on_event(
+        "tool.completed",
+        &json!({"output": "\u{1b}[31mred\u{1b}[0m plain", "exit_code": 0}),
+    );
+
+    let backend = TestBackend::new(120, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let screen: String = buffer.content().iter().map(|c| c.symbol()).collect();
+
+    assert!(screen.contains("red plain"), "{screen}");
+    assert!(
+        !screen.contains('\u{1b}'),
+        "escapes must not leak:\n{screen}"
+    );
+
+    let tinted = buffer
+        .content()
+        .iter()
+        .any(|c| c.symbol() == "r" && c.fg != sa_tui::app::DIM && c.fg != Color::Reset);
+    assert!(tinted, "the coloured run must keep its colour");
+}
+
+#[test]
+fn patch_lines_are_coloured_by_their_marker() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "git diff"}}),
+    );
+    app.tab_mut().on_event(
+        "tool.completed",
+        &json!({"output": "+added\n-removed", "exit_code": 0}),
+    );
+
+    let backend = TestBackend::new(120, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let ink = |symbol: &str| {
+        buffer
+            .content()
+            .iter()
+            .find(|c| c.symbol() == symbol)
+            .map(|c| c.fg)
+    };
+    let added = ink("+");
+    let removed = ink("-");
+    assert!(
+        added.is_some() && removed.is_some(),
+        "both lines must render"
+    );
+    assert_ne!(added, removed, "additions and removals differ in colour");
+}

@@ -83,6 +83,8 @@ pub struct Tab {
     /// bumped only when transcript entries change, so scrolling can reuse the render.
     pub content_rev: u64,
     pub cache: Option<Cache>,
+    /// when the transcript was last scrolled, for the scrollbar's fade-out.
+    pub scrolled_at: Option<std::time::Instant>,
 }
 
 impl Tab {
@@ -123,6 +125,7 @@ impl Tab {
             revision: 1,
             content_rev: 1,
             cache: None,
+            scrolled_at: None,
         }
     }
 
@@ -548,6 +551,7 @@ impl App {
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(SCROLL_STEP);
                 tab.touch();
+                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::Down => {
@@ -555,6 +559,7 @@ impl App {
                 tab.scroll = (tab.scroll + SCROLL_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
                 tab.touch();
+                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::PageUp => {
@@ -562,6 +567,7 @@ impl App {
                 tab.follow = false;
                 tab.scroll = tab.scroll.saturating_sub(PAGE_STEP);
                 tab.touch();
+                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::PageDown => {
@@ -569,6 +575,7 @@ impl App {
                 tab.scroll = (tab.scroll + PAGE_STEP).min(tab.max_scroll);
                 tab.follow = tab.scroll >= tab.max_scroll;
                 tab.touch();
+                tab.scrolled_at = Some(std::time::Instant::now());
                 Action::None
             }
             KeyCode::Esc => Action::Cancel,
@@ -695,6 +702,76 @@ fn styled(text: &str, base: Style) -> Vec<Span<'static>> {
         spans.push(Span::styled(buf, style_of(bold, italic, code)));
     }
     spans
+}
+
+/// cuts styled spans to a visible width.
+fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usize) {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        if used >= room {
+            break;
+        }
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            if used >= room {
+                break;
+            }
+            text.push(ch);
+            used += 1;
+        }
+        if !text.is_empty() {
+            out.push(Span::styled(text, span.style));
+        }
+    }
+    (out, used)
+}
+
+/// the colour a patch or diff line should carry.
+fn diff_ink(line: &str, base: Color) -> Color {
+    match line.chars().next() {
+        Some('+') => Color::Rgb(0x7f, 0xc7, 0x9a),
+        Some('-') => Color::Rgb(0xe8, 0x7c, 0x7c),
+        Some('@') => Color::Rgb(0x8a, 0xc8, 0xff),
+        _ => base,
+    }
+}
+
+/// pushes a body section whose text may carry ANSI colouring, as command output does.
+fn body_ansi(out: &mut Vec<Line<'static>>, text: &str, width: usize, edge: Color, ink: Color) {
+    use ansi_to_tui::IntoText;
+
+    let parsed = text.as_bytes().into_text().unwrap_or_else(|_| {
+        ratatui::text::Text::from(
+            text.lines()
+                .map(|l| Line::from(l.to_owned()))
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    let room = width.saturating_sub(4);
+    for line in parsed.lines {
+        let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let coloured = line.spans.iter().any(|s| s.style.fg.is_some());
+        let mut spans = line.spans;
+        if !coloured {
+            let tint = diff_ink(&plain, ink);
+            spans = spans
+                .into_iter()
+                .map(|s| Span::styled(s.content, Style::default().fg(tint)))
+                .collect();
+        }
+        let (spans, used) = fit_spans(spans, room);
+        let pad = room.saturating_sub(used);
+
+        let mut row = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
+        row.extend(spans);
+        row.push(Span::styled(
+            format!("{} \u{2502}", " ".repeat(pad)),
+            Style::default().fg(edge),
+        ));
+        out.push(Line::from(row));
+    }
 }
 
 /// pushes one body section: each row is exactly `width` cells.
@@ -825,10 +902,10 @@ fn framed_tool(
     } else {
         call.to_owned()
     };
-    // a command and its output are literal: no markdown interpretation.
+    // a command and its output are literal: no markdown, but ANSI colouring is honoured.
     body(&mut out, &invocation, width, edge, ink, false);
     divider(&mut out, width, edge);
-    body(&mut out, output, width, edge, out_ink, false);
+    body_ansi(&mut out, output, width, edge, out_ink);
     bottom(&mut out, width, edge);
     out
 }

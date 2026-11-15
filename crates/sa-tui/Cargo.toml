@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ansi-to-tui.workspace = true
 crossterm.workspace = true
 futures-util.workspace = true
 ratatui.workspace = true

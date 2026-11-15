@@ -148,6 +148,10 @@ pub async fn run(
                     app.spinner = app.spinner.wrapping_add(1);
                     app.touch();
                 }
+                // keep redrawing while a scrollbar is fading.
+                if theme::parts::scrollbar_fading(&app) {
+                    app.touch();
+                }
             }
             Incoming::Resize => app.touch(),
             Incoming::Key(key) => action = app.on_key(key),
