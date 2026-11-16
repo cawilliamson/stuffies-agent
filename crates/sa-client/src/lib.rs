@@ -69,13 +69,19 @@ impl Client {
     pub async fn call(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
         let id = self.request(method, params).await?;
         loop {
-            let value = self.next_frame().await?;
+            // read the socket, never the queue: a queued notification is not this call's
+            // response, and reading it back from the queue spins forever.
+            let value = self.read_frame().await?;
             if value.get("id").and_then(Value::as_i64) == Some(id) {
                 let response: Response = serde_json::from_value(value)
                     .map_err(|e| ClientError::Protocol(e.to_string()))?;
                 return response.into_result().map_err(ClientError::from);
             }
-            self.queued.push_back(value);
+            // a notification is rendered later. anything else is the response to a call
+            // that already timed out, so it is dropped rather than re-queued.
+            if value.get("method").is_some() {
+                self.queued.push_back(value);
+            }
         }
     }
 
@@ -98,6 +104,11 @@ impl Client {
         if let Some(queued) = self.queued.pop_front() {
             return Ok(queued);
         }
+        self.read_frame().await
+    }
+
+    /// one frame straight off the socket, bypassing anything already queued.
+    async fn read_frame(&mut self) -> Result<Value, ClientError> {
         let raw = self
             .framed
             .next()
@@ -122,5 +133,60 @@ impl Client {
             .call("ping", Value::Object(serde_json::Map::new()))
             .await?;
         serde_json::from_value(value).map_err(|e| ClientError::Protocol(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+
+    /// a notification that arrives before the response must not stop `call` from
+    /// finding it. the previous implementation pushed the frame back onto `queued`
+    /// and then read it from there again, spinning without ever touching the socket.
+    #[tokio::test]
+    async fn call_skips_a_notification_and_still_returns_its_response() {
+        let (ours, theirs) = UnixStream::pair().expect("socketpair");
+        tokio::spawn(async move {
+            let mut server = Framed::new(theirs, LinesCodec::new_with_max_length(MAX_LINE_LEN));
+            let request: Value =
+                serde_json::from_str(&server.next().await.expect("frame").expect("line"))
+                    .expect("json");
+            let id = request.get("id").cloned().expect("id");
+            server
+                .send(r#"{"jsonrpc":"2.0","method":"event","params":{}}"#.to_owned())
+                .await
+                .expect("notify");
+            server
+                .send(
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"ok": true}})
+                        .to_string(),
+                )
+                .await
+                .expect("respond");
+        });
+
+        let mut client = Client {
+            framed: Framed::new(ours, LinesCodec::new_with_max_length(MAX_LINE_LEN)),
+            next_id: 0,
+            queued: std::collections::VecDeque::new(),
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.call("ping", serde_json::json!({})),
+        )
+        .await
+        .expect("call must not spin on the notification")
+        .expect("response");
+        assert_eq!(result, serde_json::json!({"ok": true}));
+
+        // and the notification is still available to render.
+        let queued = client
+            .next_notification()
+            .await
+            .expect("queued notification");
+        assert_eq!(queued["method"], "event");
     }
 }
