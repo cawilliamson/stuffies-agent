@@ -1379,3 +1379,47 @@ fn tab_completion_keeps_the_home_form() {
     );
     assert!(!text.contains("//"), "no doubled slashes: {text}");
 }
+
+#[test]
+fn ctrl_k_cuts_to_the_end_and_ctrl_y_pastes_it_back() {
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "hello world");
+    for _ in 0..6 {
+        app.on_key(key(KeyCode::Left));
+    }
+    app.on_key(ctrl('k'));
+    assert_eq!(app.tab().input_text(), "hello", "cut to end of line");
+
+    app.on_key(ctrl('y'));
+    assert_eq!(app.tab().input_text(), "hello world", "yank restores it");
+}
+
+#[test]
+fn ctrl_u_deletes_to_the_start_of_the_line() {
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "hello world");
+    for _ in 0..5 {
+        app.on_key(key(KeyCode::Left));
+    }
+    app.on_key(ctrl('u'));
+    assert_eq!(
+        app.tab().input_text(),
+        "world",
+        "only the part before the cursor goes"
+    );
+}
+
+#[test]
+fn ctrl_a_and_ctrl_e_move_to_the_line_ends() {
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "abcdef");
+    app.on_key(ctrl('a'));
+    app.on_key(ctrl('k'));
+    assert_eq!(app.tab().input_text(), "", "ctrl+a reached the start");
+
+    type_text(&mut app, "xyz");
+    app.on_key(ctrl('a'));
+    app.on_key(ctrl('e'));
+    type_text(&mut app, "!");
+    assert_eq!(app.tab().input_text(), "xyz!", "ctrl+e reached the end");
+}

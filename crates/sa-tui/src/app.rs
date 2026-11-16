@@ -296,6 +296,13 @@ impl Tab {
         (scroll, self.input.visual_cursor().saturating_sub(scroll))
     }
 
+    /// applies an editor command directly, for the keys whose meaning we override.
+    fn edit_request(&mut self, request: tui_input::InputRequest) -> Action {
+        self.input.handle(request);
+        self.touch();
+        Action::None
+    }
+
     fn edit(&mut self, key: KeyEvent) {
         use tui_input::backend::crossterm::EventHandler;
         self.input.handle_event(&crossterm::event::Event::Key(key));
@@ -825,6 +832,10 @@ impl App {
                 KeyCode::Char('c' | 'd') => Action::Quit,
                 // plain ctrl+n / ctrl+w, with the shifted forms accepted as aliases.
                 KeyCode::Char('t' | 'T') => Action::NewTab,
+                // pi kills to the line start here; the library's default kills the line.
+                KeyCode::Char('u') => self
+                    .tab_mut()
+                    .edit_request(tui_input::InputRequest::DeleteFromStart),
                 KeyCode::Char('w' | 'W') => Action::CloseTab,
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
