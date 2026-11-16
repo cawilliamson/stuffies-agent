@@ -335,6 +335,24 @@ pub async fn run(
                     .iter()
                     .map(|a| json!({"media_type": a.media_type, "data": a.data}))
                     .collect();
+                // a prompt sent while a turn runs redirects it rather than being refused.
+                if app.tab().status.turn_running {
+                    if let Err(err) = rpc(
+                        client,
+                        "turn.steer",
+                        json!({"session_id": sid, "prompt": prompt}),
+                    )
+                    .await
+                    {
+                        app.tab_mut().push(app::Role::Error, err.clone());
+                    }
+                    app.touch();
+                    frame.force();
+                    frame
+                        .render(&mut terminal, &mut app)
+                        .map_err(|e| e.to_string())?;
+                    continue;
+                }
                 app.tab_mut().status.turn_running = true;
                 app.tab_mut().working = Some(app::working_word());
                 app.touch();

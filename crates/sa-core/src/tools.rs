@@ -222,37 +222,37 @@ impl ToolExecutor for ToolRegistry {
         vec![
             spec(
                 "read",
-                "read a file inside the workspace",
+                "Read a file as text. The path resolves inside the workspace.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
             ),
             spec(
                 "write",
-                "write a file inside the workspace",
+                "Write a file, creating it or replacing its contents entirely. The path resolves inside the workspace.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
             ),
             spec(
                 "edit",
-                "replace one unique occurrence in a file",
+                "Replace exactly one occurrence of `old` with `new`. Fails unless `old` appears exactly once, so include enough surrounding context to be unique.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["path", "old", "new"]}),
             ),
             spec(
                 "ls",
-                "list a directory",
+                "List the entries of a directory inside the workspace.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             ),
             spec(
                 "find",
-                "find files by name substring",
+                "Find files whose name contains the pattern. Returns up to 5000 paths.",
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
             ),
             spec(
                 "grep",
-                "search file contents by regex",
+                "Search file contents with a regular expression. Returns up to 5000 matches.",
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
             ),
             spec(
                 "bash",
-                "run a shell command in the workspace",
+                "Run a shell command with `sh -c` in the workspace. Returns combined stdout and stderr plus the exit code. Commands time out after 600 seconds. Output is returned in full and is not truncated.",
                 json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
             ),
         ]

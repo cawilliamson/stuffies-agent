@@ -163,6 +163,13 @@ pub struct TurnStartParams {
     pub images: Vec<ImageAttachment>,
 }
 
+/// a message handed to a turn that is already running.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SteerParams {
+    pub session_id: String,
+    pub prompt: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnStartResult {
     pub turn_id: String,
@@ -185,6 +192,7 @@ pub mod kinds {
     pub const TURN_STARTED: &str = "turn.started";
     pub const TURN_COMPLETED: &str = "turn.completed";
     pub const TURN_INTERRUPTED: &str = "turn.interrupted";
+    pub const TURN_STEERED: &str = "turn.steered";
     pub const LLM_DELTA: &str = "llm.delta";
     pub const LLM_REASONING: &str = "llm.reasoning";
     pub const LLM_COMPLETED: &str = "llm.completed";

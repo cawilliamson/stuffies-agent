@@ -288,3 +288,114 @@ fn images_serialise_as_content_parts_and_plain_text_stays_a_string() {
         "data:image/png;base64,QUJD"
     );
 }
+
+#[tokio::test]
+async fn the_system_prompt_names_the_tools_the_rules_and_the_working_directory() {
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![Delta::Done {
+        stop_reason: "stop".to_owned(),
+        prompt_tokens: 1,
+        completion_tokens: 1,
+    }]]));
+    let sink = Arc::new(RecordingSink::default());
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let _ = agent.run_turn(request()).await;
+
+    let seen = provider.seen_requests();
+    let system = seen
+        .first()
+        .and_then(|request| request.messages.first())
+        .and_then(|message| message.content.as_ref())
+        .and_then(|content| content.as_text())
+        .expect("a system prompt")
+        .to_owned();
+
+    assert!(
+        system.contains("Tools:"),
+        "the prompt lists tools:\n{system}"
+    );
+    assert!(system.contains("read"), "the tool registry feeds the list");
+    assert!(system.contains("Rules:"), "the prompt carries rules");
+    assert!(
+        system.contains("Working directory:"),
+        "the model is told where it is"
+    );
+}
+
+/// a sink holding messages the operator typed while the turn was running.
+struct SteeringSink {
+    pending: Mutex<Vec<String>>,
+}
+
+impl EventSink for SteeringSink {
+    fn append(&self, _kind: &str, _payload: &Value) -> Result<u64, StoreError> {
+        Ok(0)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn drain_steering(&self) -> Vec<String> {
+        self.pending
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }
+}
+
+#[tokio::test]
+async fn a_steering_message_reaches_the_next_model_round_trip() {
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            Delta::ToolCall(ToolCall {
+                id: "call_1".to_owned(),
+                name: "read".to_owned(),
+                arguments: json!({"path": "main.rs"}).to_string(),
+            }),
+            Delta::Done {
+                stop_reason: "tool_calls".to_owned(),
+                prompt_tokens: 5,
+                completion_tokens: 5,
+            },
+        ],
+        vec![Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        }],
+    ]));
+    let sink = Arc::new(SteeringSink {
+        pending: Mutex::new(vec!["stop and run the tests".to_owned()]),
+    });
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let _ = agent.run_turn(request()).await;
+
+    let seen = provider.seen_requests();
+    assert!(seen.len() >= 2, "the tool call forces another round trip");
+    let carried = seen[1].messages.iter().any(|message| {
+        message
+            .content
+            .as_ref()
+            .and_then(|content| content.as_text())
+            == Some("stop and run the tests")
+    });
+    assert!(
+        carried,
+        "the steering message must reach the model: {:?}",
+        seen[1]
+            .messages
+            .iter()
+            .filter_map(|m| m.content.as_ref().and_then(|c| c.as_text()))
+            .collect::<Vec<_>>()
+    );
+}

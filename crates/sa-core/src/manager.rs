@@ -86,6 +86,8 @@ struct Subscription {
 struct RunningTurn {
     turn_id: String,
     cancel: Arc<AtomicBool>,
+    /// messages typed while the turn runs, drained by the agent between iterations.
+    steering: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 #[derive(Default)]
@@ -505,11 +507,13 @@ impl Manager {
             }),
         )?;
 
+        let steering = Arc::new(std::sync::Mutex::new(Vec::new()));
         self.lock()?.turns.insert(
             session_id.to_owned(),
             RunningTurn {
                 turn_id: turn_id.clone(),
                 cancel: Arc::clone(&cancel),
+                steering: Arc::clone(&steering),
             },
         );
 
@@ -520,7 +524,7 @@ impl Manager {
         let turn = turn_id.clone();
         tokio::spawn(async move {
             manager
-                .run_turn(session, turn, prompt, images, row, cancel, detach)
+                .run_turn(session, turn, prompt, images, row, cancel, steering, detach)
                 .await;
         });
 
@@ -537,6 +541,7 @@ impl Manager {
         images: Vec<sa_proto::session::ImageAttachment>,
         row: SessionRow,
         cancel: Arc<AtomicBool>,
+        steering: Arc<std::sync::Mutex<Vec<String>>>,
         detach: bool,
     ) {
         // highest priority: name an untitled session before any work starts, but never let
@@ -608,6 +613,7 @@ impl Manager {
             manager: Arc::clone(&self),
             session_id: session_id.clone(),
             cancel: Arc::clone(&cancel),
+            steering,
         });
         let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::new(PathBuf::from(&row.cwd)));
 
@@ -723,6 +729,23 @@ impl Manager {
         // retitle inline so the operator watches it happen and sees the result.
         let model = self.default_model();
         self.maybe_retitle(&session_id, model).await;
+    }
+
+    /// hands a message to the turn that is already running, rather than refusing it.
+    pub fn steer(&self, session_id: &str, prompt: &str) -> Result<(), ManagerError> {
+        let inner = self.lock()?;
+        let Some(turn) = inner.turns.get(session_id) else {
+            return Err(ManagerError::Rpc(RpcError::new(
+                code::SESSION_NOT_FOUND,
+                format!("session {session_id} has no turn to steer"),
+            )));
+        };
+        if let Ok(mut queue) = turn.steering.lock() {
+            queue.push(prompt.to_owned());
+        }
+        drop(inner);
+        self.append(session_id, kinds::TURN_STEERED, &json!({"prompt": prompt}))?;
+        Ok(())
     }
 
     pub fn cancel_turn(&self, session_id: &str) -> Result<(), ManagerError> {
@@ -1060,6 +1083,7 @@ struct TurnSink {
     manager: Arc<Manager>,
     session_id: String,
     cancel: Arc<AtomicBool>,
+    steering: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl EventSink for TurnSink {
@@ -1069,6 +1093,13 @@ impl EventSink for TurnSink {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    fn drain_steering(&self) -> Vec<String> {
+        self.steering
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
     }
 }
 

@@ -588,6 +588,11 @@ impl Tab {
                 }
                 self.touch();
             }
+            "turn.steered" => {
+                if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
+                    self.push(Role::User, prompt.to_owned());
+                }
+            }
             "turn.interrupted" => {
                 self.status.turn_running = false;
                 self.working = None;

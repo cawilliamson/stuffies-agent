@@ -5,6 +5,7 @@
 //! boundaries. upgrade to a full message log if multi-step tool reasoning must survive a
 //! turn boundary.
 
+use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -41,6 +42,12 @@ pub enum AgentError {
 pub trait EventSink: Send + Sync {
     fn append(&self, kind: &str, payload: &Value) -> Result<u64, StoreError>;
     fn is_cancelled(&self) -> bool;
+
+    /// messages the operator sent while this turn was running. the loop folds them in
+    /// between model round-trips, so the agent can be redirected without losing its work.
+    fn drain_steering(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// executes tool calls. the registry arrives at v1.0 task 4; tests use an empty one.
@@ -144,7 +151,7 @@ impl Agent {
     }
 
     pub async fn run_turn(&self, request: TurnRequest) -> Result<TurnOutcome, AgentError> {
-        let mut messages = Self::build_transcript(&request);
+        let mut messages = self.build_transcript(&request);
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -154,6 +161,12 @@ impl Agent {
         for _ in 0..MAX_ITERATIONS {
             if self.sink.is_cancelled() {
                 return Err(AgentError::Cancelled);
+            }
+
+            // anything the operator typed while the last round-trip ran becomes the next
+            // instruction, rather than waiting for this turn to finish.
+            for message in self.sink.drain_steering() {
+                messages.push(ChatMessage::user(message));
             }
 
             let Some(streamed) = self
@@ -292,8 +305,11 @@ impl Agent {
         Err(AgentError::IterationLimit)
     }
 
-    fn build_transcript(request: &TurnRequest) -> Vec<ChatMessage> {
-        let mut system = system_prompt();
+    fn build_transcript(&self, request: &TurnRequest) -> Vec<ChatMessage> {
+        let workspace = std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        let mut system = system_prompt(&self.tools.specs(), &workspace);
         if let Some(context) = &request.context {
             system.push_str("\n\nProject context (read-only, deployed outside the workspace):\n");
             system.push_str(context);
@@ -313,6 +329,11 @@ impl Agent {
                         if prompt != request.prompt {
                             messages.push(ChatMessage::user(prompt));
                         }
+                    }
+                }
+                kinds::TURN_STEERED => {
+                    if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
+                        messages.push(ChatMessage::user(prompt));
                     }
                 }
                 kinds::LLM_COMPLETED => {
@@ -335,11 +356,35 @@ impl Agent {
     }
 }
 
-fn system_prompt() -> String {
-    "You are sa, a coding agent running in a daemon. You work inside a single git \
-     workspace. Use the provided tools to read and modify files and to run commands. \
-     Be concise. Prefer small, verifiable changes."
-        .to_owned()
+/// who the agent is, what it can do, and how to behave. the tool list is generated from
+/// the registry so the prompt cannot drift from the tools that are actually callable.
+fn system_prompt(tools: &[ToolSpec], workspace: &str) -> String {
+    let mut prompt = String::from(
+        "You are sa, a coding agent running inside a daemon. You work inside a single git \
+         workspace, and the operator watches the transcript as you work.",
+    );
+
+    prompt.push_str("\n\nTools:\n");
+    for tool in tools {
+        let _ = writeln!(prompt, "- {}: {}", tool.name, tool.description);
+    }
+
+    prompt.push_str(
+        "\nRules:\n\
+         - read a file before editing it; use the read tool rather than cat\n\
+         - use grep and find to search rather than piping through the shell\n\
+         - tool paths resolve inside the workspace; a path outside it is an error\n\
+         - edit requires the old text to appear exactly once, so include enough context\n\
+         - prefer small, verifiable changes over large rewrites\n\
+         - run the project's own checks after changing code\n\
+         - tool output is returned in full and is never truncated, so narrow a command \
+         that would flood the context\n\
+         - show file paths clearly when working with files\n\
+         - be concise in your responses\n",
+    );
+
+    let _ = write!(prompt, "\nWorking directory: {workspace}\n");
+    prompt
 }
 
 fn parse_args(raw: &str) -> Value {

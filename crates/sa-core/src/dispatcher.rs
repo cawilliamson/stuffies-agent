@@ -11,7 +11,8 @@ use sa_proto::rpc::{
     HelloParams, HelloResult, PingResult, Request, Response, DAEMON_VERSION, PROTOCOL_VERSION,
 };
 use sa_proto::session::{
-    AttachParams, CreateSessionParams, ListSessionsParams, ReplayParams, TurnStartParams,
+    AttachParams, CreateSessionParams, ListSessionsParams, ReplayParams, SteerParams,
+    TurnStartParams,
 };
 use serde_json::{json, Value};
 
@@ -110,6 +111,7 @@ impl Dispatcher {
             "session.usage" => self.session_usage(&params),
             "session.fork" => Self::session_fork(&params),
             "turn.start" => self.turn_start(conn, &params),
+            "turn.steer" => self.turn_steer(&params),
             "turn.cancel" => self.turn_cancel(&params),
             "turn.status" => self.turn_status(&params),
             "turn.resume" => self.turn_resume(&params),
@@ -259,6 +261,14 @@ impl Dispatcher {
             )
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!(result))
+    }
+
+    fn turn_steer(&self, params: &Value) -> Result<Value, RpcError> {
+        let params: SteerParams = parse(params)?;
+        self.manager
+            .steer(&params.session_id, &params.prompt)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!({"ok": true}))
     }
 
     fn turn_cancel(&self, params: &Value) -> Result<Value, RpcError> {
