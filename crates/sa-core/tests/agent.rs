@@ -57,6 +57,7 @@ fn request() -> TurnRequest {
         turn_id: "t1".to_owned(),
         prompt: "read main.rs".to_owned(),
         model: "m".to_owned(),
+        workspace: "/tmp/ws".to_owned(),
         history: Vec::new(),
         compaction_summary: None,
         context: None,
@@ -321,8 +322,8 @@ async fn the_system_prompt_names_the_tools_the_rules_and_the_working_directory()
     assert!(system.contains("read"), "the tool registry feeds the list");
     assert!(system.contains("Rules:"), "the prompt carries rules");
     assert!(
-        system.contains("Working directory:"),
-        "the model is told where it is"
+        system.contains("Working directory: /tmp/ws"),
+        "the model is told the session's workspace, not the daemon's cwd:\n{system}"
     );
 }
 

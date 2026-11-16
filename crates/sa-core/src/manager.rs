@@ -658,12 +658,12 @@ impl Manager {
             turn_id: turn_id.clone(),
             prompt,
             model: row.model.unwrap_or_else(|| self.default_model()),
+            workspace: workspace.display().to_string(),
             history,
             compaction_summary,
-            context: {
-                let cwd = std::env::current_dir().ok();
-                crate::workspace::context(&workspace, cwd.as_deref())
-            },
+            // the daemon's own cwd belongs to no session, so only the workspace and its
+            // deployed config dir are searched.
+            context: crate::workspace::context(&workspace, None),
             images,
             max_tokens: self.config.max_tokens,
             reasoning_effort: row

@@ -82,6 +82,9 @@ pub struct TurnRequest {
     pub turn_id: String,
     pub prompt: String,
     pub model: String,
+    /// the session's workspace. the daemon serves many workspaces, so its own cwd is
+    /// meaningless to a turn.
+    pub workspace: String,
     pub history: Vec<Event>,
     pub compaction_summary: Option<String>,
     pub context: Option<String>,
@@ -306,10 +309,7 @@ impl Agent {
     }
 
     fn build_transcript(&self, request: &TurnRequest) -> Vec<ChatMessage> {
-        let workspace = std::env::current_dir()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default();
-        let mut system = system_prompt(&self.tools.specs(), &workspace);
+        let mut system = system_prompt(&self.tools.specs(), &request.workspace);
         if let Some(context) = &request.context {
             system.push_str("\n\nProject context (read-only, deployed outside the workspace):\n");
             system.push_str(context);
