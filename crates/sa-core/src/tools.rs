@@ -195,9 +195,8 @@ impl ToolRegistry {
             .arg("-c")
             .arg(&command)
             .current_dir(&self.workspace)
-            .env_clear()
-            .env("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            // the environment is inherited from the running daemon, never rebuilt: a
+            // hardcoded PATH is wrong on every machine that is not the one it was set on.
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
 

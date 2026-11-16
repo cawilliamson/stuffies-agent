@@ -212,3 +212,35 @@ async fn an_unknown_tool_is_refused() {
         .expect_err("unknown tool");
     assert!(err.contains("unknown tool"), "{err}");
 }
+
+#[tokio::test]
+async fn bash_inherits_the_environment_it_was_started_with() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let inherited = std::env::var("PATH").expect("PATH in the test process");
+
+    let out = reg
+        .execute(call("bash", &json!({"command": "printf '%s' \"$PATH\""})))
+        .await
+        .expect("bash");
+
+    assert_eq!(
+        out.output.trim(),
+        inherited.trim(),
+        "a command must see the daemon's PATH, not one rebuilt for it"
+    );
+}
+
+#[tokio::test]
+async fn bash_inherits_variables_beyond_path() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let expected = std::env::var("HOME").expect("HOME in the test process");
+
+    let out = reg
+        .execute(call("bash", &json!({"command": "printf '%s' \"$HOME\""})))
+        .await
+        .expect("bash");
+
+    assert_eq!(out.output.trim(), expected.trim());
+}
