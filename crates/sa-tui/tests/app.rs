@@ -1423,3 +1423,44 @@ fn ctrl_a_and_ctrl_e_move_to_the_line_ends() {
     type_text(&mut app, "!");
     assert_eq!(app.tab().input_text(), "xyz!", "ctrl+e reached the end");
 }
+
+#[test]
+fn undo_steps_back_a_typed_run_as_one_action() {
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "hello");
+    app.on_key(ctrl('-'));
+    assert_eq!(
+        app.tab().input_text(),
+        "",
+        "a typed run undoes in one step, not per character"
+    );
+}
+
+#[test]
+fn ctrl_z_also_undoes() {
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "abc");
+    app.on_key(ctrl('z'));
+    assert_eq!(app.tab().input_text(), "");
+}
+
+#[test]
+fn undo_restores_text_removed_by_a_cut() {
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, "hello world");
+    for _ in 0..6 {
+        app.on_key(key(KeyCode::Left));
+    }
+    app.on_key(ctrl('k'));
+    assert_eq!(app.tab().input_text(), "hello");
+
+    app.on_key(ctrl('-'));
+    assert_eq!(app.tab().input_text(), "hello world", "the cut is undone");
+}
+
+#[test]
+fn undo_with_nothing_recorded_is_harmless() {
+    let mut app = App::new("session-abcdef", "m");
+    app.on_key(ctrl('-'));
+    assert_eq!(app.tab().input_text(), "");
+}

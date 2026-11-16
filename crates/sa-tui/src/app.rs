@@ -12,6 +12,12 @@ const CHARS_PER_TOKEN: f32 = 4.0;
 /// lines moved per arrow key.
 const SCROLL_STEP: u16 = 3;
 
+/// how many editor states the undo stack keeps.
+const UNDO_LIMIT: usize = 128;
+
+/// a run of typing inside this window undoes as one step, rather than per character.
+const UNDO_COALESCE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// how long the scrollbar stays up after the last scroll. it is a hint, not furniture.
 const SCROLLBAR_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
 /// lines moved per page key.
@@ -197,6 +203,9 @@ pub struct Tab {
     pub working: Option<String>,
     /// images queued for the next prompt.
     pub attachments: Vec<Attachment>,
+    /// editor states for undo, newest last.
+    undo: Vec<(String, usize)>,
+    last_edit: Option<std::time::Instant>,
     pub scroll: u16,
     pub max_scroll: u16,
     /// when the operator last scrolled. drives the scrollbar's appearance.
@@ -243,6 +252,8 @@ impl Tab {
             },
             working: None,
             attachments: Vec::new(),
+            undo: Vec::new(),
+            last_edit: None,
             scroll_touched: None,
             scroll: 0,
             max_scroll: 0,
@@ -298,13 +309,51 @@ impl Tab {
 
     /// applies an editor command directly, for the keys whose meaning we override.
     fn edit_request(&mut self, request: tui_input::InputRequest) -> Action {
+        self.snapshot(false);
         self.input.handle(request);
         self.touch();
         Action::None
     }
 
+    /// records the current editor state, coalescing a run of plain typing so undo steps
+    /// back a phrase rather than a character.
+    fn snapshot(&mut self, coalesce: bool) {
+        let now = std::time::Instant::now();
+        let recent = self
+            .last_edit
+            .is_some_and(|at| now.duration_since(at) < UNDO_COALESCE);
+        if !(coalesce && recent && !self.undo.is_empty()) {
+            self.undo
+                .push((self.input.value().to_owned(), self.input.cursor()));
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+        }
+        self.last_edit = Some(now);
+    }
+
+    /// steps back one editor state. returns false when there is nothing left to undo.
+    fn undo(&mut self) -> bool {
+        let current = (self.input.value().to_owned(), self.input.cursor());
+        while let Some((value, cursor)) = self.undo.pop() {
+            // movement keys record states that are identical; skip rather than no-op.
+            if (value.as_str(), cursor) == (current.0.as_str(), current.1) {
+                continue;
+            }
+            self.input = std::mem::take(&mut self.input)
+                .with_value(value)
+                .with_cursor(cursor);
+            self.last_edit = None;
+            self.touch();
+            return true;
+        }
+        false
+    }
+
     fn edit(&mut self, key: KeyEvent) {
         use tui_input::backend::crossterm::EventHandler;
+        let plain = matches!(key.code, KeyCode::Char(_)) && key.modifiers.is_empty();
+        self.snapshot(plain);
         self.input.handle_event(&crossterm::event::Event::Key(key));
         self.touch();
     }
@@ -832,6 +881,10 @@ impl App {
                 KeyCode::Char('c' | 'd') => Action::Quit,
                 // plain ctrl+n / ctrl+w, with the shifted forms accepted as aliases.
                 KeyCode::Char('t' | 'T') => Action::NewTab,
+                KeyCode::Char('-' | 'z') => {
+                    self.tab_mut().undo();
+                    Action::None
+                }
                 // pi kills to the line start here; the library's default kills the line.
                 KeyCode::Char('u') => self
                     .tab_mut()
