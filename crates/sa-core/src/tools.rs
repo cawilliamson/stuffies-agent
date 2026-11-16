@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::agent::{BoxFuture, ToolExecutor, ToolOutcome};
 use crate::llm::{ToolCall, ToolSpec};
 
-/// tool output above this is truncated in the event, with `truncated: true` recorded.
+/// tool output above this is capped, with `truncated: true` recorded in the event.
 pub const MAX_TOOL_OUTPUT: usize = 256 * 1024;
 
 /// default command timeout (spec 9).
@@ -222,12 +222,12 @@ impl ToolExecutor for ToolRegistry {
         vec![
             spec(
                 "read",
-                "Read a file as text. The path resolves inside the workspace.",
+                "Read a file as text.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
             ),
             spec(
                 "write",
-                "Write a file, creating it or replacing its contents entirely. The path resolves inside the workspace.",
+                "Write a file, creating it or replacing its contents entirely.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
             ),
             spec(
@@ -237,7 +237,7 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "ls",
-                "List the entries of a directory inside the workspace.",
+                "List the entries of a directory.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             ),
             spec(
@@ -252,7 +252,12 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "bash",
-                "Run a shell command with `sh -c` in the workspace. Returns combined stdout and stderr plus the exit code. Commands time out after 600 seconds. Output is returned in full and is not truncated.",
+                &format!(
+                    "Run a shell command with `sh -c` in the workspace. Returns combined stdout \
+                     and stderr plus the exit code. Times out after {COMMAND_TIMEOUT_SECS} seconds. \
+                     Output is capped at {} KiB and marked when cut.",
+                    MAX_TOOL_OUTPUT / 1024
+                ),
                 json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
             ),
         ]

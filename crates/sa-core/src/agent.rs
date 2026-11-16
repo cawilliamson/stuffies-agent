@@ -274,20 +274,19 @@ impl Agent {
                 let started = std::time::Instant::now();
                 match self.tools.execute(call.clone()).await {
                     Ok(outcome) => {
-                        // no truncation: the operator asked for full command output.
-                        let stored = outcome.output.clone();
+                        let (output, truncated) = cap_tool_output(outcome.output);
                         self.sink.append(
                             kinds::TOOL_COMPLETED,
                             &json!({
                                 "turn_id": request.turn_id,
                                 "call_id": call.id,
-                                "output": stored,
-                                "truncated": false,
+                                "output": output,
+                                "truncated": truncated,
                                 "exit_code": outcome.exit_code,
                                 "duration_ms": started.elapsed().as_millis() as u64,
                             }),
                         )?;
-                        messages.push(ChatMessage::tool(&call.id, outcome.output));
+                        messages.push(ChatMessage::tool(&call.id, output));
                     }
                     Err(error) => {
                         self.sink.append(
@@ -359,34 +358,39 @@ impl Agent {
 /// who the agent is, what it can do, and how to behave. the tool list is generated from
 /// the registry so the prompt cannot drift from the tools that are actually callable.
 fn system_prompt(tools: &[ToolSpec], workspace: &str) -> String {
-    let mut prompt = String::from(
-        "You are sa, a coding agent running inside a daemon. You work inside a single git \
-         workspace, and the operator watches the transcript as you work.",
+    let mut prompt = format!(
+        "You are sa, a coding agent working in the git workspace at {workspace}. \
+         Tool paths resolve inside it; a path outside it is an error.\nTools:\n"
     );
-
-    prompt.push_str("\n\nTools:\n");
     for tool in tools {
         let _ = writeln!(prompt, "- {}: {}", tool.name, tool.description);
     }
 
     prompt.push_str(
-        "\nRules:\n\
-         - read a file before editing it; use the read tool rather than cat\n\
-         - use grep and find to search rather than piping through the shell\n\
-         - tool paths resolve inside the workspace; a path outside it is an error\n\
-         - edit requires the old text to appear exactly once, so include enough context\n\
-         - prefer small, verifiable changes over large rewrites\n\
+        "Rules:\n\
+         - read a file before editing it\n\
+         - search with grep and find rather than the shell\n\
          - run the project's own checks after changing code\n\
-         - tool output is returned in full and is never truncated, so narrow a command \
-         that would flood the context\n\
-         - show file paths clearly when working with files\n\
-         - be concise in your responses\n",
+         - keep replies short\n",
     );
-
-    let _ = write!(prompt, "\nWorking directory: {workspace}\n");
     prompt
 }
 
 fn parse_args(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
+}
+
+/// bounds a tool result so one flooding command cannot eat the context (spec 9). the cut
+/// lands on a char boundary and is marked, and the event records it.
+fn cap_tool_output(output: String) -> (String, bool) {
+    if output.len() <= crate::tools::MAX_TOOL_OUTPUT {
+        return (output, false);
+    }
+    let mut end = crate::tools::MAX_TOOL_OUTPUT;
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut capped = output[..end].to_owned();
+    capped.push_str("\n[truncated]");
+    (capped, true)
 }

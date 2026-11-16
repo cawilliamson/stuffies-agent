@@ -291,7 +291,7 @@ fn images_serialise_as_content_parts_and_plain_text_stays_a_string() {
 }
 
 #[tokio::test]
-async fn the_system_prompt_names_the_tools_the_rules_and_the_working_directory() {
+async fn the_system_prompt_names_the_tools_the_rules_and_the_workspace() {
     let provider = Arc::new(ScriptedProvider::new(vec![vec![Delta::Done {
         stop_reason: "stop".to_owned(),
         prompt_tokens: 1,
@@ -322,9 +322,81 @@ async fn the_system_prompt_names_the_tools_the_rules_and_the_working_directory()
     assert!(system.contains("read"), "the tool registry feeds the list");
     assert!(system.contains("Rules:"), "the prompt carries rules");
     assert!(
-        system.contains("Working directory: /tmp/ws"),
+        system.contains("the git workspace at /tmp/ws"),
         "the model is told the session's workspace, not the daemon's cwd:\n{system}"
     );
+    // the workspace is stated once, not repeated per tool or per section.
+    assert_eq!(
+        system.matches("/tmp/ws").count(),
+        1,
+        "the workspace path appears once:\n{system}"
+    );
+}
+
+/// a tool result larger than the cap is cut on a char boundary, marked, and recorded in
+/// the event, so one flooding command cannot consume the context (spec 9).
+#[tokio::test]
+async fn a_flooding_tool_result_is_capped_and_marked() {
+    struct Flood;
+    impl ToolExecutor for Flood {
+        fn specs(&self) -> Vec<ToolSpec> {
+            vec![ToolSpec {
+                name: "bash".to_owned(),
+                description: "run".to_owned(),
+                parameters: json!({"type": "object"}),
+            }]
+        }
+        fn execute(&self, _call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
+            Box::pin(async {
+                Ok(ToolOutcome {
+                    // multi-byte throughout, so a naive byte cut would panic.
+                    output: "é".repeat(sa_core::tools::MAX_TOOL_OUTPUT),
+                    exit_code: Some(0),
+                })
+            })
+        }
+    }
+
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            Delta::ToolCall(ToolCall {
+                id: "c1".to_owned(),
+                name: "bash".to_owned(),
+                arguments: json!({}).to_string(),
+            }),
+            Delta::Done {
+                stop_reason: "tool_calls".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ],
+        vec![Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        }],
+    ]));
+    let sink = Arc::new(RecordingSink::default());
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(Flood),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let _ = agent.run_turn(request()).await;
+
+    let completed = sink
+        .events
+        .lock()
+        .expect("events")
+        .iter()
+        .find(|(kind, _)| kind == "tool.completed")
+        .map(|(_, payload)| payload.clone())
+        .expect("a tool result");
+    assert_eq!(completed["truncated"], json!(true), "the cut is recorded");
+    let output = completed["output"].as_str().expect("output");
+    assert!(output.len() <= sa_core::tools::MAX_TOOL_OUTPUT + 16);
+    assert!(output.ends_with("[truncated]"), "the cut is marked");
 }
 
 /// a sink holding messages the operator typed while the turn was running.
