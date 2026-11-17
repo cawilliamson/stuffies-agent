@@ -622,7 +622,8 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
             for event in events {
                 let kind = event["kind"].as_str().unwrap_or_default();
                 if let Some(tab) = app.tab_for(id) {
-                    tab.on_event(kind, &event["payload"]);
+                    // history, not generation: it must not touch the rate meter.
+                    tab.on_replay(kind, &event["payload"]);
                 }
             }
         }

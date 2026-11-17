@@ -309,26 +309,141 @@ fn the_status_bar_shows_the_working_directory_rate_and_tokens() {
 }
 
 #[test]
-fn thinking_tokens_count_toward_the_rate() {
+fn thinking_text_counts_as_generation() {
     use std::time::{Duration, Instant};
     let mut app = App::new("s", "m");
     let t0 = Instant::now();
+    let done = t0 + Duration::from_secs(2);
+    app.tab_mut()
+        .on_event_at("turn.started", &json!({"prompt": "go"}), t0);
+    // reasoning is the model producing tokens, so it is generation like any other.
+    app.tab_mut()
+        .on_event_at("llm.reasoning", &json!({"text": "y".repeat(400)}), t0);
+    app.tab_mut().on_event_at("llm.completed", &json!({}), done);
+    app.tab_mut().on_event_at(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 100}}),
+        done,
+    );
+    app.tab_mut().tick_at(done);
+
+    assert!(
+        (app.tab().tok_per_sec - 50.0).abs() < 1.0,
+        "thinking streams tokens: got {}",
+        app.tab().tok_per_sec
+    );
+}
+
+#[test]
+fn silence_before_the_first_token_is_not_counted() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    // the prompt goes out and nothing comes back for five seconds.
+    let first = t0 + Duration::from_secs(5);
+    let done = first + Duration::from_secs(2);
+    app.tab_mut()
+        .on_event_at("turn.started", &json!({"prompt": "hello"}), t0);
+    app.tab_mut()
+        .on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), first);
+    app.tab_mut()
+        .on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), done);
+    app.tab_mut().on_event_at("llm.completed", &json!({}), done);
+    app.tab_mut().on_event_at(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 200}}),
+        done,
+    );
+    app.tab_mut().tick_at(done);
+
+    let rate = app.tab().tok_per_sec;
+    assert!(
+        (rate - 100.0).abs() < 1.0,
+        "200 tokens over the 2s of streaming, not the 7s including the wait: got {rate}"
+    );
+}
+
+#[test]
+fn replaying_a_session_never_produces_a_rate() {
+    let mut app = App::new("s", "m");
+
+    // a whole session coming back from disk, as open_tab does it.
+    app.tab_mut()
+        .on_replay("turn.started", &json!({"prompt": "go"}));
+    for _ in 0..200 {
+        app.tab_mut()
+            .on_replay("llm.delta", &json!({"text": "x".repeat(500)}));
+    }
+    app.tab_mut().on_replay("llm.completed", &json!({}));
+    app.tab_mut().on_replay(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 25_000}}),
+    );
+    app.tab_mut().tick();
+
+    assert_eq!(
+        app.tab().tok_per_sec,
+        0.0,
+        "a replay is history, not generation: got {}",
+        app.tab().tok_per_sec
+    );
+    assert!(
+        app.tab().transcript.len() >= 2,
+        "the transcript is still rebuilt from the replay"
+    );
+}
+
+#[test]
+fn a_stall_between_deltas_is_not_counted_as_generation_time() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    let later = t0 + Duration::from_secs(10);
     app.tab_mut()
         .on_event_at("turn.started", &json!({"prompt": "go"}), t0);
     app.tab_mut()
-        .on_event_at("llm.reasoning", &json!({"text": "y".repeat(400)}), t0);
+        .on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), t0);
+    // ten seconds of nothing, then the rest of the same message.
     app.tab_mut()
-        .on_event_at("llm.completed", &json!({}), t0 + Duration::from_secs(2));
+        .on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), later);
+    app.tab_mut()
+        .on_event_at("llm.completed", &json!({}), later);
     app.tab_mut().on_event_at(
         "turn.completed",
-        &json!({"usage": {"prompt_tokens": 0, "completion_tokens": 100}}),
-        t0 + Duration::from_secs(2),
+        &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 200}}),
+        later,
     );
-    app.tab_mut().tick_at(t0 + Duration::from_secs(2));
+    app.tab_mut().tick_at(later);
+
+    let rate = app.tab().tok_per_sec;
     assert!(
-        (app.tab().tok_per_sec - 50.0).abs() < 1.0,
-        "got {}",
-        app.tab().tok_per_sec
+        (rate - 100.0).abs() < 1.0,
+        "only a capped gap counts, so 200 tokens over 2s of streaming: got {rate}"
+    );
+}
+
+#[test]
+fn the_providers_own_count_is_preferred_over_the_estimate() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    let done = t0 + Duration::from_secs(2);
+    app.tab_mut()
+        .on_event_at("turn.started", &json!({"prompt": "go"}), t0);
+    app.tab_mut()
+        .on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), t0);
+    app.tab_mut().on_event_at("llm.completed", &json!({}), done);
+    app.tab_mut().on_event_at(
+        "turn.completed",
+        &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 300}}),
+        done,
+    );
+    app.tab_mut().tick_at(done);
+
+    let rate = app.tab().tok_per_sec;
+    assert!(
+        (rate - 150.0).abs() < 1.0,
+        "300 counted tokens over 2s is 150 t/s: got {rate}"
     );
 }
 

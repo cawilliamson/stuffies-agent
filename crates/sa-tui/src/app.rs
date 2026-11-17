@@ -9,6 +9,11 @@ const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 const CHARS_PER_TOKEN: f32 = 4.0;
+/// a gap between text deltas longer than this is a stall, not generation: the clock stops
+/// for it, so thinking and tool time never dilute the figure.
+const STALL_GAP: std::time::Duration = std::time::Duration::from_secs(2);
+/// the shortest span a rate is computed over, so a burst cannot divide by near-zero.
+const MIN_SPAN: std::time::Duration = std::time::Duration::from_millis(500);
 /// lines moved per arrow key.
 const SCROLL_STEP: u16 = 3;
 
@@ -239,9 +244,14 @@ pub struct Tab {
     pub tok_per_sec: f32,
     pub flash_highlight: bool,
     samples: std::collections::VecDeque<(std::time::Instant, usize)>,
-    turn_chars: usize,
-    active_started: Option<std::time::Instant>,
-    active_elapsed: std::time::Duration,
+    /// text characters seen in this turn. reasoning and tool output are not counted.
+    stream_chars: usize,
+    /// time actually spent streaming text, with every stall capped out of it.
+    stream_elapsed: std::time::Duration,
+    /// when the previous text delta arrived, so the next one can measure the gap.
+    last_delta: Option<std::time::Instant>,
+    /// whether text is arriving right now. false while thinking or while a tool runs.
+    streaming: bool,
     flash: Option<(f32, std::time::Instant)>,
     frozen: Option<f32>,
     /// bumped on every visible change so the renderer can skip clean frames.
@@ -288,9 +298,10 @@ impl Tab {
             tok_per_sec: 0.0,
             flash_highlight: false,
             samples: std::collections::VecDeque::new(),
-            turn_chars: 0,
-            active_started: None,
-            active_elapsed: std::time::Duration::ZERO,
+            stream_chars: 0,
+            stream_elapsed: std::time::Duration::ZERO,
+            last_delta: None,
+            streaming: false,
             flash: None,
             frozen: None,
             revision: 1,
@@ -473,45 +484,55 @@ impl Tab {
         }
     }
 
-    fn note_generation(&mut self, text: &str, now: std::time::Instant) {
-        if self.active_started.is_none() {
-            self.active_started = Some(now);
-        }
+    /// a delta of text from the model, whether it is its reasoning or its answer. these are
+    /// the only events that advance the count or the clock: silence, tools and replays are
+    /// not generation.
+    fn note_delta(&mut self, text: &str, now: std::time::Instant) {
         let chars = text.chars().count();
         if chars == 0 {
             return;
         }
-        self.turn_chars += chars;
+        if let Some(last) = self.last_delta {
+            // a stall between deltas is the model doing nothing: it is not counted.
+            self.stream_elapsed += now.saturating_duration_since(last).min(STALL_GAP);
+        }
+        self.last_delta = Some(now);
+        self.streaming = true;
+        self.stream_chars += chars;
         self.samples.push_back((now, chars));
     }
 
-    fn close_generation(&mut self, now: std::time::Instant) {
-        if let Some(started) = self.active_started.take() {
-            if let Some(delta) = now.checked_duration_since(started) {
-                self.active_elapsed += delta;
-            }
+    /// closes a streaming run, counting the trailing interval but capping it like any other
+    /// gap so a burst followed by a pause does not read as an absurd rate.
+    fn end_stream(&mut self, now: std::time::Instant) {
+        if let Some(last) = self.last_delta.take() {
+            self.stream_elapsed += now.saturating_duration_since(last).min(STALL_GAP);
         }
+        self.streaming = false;
+        // the live window restarts when text resumes, so a pause cannot dilute it.
+        self.samples.clear();
     }
 
     fn finish_message(&mut self, now: std::time::Instant, reported_tokens: Option<u64>) {
-        self.close_generation(now);
-        let chars = self.turn_chars;
-        let active = self.active_elapsed;
+        self.end_stream(now);
+        let chars = self.stream_chars;
+        let elapsed = self.stream_elapsed;
         self.samples.clear();
-        self.turn_chars = 0;
-        self.active_started = None;
-        self.active_elapsed = std::time::Duration::ZERO;
+        self.streaming = false;
+        self.stream_chars = 0;
+        self.stream_elapsed = std::time::Duration::ZERO;
 
-        if chars == 0 || active.is_zero() {
+        if chars == 0 || elapsed.is_zero() {
             self.flash = None;
             self.flash_highlight = false;
             self.tok_per_sec = 0.0;
             self.touch();
             return;
         }
-        // prefer the provider's own token count over the character estimate.
-        let tokens = reported_tokens.map_or(chars as f32 / CHARS_PER_TOKEN, |t| t as f32);
-        let average = tokens / active.as_secs_f32().max(0.25);
+        // the provider counts every token it emitted, reasoning included, and the clock
+        // measures all of that time, so its figure is exact when it gives one.
+        let tokens = reported_tokens.map_or(chars as f32 / CHARS_PER_TOKEN, |tokens| tokens as f32);
+        let average = tokens / elapsed.as_secs_f32().max(MIN_SPAN.as_secs_f32());
         self.flash = Some((average, now));
         self.tok_per_sec = average;
         self.flash_highlight = true;
@@ -555,30 +576,32 @@ impl Tab {
             }
         } else {
             self.flash_highlight = false;
-            while let Some((at, _)) = self.samples.front() {
-                if now.duration_since(*at) > RATE_WINDOW {
-                    self.samples.pop_front();
-                } else {
-                    break;
+            if self.streaming {
+                while let Some((at, _)) = self.samples.front() {
+                    if now.duration_since(*at) > RATE_WINDOW {
+                        self.samples.pop_front();
+                    } else {
+                        break;
+                    }
                 }
             }
-            if self.samples.is_empty() {
-                // while tools run there is no generation: hold the figure rather than
-                // decaying to zero mid-turn.
-                if self.status.turn_running && self.tok_per_sec > 0.0 {
+            if !self.streaming || self.samples.is_empty() {
+                // nothing is arriving: a delay is not generation, so the figure holds
+                // rather than decaying to zero.
+                if self.tok_per_sec > 0.0 {
                     return;
                 }
                 self.tok_per_sec = self.frozen.unwrap_or(0.0);
-            } else {
-                let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
-                let span = self
-                    .samples
-                    .front()
-                    .map_or(0.0, |(at, _)| now.duration_since(*at).as_secs_f32())
-                    .max(0.5)
-                    .min(RATE_WINDOW.as_secs_f32());
-                self.tok_per_sec = (chars as f32 / CHARS_PER_TOKEN) / span;
+                return;
             }
+            let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
+            let span = self
+                .samples
+                .front()
+                .map_or(0.0, |(at, _)| now.duration_since(*at).as_secs_f32())
+                .max(MIN_SPAN.as_secs_f32())
+                .min(RATE_WINDOW.as_secs_f32());
+            self.tok_per_sec = (chars as f32 / CHARS_PER_TOKEN) / span;
         }
 
         // only dirty the frame when the displayed figure actually changes.
@@ -605,25 +628,49 @@ impl Tab {
         self.touch();
     }
 
+    /// a live event from the daemon.
     pub fn on_event(&mut self, kind: &str, payload: &Value) {
-        self.on_event_at(kind, payload, std::time::Instant::now());
+        self.apply_event(kind, payload, std::time::Instant::now(), true);
+    }
+
+    /// a replayed event, on the way back from disk. it rebuilds the transcript and the
+    /// status, but never touches the rate: a replay is not generation, and timing one
+    /// produces the nonsense four-figure rates that made the bar untrustworthy.
+    pub fn on_replay(&mut self, kind: &str, payload: &Value) {
+        self.apply_event(kind, payload, std::time::Instant::now(), false);
     }
 
     pub fn on_event_at(&mut self, kind: &str, payload: &Value, now: std::time::Instant) {
+        self.apply_event(kind, payload, now, true);
+    }
+
+    fn apply_event(&mut self, kind: &str, payload: &Value, now: std::time::Instant, live: bool) {
         match kind {
             "llm.delta" => {
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
-                self.note_generation(text, now);
+                if live {
+                    self.note_delta(text, now);
+                }
                 self.append_stream_as(Role::Assistant, text);
             }
             "llm.reasoning" => {
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
-                self.note_generation(text, now);
+                // thinking is the model producing tokens, so it counts. only silence is
+                // excluded, and the gap logic already handles that.
+                if live {
+                    self.note_delta(text, now);
+                }
                 self.append_stream_as(Role::Thinking, text);
             }
-            "llm.completed" => self.close_generation(now),
+            "llm.completed" => {
+                if live {
+                    self.end_stream(now);
+                }
+            }
             "tool.requested" => {
-                self.close_generation(now);
+                if live {
+                    self.end_stream(now);
+                }
                 let tool = payload
                     .get("tool")
                     .and_then(Value::as_str)
@@ -656,7 +703,9 @@ impl Tab {
                 self.status.turn_running = false;
                 self.working = None;
                 let reported = payload["usage"]["completion_tokens"].as_u64();
-                self.finish_message(now, reported);
+                if live {
+                    self.finish_message(now, reported);
+                }
                 self.status.prompt_tokens +=
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
@@ -679,7 +728,9 @@ impl Tab {
             "turn.interrupted" => {
                 self.status.turn_running = false;
                 self.working = None;
-                self.finish_message(now, None);
+                if live {
+                    self.finish_message(now, None);
+                }
                 let cause = payload.get("cause").and_then(Value::as_str).unwrap_or("");
                 self.push(Role::Error, format!("interrupted: {cause}"));
             }
@@ -702,12 +753,17 @@ impl Tab {
                         entry.images = images;
                     }
                 }
-                self.turn_chars = 0;
-                self.active_started = None;
-                self.active_elapsed = std::time::Duration::ZERO;
-                self.samples.clear();
-                self.frozen = None;
-                self.tok_per_sec = 0.0;
+                // a new turn starts a clean meter. a replay of an old turn must not wipe
+                // a figure that belongs to what is happening now.
+                if live {
+                    self.stream_chars = 0;
+                    self.stream_elapsed = std::time::Duration::ZERO;
+                    self.last_delta = None;
+                    self.streaming = false;
+                    self.samples.clear();
+                    self.frozen = None;
+                    self.tok_per_sec = 0.0;
+                }
                 self.touch();
             }
             "compaction.applied" => self.push(Role::System, "context compacted"),
