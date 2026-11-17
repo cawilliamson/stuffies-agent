@@ -97,3 +97,30 @@ async fn a_relocated_session_still_refuses_a_turn() {
     let started = manager.start_turn(&session, "nope", &[], true, None);
     assert!(started.is_err(), "a relocated session is read-only");
 }
+
+#[tokio::test]
+async fn attached_images_do_not_inflate_the_context_estimate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = manager(dir.path(), script());
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+
+    let before = manager.estimate_tokens(&session);
+    let image = sa_proto::session::ImageAttachment {
+        media_type: "image/png".to_owned(),
+        // a picture big enough to dwarf the prompt in the log.
+        data: "A".repeat(400_000),
+        name: Some("shot.png".to_owned()),
+    };
+    manager
+        .start_turn(&session, "look", &[image], true, None)
+        .expect("start");
+
+    let after = manager.estimate_tokens(&session);
+    assert!(
+        after < before + 1_000,
+        "400k of base64 must not read as 100k tokens: {before} -> {after}"
+    );
+}

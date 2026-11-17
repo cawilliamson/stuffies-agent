@@ -281,6 +281,24 @@ impl Manager {
         Ok(self.store.list_sessions(include_deleted)?)
     }
 
+    /// repoints a session at another directory. tools and context follow it from the next
+    /// turn, so this is the whole of "change where this tab works".
+    pub fn set_cwd(&self, id: &str, cwd: &str) -> Result<String, ManagerError> {
+        let canonical = std::fs::canonicalize(cwd).map_err(|err| {
+            ManagerError::Rpc(RpcError::new(code::INVALID_PARAMS, format!("{cwd}: {err}")))
+        })?;
+        if !canonical.is_dir() {
+            return Err(ManagerError::Rpc(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("not a directory: {cwd}"),
+            )));
+        }
+        let path = canonical.display().to_string();
+        self.store.set_session_cwd(id, &path)?;
+        self.append(id, kinds::SESSION_CWD, &json!({"cwd": path}))?;
+        Ok(path)
+    }
+
     pub fn rename_session(&self, id: &str, title: &str) -> Result<(), ManagerError> {
         self.store.rename_session(id, title)?;
         self.append(id, kinds::SESSION_RENAMED, &json!({"title": title}))?;
@@ -501,6 +519,9 @@ impl Manager {
             &json!({
                 "turn_id": turn_id,
                 "prompt": prompt,
+                // kept in the log so the transcript can show the picture inline, and so a
+                // replayed session reads the same as the live one.
+                "images": images,
                 "model": self.default_model(),
                 "detach": detach,
                 "client": attached_client,
@@ -893,7 +914,18 @@ impl Manager {
         };
         let chars: u64 = events
             .iter()
-            .map(|e| e.payload.to_string().len() as u64)
+            .map(|e| {
+                let mut len = e.payload.to_string().len() as u64;
+                // attached pictures live in the log so the transcript can draw them, but
+                // the model's view carries only the prompt: counting base64 would show a
+                // few screenshots as most of the window.
+                if let Some(images) = e.payload.get("images").and_then(Value::as_array) {
+                    for image in images {
+                        len = len.saturating_sub(image.to_string().len() as u64);
+                    }
+                }
+                len
+            })
             .sum();
         chars / CHARS_PER_TOKEN
     }

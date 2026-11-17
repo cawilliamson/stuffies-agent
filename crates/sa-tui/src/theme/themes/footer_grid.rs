@@ -5,11 +5,8 @@ use crate::theme::prelude::*;
 pub struct Theme;
 
 fn cell(title: &str, value: String, accent: Color) -> Paragraph<'static> {
-    Paragraph::new(Line::from(Span::styled(
-        value,
-        Style::default().fg(accent),
-    )))
-    .block(parts::pane(title, parts::RULE))
+    Paragraph::new(Line::from(Span::styled(value, Style::default().fg(accent))))
+        .block(parts::pane(title, parts::RULE))
 }
 
 impl crate::theme::Theme for Theme {
@@ -56,7 +53,7 @@ impl crate::theme::Theme for Theme {
                 .map(|(_, v)| v.clone())
                 .unwrap_or_default()
         };
-        frame.render_widget(cell("session", value("session"), app::ACCENT), grid[0]);
+        frame.render_widget(cell("cwd", value("cwd"), app::ACCENT), grid[0]);
         frame.render_widget(cell("model", value("model"), app::OK), grid[1]);
         frame.render_widget(cell("rate", value("rate"), app::BAD), grid[2]);
         frame.render_widget(cell("tokens", value("tokens"), app::INK), grid[3]);

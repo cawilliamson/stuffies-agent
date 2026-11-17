@@ -94,7 +94,7 @@ pub async fn run(
     session: String,
     model: String,
     branch: Option<String>,
-    workspace: String,
+    cwd: String,
     effort: String,
 ) -> Result<(), String> {
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
@@ -108,7 +108,7 @@ pub async fn run(
     let mut app = App::new(session.clone(), model.clone());
     app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
     app.branch = branch;
-    app.workspace = (!workspace.is_empty()).then_some(workspace);
+    app.tab_mut().cwd = cwd;
     app.tab_mut().status.effort = effort;
     if app.tab().status.model.is_empty() {
         if let Ok(list) = rpc(client, "model.list", json!({})).await {
@@ -242,13 +242,14 @@ pub async fn run(
             Action::NextTab => app.next_tab(),
             Action::SwitchTab(index) => app.switch_tab(index),
             Action::NewTab => {
-                let cwd = std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
+                // a new tab starts where the current one works, not where the process
+                // happens to have been started.
+                let cwd = tab_cwd(&app);
                 match rpc(client, "session.create", json!({"cwd": cwd})).await {
                     Ok(created) => {
                         if let Some(id) = created["session_id"].as_str() {
                             app.add_tab(id.to_owned(), model.clone());
+                            app.tab_mut().cwd = cwd;
                             let _ = rpc(
                                 client,
                                 "events.subscribe",
@@ -265,6 +266,9 @@ pub async fn run(
                     app.switch_tab(index);
                 } else {
                     app.add_tab(id.clone(), model.clone());
+                    if let Some(cwd) = session_cwd(client, &id).await {
+                        app.tab_mut().cwd = cwd;
+                    }
                     if let Ok(replay) = rpc(
                         client,
                         "events.replay",
@@ -292,15 +296,14 @@ pub async fn run(
             Action::CloseTab => {
                 if app.tabs.len() <= 1 {
                     // closing the last tab leaves a fresh one rather than an empty screen.
-                    let cwd = std::env::current_dir()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default();
+                    let cwd = tab_cwd(&app);
                     match rpc(client, "session.create", json!({"cwd": cwd})).await {
                         Ok(created) => {
                             if let Some(id) = created["session_id"].as_str() {
                                 let id = id.to_owned();
                                 let previous = app.tab().session.clone();
                                 app.replace_active(id.clone(), model.clone());
+                                app.tab_mut().cwd = cwd;
                                 let _ =
                                     rpc(client, "session.delete", json!({"session_id": previous}))
                                         .await;
@@ -333,7 +336,7 @@ pub async fn run(
                     .tab()
                     .attachments
                     .iter()
-                    .map(|a| json!({"media_type": a.media_type, "data": a.data}))
+                    .map(|a| json!({"media_type": a.media_type, "data": a.data, "name": a.name}))
                     .collect();
                 // a prompt sent while a turn runs redirects it rather than being refused.
                 if app.tab().status.turn_running {
@@ -386,13 +389,14 @@ pub async fn run(
                     "/exit" | "/quit" => break,
                     "/help" => app.tab_mut().push(
                         app::Role::System,
-                        "ctrl+n new tab · ctrl+w close tab · shift+tab switch · esc interrupt · ctrl-c quit",
+                        "ctrl+n new tab · ctrl+w close tab · shift+tab switch · esc interrupt · ctrl-c quit · /cwd <dir> changes the working directory",
                     ),
                     "/new" => {
-                        let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-                        if let Ok(created) = rpc(client, "session.create", json!({"cwd": cwd})).await {
+                        let cwd = tab_cwd(&app);
+                        if let Ok(created) = rpc(client, "session.create", json!({"cwd": cwd.clone()})).await {
                             if let Some(id) = created["session_id"].as_str() {
                                 app.add_tab(id.to_owned(), model.clone());
+                                app.tab_mut().cwd = cwd;
                                 let _ = rpc(client, "events.subscribe", json!({"session_id": id, "from_seq": 0}))
                                     .await;
                             }
@@ -453,6 +457,28 @@ pub async fn run(
                     "/cancel" => {
                         let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
                     }
+                    "/cwd" if arg.is_empty() => {
+                        let cwd = app.tab().cwd.clone();
+                        app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
+                    }
+                    "/cwd" => match resolve_dir(&app.tab().cwd, arg) {
+                        Some(cwd) => {
+                            match rpc(client, "session.cwd", json!({"session_id": sid, "cwd": cwd}))
+                                .await
+                            {
+                                Ok(result) => {
+                                    let cwd = result["cwd"].as_str().unwrap_or(&cwd).to_owned();
+                                    app.tab_mut().cwd = cwd.clone();
+                                    app.touch();
+                                    app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
+                                }
+                                Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
+                            }
+                        }
+                        None => app
+                            .tab_mut()
+                            .push(app::Role::Error, format!("not a directory: {arg}")),
+                    },
                     "/resume" => match rpc(client, "session.list", json!({})).await {
                         Ok(list) => {
                             let items: Vec<app::PickerItem> = list
@@ -498,6 +524,41 @@ pub async fn run(
         let _ = rpc(client, "session.detach", json!({"session_id": tab.session})).await;
     }
     Ok(())
+}
+
+/// the directory a session works in, as listed by the daemon.
+async fn session_cwd(client: &mut Client, id: &str) -> Option<String> {
+    let list = rpc(client, "session.list", json!({})).await.ok()?;
+    list.as_array()?
+        .iter()
+        .find(|row| row["id"] == id)
+        .and_then(|row| row["cwd"].as_str())
+        .map(str::to_owned)
+}
+
+/// the directory the active tab works in, falling back to the process directory.
+fn tab_cwd(app: &App) -> String {
+    if app.tab().cwd.is_empty() {
+        std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    } else {
+        app.tab().cwd.clone()
+    }
+}
+
+/// resolves a `/cwd` argument against the tab's own directory, which is what a relative
+/// path means to the operator.
+fn resolve_dir(current: &str, arg: &str) -> Option<String> {
+    let expanded = app::expand_home(arg);
+    let path = std::path::Path::new(&expanded);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::path::Path::new(current).join(path)
+    };
+    let resolved = std::fs::canonicalize(joined).ok()?;
+    resolved.is_dir().then(|| resolved.display().to_string())
 }
 
 /// how long a ui-initiated rpc may take before the front end gives up on it.

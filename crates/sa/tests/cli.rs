@@ -205,3 +205,42 @@ fn no_subcommand_attaches_to_the_most_recent_session() {
         "expected the attach banner, got: {stdout}"
     );
 }
+
+#[test]
+fn opening_sa_where_a_session_runs_returns_to_that_session() {
+    let daemon = Daemon::start();
+    let work = tempfile::tempdir().expect("workdir");
+
+    let run = |dir: &std::path::Path| {
+        let out = Command::new(SA)
+            .env("SA_SOCKET", &daemon.socket)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run sa");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let first = run(work.path());
+    let id = first
+        .split("attached to ")
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(!id.is_empty(), "expected a session id, got: {first}");
+
+    let second = run(work.path());
+    assert!(
+        second.contains(&id),
+        "the directory already had session {id}, got: {second}"
+    );
+
+    // and a different directory gets its own session rather than that one.
+    let elsewhere = tempfile::tempdir().expect("other dir");
+    let third = run(elsewhere.path());
+    assert!(
+        !third.contains(&id),
+        "a new directory must not reuse {id}: {third}"
+    );
+}

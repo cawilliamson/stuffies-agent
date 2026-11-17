@@ -168,6 +168,20 @@ pub struct Entry {
     pub tool: Option<String>,
     /// for tool output: the process exit code, when the tool ran a process.
     pub exit_code: Option<i32>,
+    /// pictures sent with the prompt, drawn inside the message frame.
+    pub images: Vec<Thumb>,
+}
+
+impl Entry {
+    fn new(role: Role, text: impl Into<String>) -> Self {
+        Self {
+            role,
+            text: text.into(),
+            tool: None,
+            exit_code: None,
+            images: Vec::new(),
+        }
+    }
 }
 
 /// a rendered transcript, reused until its content or width changes. rebuilding it on every
@@ -195,6 +209,8 @@ pub struct Status {
 pub struct Tab {
     pub session: String,
     pub title: String,
+    /// the directory this tab works in. tools and context follow it.
+    pub cwd: String,
     pub transcript: Vec<Entry>,
     input: tui_input::Input,
     pub status: Status,
@@ -244,6 +260,7 @@ impl Tab {
             } else {
                 title
             },
+            cwd: String::new(),
             transcript: Vec::new(),
             input: tui_input::Input::default(),
             status: Status {
@@ -277,12 +294,7 @@ impl Tab {
     }
 
     pub fn push(&mut self, role: Role, text: impl Into<String>) {
-        self.transcript.push(Entry {
-            role,
-            text: text.into(),
-            tool: None,
-            exit_code: None,
-        });
+        self.transcript.push(Entry::new(role, text));
         if self.follow {
             self.scroll = self.max_scroll;
         }
@@ -374,7 +386,7 @@ impl Tab {
             .find(|(_, character)| character.is_whitespace())
             .map_or(0, |(index, character)| index + character.len_utf8());
         let token = &text[start..byte];
-        let Some(completed) = complete_token(token) else {
+        let Some(completed) = complete_token(token, false) else {
             return false;
         };
         let replacement = completed;
@@ -385,6 +397,44 @@ impl Tab {
             .with_cursor(new_cursor);
         self.touch();
         true
+    }
+
+    /// completes the directory named in `/cwd`. returns true when the text changed.
+    fn complete_cwd(&mut self) -> bool {
+        let text = self.input.value().to_owned();
+        let Some(arg) = cwd_arg(&text) else {
+            return false;
+        };
+        let Some(completed) = complete_dir_token(arg) else {
+            return false;
+        };
+        let new_text = format!("/cwd {completed}");
+        let new_cursor = new_text.chars().count();
+        self.input = std::mem::take(&mut self.input)
+            .with_value(new_text)
+            .with_cursor(new_cursor);
+        self.touch();
+        true
+    }
+
+    /// the completion offered for `/cwd`, drawn dimmed after the cursor. only at the end of
+    /// the line, where the operator is actually typing.
+    #[must_use]
+    pub fn suggestion(&self) -> Option<String> {
+        let text = self.input.value();
+        if self.input.cursor() != text.chars().count() {
+            return None;
+        }
+        let arg = cwd_arg(text)?;
+        let completed = complete_dir_token(arg)?;
+        let rest = completed.strip_prefix(arg)?.to_owned();
+        (!rest.is_empty()).then_some(rest)
+    }
+
+    /// whether the composer holds the `/cwd` command, whose argument is always a directory.
+    #[must_use]
+    pub fn is_cwd_command(&self) -> bool {
+        cwd_arg(self.input.value()).is_some()
     }
 
     fn submit(&mut self) -> Action {
@@ -540,12 +590,9 @@ impl Tab {
                     .and_then(Value::as_str)
                     .unwrap_or("tool");
                 let args = summarise(&payload["args"]);
-                self.transcript.push(Entry {
-                    role: Role::Tool,
-                    text: args,
-                    tool: Some(tool.to_owned()),
-                    exit_code: None,
-                });
+                let mut entry = Entry::new(Role::Tool, args);
+                entry.tool = Some(tool.to_owned());
+                self.transcript.push(entry);
                 self.touch();
             }
             "tool.completed" => {
@@ -554,12 +601,9 @@ impl Tab {
                     .get("exit_code")
                     .and_then(Value::as_i64)
                     .and_then(|c| i32::try_from(c).ok());
-                self.transcript.push(Entry {
-                    role: Role::ToolOutput,
-                    text: output.to_owned(),
-                    tool: None,
-                    exit_code,
-                });
+                let mut entry = Entry::new(Role::ToolOutput, output);
+                entry.exit_code = exit_code;
+                self.transcript.push(entry);
                 self.touch();
             }
             "tool.failed" => {
@@ -601,9 +645,22 @@ impl Tab {
                 self.push(Role::Error, format!("interrupted: {cause}"));
             }
             "turn.started" => {
-                if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
-                    if self.transcript.last().map(|e| e.role) != Some(Role::User) {
-                        self.push(Role::User, prompt.to_owned());
+                let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+                let images = thumbnails(&payload["images"]);
+                if self.transcript.last().map(|e| e.role) == Some(Role::User) {
+                    // a steer or a resubmit already put the prompt up; the pictures belong
+                    // on that same message rather than a second one.
+                    if !images.is_empty() {
+                        if let Some(entry) = self.transcript.last_mut() {
+                            entry.images = images;
+                        }
+                        self.content_rev = self.content_rev.wrapping_add(1);
+                        self.cache = None;
+                    }
+                } else if !prompt.is_empty() || !images.is_empty() {
+                    self.push(Role::User, prompt.to_owned());
+                    if let Some(entry) = self.transcript.last_mut() {
+                        entry.images = images;
                     }
                 }
                 self.turn_chars = 0;
@@ -615,6 +672,12 @@ impl Tab {
                 self.touch();
             }
             "compaction.applied" => self.push(Role::System, "context compacted"),
+            "session.cwd" => {
+                if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+                    self.cwd = cwd.to_owned();
+                    self.touch();
+                }
+            }
             _ => {}
         }
     }
@@ -626,12 +689,7 @@ impl Tab {
             }
             _ => {
                 if !text.is_empty() {
-                    self.transcript.push(Entry {
-                        role,
-                        text: text.to_owned(),
-                        tool: None,
-                        exit_code: None,
-                    });
+                    self.transcript.push(Entry::new(role, text));
                 }
             }
         }
@@ -653,6 +711,95 @@ pub struct Attachment {
     pub media_type: String,
     pub data: String,
     pub protocol: Option<ratatui_image::protocol::StatefulProtocol>,
+}
+
+/// a picture already in the transcript, rendered as half-block cells so it scrolls with
+/// the conversation and needs no terminal image protocol.
+#[derive(Debug, Clone)]
+pub struct Thumb {
+    pub name: String,
+    pub lines: Vec<Line<'static>>,
+}
+
+/// the widest and tallest a transcript picture may be, in cells.
+const THUMB_COLS: u32 = 40;
+const THUMB_ROWS: u32 = 12;
+
+/// pictures from a `turn.started` payload. undecodable entries are simply left out.
+fn thumbnails(images: &Value) -> Vec<Thumb> {
+    let Some(items) = images.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let data = item.get("data").and_then(Value::as_str)?;
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).ok()?;
+            let lines = thumb_lines(&bytes)?;
+            Some(Thumb {
+                name: item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("image")
+                    .to_owned(),
+                lines,
+            })
+        })
+        .collect()
+}
+
+/// renders a picture as coloured half-block cells. one cell is one pixel across and two
+/// down, which keeps the aspect ratio square.
+fn thumb_lines(bytes: &[u8]) -> Option<Vec<Line<'static>>> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let (width, height) = (image.width(), image.height());
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut cols = THUMB_COLS.min(width);
+    let mut rows = (cols * height / width).max(2);
+    let max_rows = THUMB_ROWS * 2;
+    if rows > max_rows {
+        rows = max_rows;
+        cols = (rows * width / height).max(1);
+    }
+    // whole cell rows only: each row paints two pixel rows.
+    rows -= rows % 2;
+
+    let scaled = image
+        .resize_exact(cols, rows, image::imageops::FilterType::Triangle)
+        .to_rgba8();
+    let mut lines = Vec::new();
+    for row in 0..rows / 2 {
+        let spans: Vec<Span<'static>> = (0..cols)
+            .map(|col| {
+                let top = scaled.get_pixel(col, row * 2).0;
+                let bottom = scaled.get_pixel(col, row * 2 + 1).0;
+                Span::styled(
+                    "\u{2580}",
+                    Style::default().fg(blend(top)).bg(blend(bottom)),
+                )
+            })
+            .collect();
+        lines.push(Line::from(spans));
+    }
+    Some(lines)
+}
+
+/// composites a pixel over the transcript background, so transparency does not show as
+/// black holes in the middle of a picture.
+fn blend(pixel: [u8; 4]) -> Color {
+    const BG: [u16; 3] = [0x10, 0x14, 0x1a];
+    let alpha = u16::from(pixel[3]);
+    let mix = |channel: u8, under: u16| {
+        u8::try_from((u16::from(channel) * alpha + under * (255 - alpha)) / 255).unwrap_or(0)
+    };
+    Color::Rgb(
+        mix(pixel[0], BG[0]),
+        mix(pixel[1], BG[1]),
+        mix(pixel[2], BG[2]),
+    )
 }
 
 /// one selectable row in a picker.
@@ -690,7 +837,6 @@ pub struct App {
     pub tabs: Vec<Tab>,
     pub active: usize,
     pub branch: Option<String>,
-    pub workspace: Option<String>,
     pub revision: u64,
     /// index into the compiled-in theme registry.
     pub theme: usize,
@@ -711,7 +857,6 @@ impl App {
             tabs: vec![tab],
             active: 0,
             branch: None,
-            workspace: None,
             revision: 1,
             theme: crate::theme::default_index(),
             spinner: 0,
@@ -908,7 +1053,12 @@ impl App {
 
         match key.code {
             KeyCode::Tab => {
-                if self.tab_mut().complete_path() {
+                // `/cwd` names a directory, so it completes to directories only rather than
+                // falling back to file completion.
+                let tab = self.tab_mut();
+                if tab.is_cwd_command() {
+                    tab.complete_cwd();
+                } else if tab.complete_path() {
                     self.refresh_attachments();
                 }
                 Action::None
@@ -1182,6 +1332,32 @@ fn body(
     }
 }
 
+/// pushes a picture section: the file name, then the pixels, both inside the frame.
+fn body_image(out: &mut Vec<Line<'static>>, thumb: &Thumb, width: usize, edge: Color) {
+    let room = width.saturating_sub(4);
+    let caption: String = thumb.name.chars().take(room).collect();
+    let pad = room.saturating_sub(caption.chars().count());
+    out.push(Line::from(vec![
+        Span::styled("\u{2502} ", Style::default().fg(edge)),
+        Span::styled(caption, Style::default().fg(DIM)),
+        Span::styled(
+            format!("{} \u{2502}", " ".repeat(pad)),
+            Style::default().fg(edge),
+        ),
+    ]));
+    for line in &thumb.lines {
+        let (spans, used) = fit_spans(line.spans.clone(), room);
+        let pad = room.saturating_sub(used);
+        let mut row = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
+        row.extend(spans);
+        row.push(Span::styled(
+            format!("{} \u{2502}", " ".repeat(pad)),
+            Style::default().fg(edge),
+        ));
+        out.push(Line::from(row));
+    }
+}
+
 fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
     let head = format!("\u{256d}\u{2500} {label} ");
     let fill = width.saturating_sub(head.chars().count() + 1);
@@ -1242,6 +1418,9 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     top(&mut out, &entry_label(entry, model), width, edge);
     let markdown = !matches!(entry.role, Role::Tool | Role::ToolOutput);
     body(&mut out, &entry_body(entry), width, edge, ink, markdown);
+    for thumb in &entry.images {
+        body_image(&mut out, thumb, width, edge);
+    }
     bottom(&mut out, width, edge);
     out
 }
@@ -1324,12 +1503,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
                 index = next + 1;
             } else {
                 out.extend(framed(
-                    &Entry {
-                        role: Role::Thinking,
-                        text: thinking,
-                        tool: None,
-                        exit_code: None,
-                    },
+                    &Entry::new(Role::Thinking, thinking),
                     inner,
                     &tab.status.model,
                 ));
@@ -1381,7 +1555,9 @@ fn attachment_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn expand_home(token: &str) -> String {
+/// expands a leading `~/` so a typed path can be opened.
+#[must_use]
+pub fn expand_home(token: &str) -> String {
     if let Some(rest) = token.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
             return std::path::Path::new(&home).join(rest).display().to_string();
@@ -1426,9 +1602,15 @@ fn load_attachment(
     })
 }
 
+/// the argument of `/cwd`, when the composer holds that command.
+fn cwd_arg(text: &str) -> Option<&str> {
+    text.strip_prefix("/cwd ")
+}
+
 /// completes `token` against the filesystem, keeping the form the operator typed so
-/// `~/Dow` becomes `~/Downloads/` rather than an absolute path.
-fn complete_token(token: &str) -> Option<String> {
+/// `~/Dow` becomes `~/Downloads/` rather than an absolute path. `dirs_only` is for the
+/// arguments that can only name a directory.
+fn complete_token(token: &str, dirs_only: bool) -> Option<String> {
     let (shown_dir, prefix) = token
         .rfind('/')
         .map_or(("", token), |index| (&token[..=index], &token[index + 1..]));
@@ -1447,6 +1629,9 @@ fn complete_token(token: &str) -> Option<String> {
                 return None;
             }
             let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if dirs_only && !is_dir {
+                return None;
+            }
             Some(if is_dir { format!("{name}/") } else { name })
         })
         .collect();
@@ -1463,6 +1648,11 @@ fn complete_token(token: &str) -> Option<String> {
                 .then(|| format!("{shown_dir}{shared}"))
         }
     }
+}
+
+/// the completion for a directory argument, which never offers a file.
+fn complete_dir_token(token: &str) -> Option<String> {
+    complete_token(token, true)
 }
 
 fn longest_common_prefix(values: &[String]) -> String {

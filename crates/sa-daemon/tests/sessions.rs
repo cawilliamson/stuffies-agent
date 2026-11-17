@@ -824,3 +824,44 @@ async fn a_stalled_title_call_does_not_block_the_turn() {
     let _ = stop.send(());
     let _ = handle.await;
 }
+
+#[tokio::test]
+async fn a_session_reports_and_moves_its_working_directory() {
+    let daemon = Harness::start(Vec::new()).await;
+    let mut client = daemon.connect().await;
+    let cwd = daemon.root().display().to_string();
+    let session = create(&mut client, &cwd).await;
+
+    let listed = call(&mut client, 2, "session.list", json!({})).await;
+    assert_eq!(
+        listed["result"][0]["cwd"], cwd,
+        "a client finds a session by its directory: {listed}"
+    );
+
+    let target = daemon.root().join("elsewhere");
+    std::fs::create_dir_all(&target).expect("target dir");
+    let moved = call(
+        &mut client,
+        3,
+        "session.cwd",
+        json!({"session_id": session, "cwd": target.display().to_string()}),
+    )
+    .await;
+    assert!(moved["error"].is_null(), "cwd change failed: {moved}");
+    let canonical = std::fs::canonicalize(&target).expect("canonical");
+    assert_eq!(moved["result"]["cwd"], canonical.display().to_string());
+
+    let event = wait_for_kind(&mut client, &session, "session.cwd").await;
+    assert_eq!(event["payload"]["cwd"], canonical.display().to_string());
+
+    let missing = call(
+        &mut client,
+        4,
+        "session.cwd",
+        json!({"session_id": session, "cwd": target.join("nope").display().to_string()}),
+    )
+    .await;
+    assert_eq!(missing["error"]["code"], -32602, "bad path: {missing}");
+
+    daemon.stop().await;
+}

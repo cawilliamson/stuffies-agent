@@ -292,12 +292,13 @@ fn the_transcript_shows_no_raw_role_gutters() {
 }
 
 #[test]
-fn the_status_bar_shows_the_session_rate_and_tokens() {
+fn the_status_bar_shows_the_working_directory_rate_and_tokens() {
     let mut app = App::new("session-abcdef", "deepseek");
+    app.tab_mut().cwd = "/work/project".to_owned();
     app.tab_mut().status.context_tokens = 32_000;
     app.tab_mut().status.context_limit = 128_000;
     let screen = screen(&mut app, 160, 24);
-    assert!(screen.contains("session-"), "{screen}");
+    assert!(screen.contains("/work/project"), "{screen}");
     assert!(screen.contains("0.0 t/s"), "{screen}");
     // the token counts gave way to a context meter.
     assert!(screen.contains("25%"), "{screen}");
@@ -1463,4 +1464,99 @@ fn undo_with_nothing_recorded_is_harmless() {
     let mut app = App::new("session-abcdef", "m");
     app.on_key(ctrl('-'));
     assert_eq!(app.tab().input_text(), "");
+}
+
+#[test]
+fn the_status_bar_shows_the_working_directory_not_the_session_id() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = "/work/project".to_owned();
+
+    let backend = TestBackend::new(160, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let width = 160;
+    let status: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .skip(23 * width)
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(status.contains("/work/project"), "status row:\n{status}");
+    assert!(
+        !status.contains("session-"),
+        "the session id belongs to the tab strip, not the status row:\n{status}"
+    );
+}
+
+#[test]
+fn a_cwd_event_repoints_the_tab() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut()
+        .on_event("session.cwd", &json!({"cwd": "/work/elsewhere"}));
+    assert_eq!(app.tab().cwd, "/work/elsewhere");
+}
+
+#[test]
+fn tab_completes_a_directory_argument_to_cwd_and_suggests_the_rest() {
+    let dir = std::env::temp_dir().join("sa-tui-cwd-complete");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Downloads")).expect("dirs");
+
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &format!("/cwd {}/Down", dir.display()));
+    assert_eq!(
+        app.tab().suggestion().as_deref(),
+        Some("loads/"),
+        "the rest of the completion is offered before it is accepted"
+    );
+
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(
+        app.tab().input_text(),
+        format!("/cwd {}/Downloads/", dir.display()),
+        "the argument completes to a directory with a trailing slash"
+    );
+}
+
+#[test]
+fn cwd_completion_never_offers_a_file() {
+    let dir = std::env::temp_dir().join("sa-tui-cwd-files");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dirs");
+    std::fs::write(dir.join("notes.txt"), b"x").expect("file");
+
+    let mut app = App::new("session-abcdef", "m");
+    let typed = format!("/cwd {}/no", dir.display());
+    type_text(&mut app, &typed);
+    app.on_key(key(KeyCode::Tab));
+
+    assert_eq!(app.tab().input_text(), typed, "a file is not a directory");
+}
+
+#[test]
+fn a_sent_image_is_drawn_inside_the_user_message() {
+    // a 1x1 png, which is enough to prove the picture lands in the frame.
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().on_event(
+        "turn.started",
+        &json!({
+            "prompt": "look at this",
+            "images": [{"media_type": "image/png", "data": PNG, "name": "shot.png"}],
+        }),
+    );
+
+    let rendered = flatten(&transcript_lines(app.tab(), 80));
+    assert!(rendered.contains("look at this"), "{rendered}");
+    assert!(
+        rendered.contains("shot.png"),
+        "the picture is labelled:\n{rendered}"
+    );
+    assert!(
+        rendered.contains('\u{2580}'),
+        "the picture is drawn in the message:\n{rendered}"
+    );
 }

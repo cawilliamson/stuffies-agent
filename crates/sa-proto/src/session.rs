@@ -64,6 +64,8 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub state: SessionState,
+    /// the directory the session works in, so a client can find the tab for where it is.
+    pub cwd: String,
     pub owner_epoch: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -142,6 +144,9 @@ pub struct ImageAttachment {
     /// e.g. `image/png`.
     pub media_type: String,
     pub data: String,
+    /// the file name as the operator typed it, so the transcript can label the picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl ImageAttachment {
@@ -189,6 +194,7 @@ pub mod kinds {
     pub const SESSION_CREATED: &str = "session.created";
     pub const SESSION_RENAMED: &str = "session.renamed";
     pub const SESSION_STATE: &str = "session.state";
+    pub const SESSION_CWD: &str = "session.cwd";
     pub const TURN_STARTED: &str = "turn.started";
     pub const TURN_COMPLETED: &str = "turn.completed";
     pub const TURN_INTERRUPTED: &str = "turn.interrupted";

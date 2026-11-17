@@ -278,6 +278,7 @@ fn images_serialise_as_content_parts_and_plain_text_stays_a_string() {
     let image = sa_proto::session::ImageAttachment {
         media_type: "image/png".to_owned(),
         data: "QUJD".to_owned(),
+        name: Some("shot.png".to_owned()),
     };
     let with_image =
         serde_json::to_value(ChatMessage::user_with_images("look", &[image])).expect("json");

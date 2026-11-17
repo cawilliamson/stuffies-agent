@@ -199,14 +199,36 @@ fn context_meter(used: u64, limit: u64) -> (String, Color) {
     )
 }
 
+/// a path as the status bar shows it: home-relative, and cut from the left so the leaf
+/// stays readable on a narrow terminal.
+#[must_use]
+pub fn short_path(path: &str) -> String {
+    const MAX: usize = 40;
+    let mut shown = path.to_owned();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = home.to_string_lossy().into_owned();
+        if let Some(rest) = shown.strip_prefix(&home) {
+            // only a whole component: /home/chrisaw2 is not inside /home/chrisaw.
+            if rest.is_empty() || rest.starts_with('/') {
+                shown = format!("~{rest}");
+            }
+        }
+    }
+    let count = shown.chars().count();
+    if count > MAX {
+        let tail: String = shown.chars().skip(count - (MAX - 1)).collect();
+        shown = format!("\u{2026}{tail}");
+    }
+    shown
+}
+
 /// the powerline status bar.
 #[must_use]
 pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     const SEP: &str = "\u{e0b0}";
     let tab = app.tab();
-    let short: String = tab.session.chars().take(8).collect();
     let mut segments: Vec<(String, Color, Color)> = vec![(
-        format!(" {short} "),
+        format!(" {} ", short_path(&tab.cwd)),
         Color::Rgb(0xd8, 0xd8, 0xd8),
         Color::Rgb(0x2a, 0x2a, 0x2a),
     )];
@@ -290,9 +312,19 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
     }
 
     frame.render_widget(
-        Paragraph::new(tab.input_text().to_owned())
-            .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
-            .block(block),
+        Paragraph::new({
+            let mut line = Line::from(Span::styled(
+                tab.input_text().to_owned(),
+                Style::default().fg(app::INK),
+            ));
+            // the rest of the completion, shown where it would land.
+            if let Some(ghost) = tab.suggestion() {
+                line.push_span(Span::styled(ghost, Style::default().fg(app::FAINT)));
+            }
+            line
+        })
+        .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
+        .block(block),
         area,
     );
     Some((area.x + 2 + u16::try_from(column).unwrap_or(0), area.y + 1))
@@ -304,6 +336,7 @@ pub fn facts(app: &App) -> Vec<(&'static str, String)> {
     let tab = app.tab();
     let mut out = vec![
         ("session", tab.session.chars().take(8).collect::<String>()),
+        ("cwd", short_path(&tab.cwd)),
         ("model", tab.status.model.clone()),
         ("effort", tab.status.effort.clone()),
         ("rate", format!("{:.1} t/s", tab.tok_per_sec)),

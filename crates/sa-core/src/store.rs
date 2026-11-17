@@ -78,6 +78,7 @@ impl SessionRow {
             id: self.id.clone(),
             title: self.title.clone(),
             state: self.state,
+            cwd: self.cwd.clone(),
             owner_epoch: self.owner_epoch,
             model: self.model.clone(),
             effort: self.effort.clone(),
@@ -218,6 +219,18 @@ impl Store {
             "UPDATE sessions SET effort = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, effort, now_seconds()],
         )?;
+        Ok(())
+    }
+
+    pub fn set_session_cwd(&self, id: &str, cwd: &str) -> Result<(), StoreError> {
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "UPDATE sessions SET cwd = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, cwd, now_seconds()],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::SessionNotFound(id.to_owned()));
+        }
         Ok(())
     }
 

@@ -135,11 +135,12 @@ Session lifecycle:
 
 ```text
 session.create   {cwd, title?}                    -> {session_id, seq}
-session.list     {include_deleted?}               -> [{id, title, state, owner, updated_at}]
+session.list     {include_deleted?}               -> [{id, title, state, cwd, owner, updated_at}]
 session.attach   {session_id, from_seq, limit?,   -> {session, events[], more, next_seq}
                   takeover?}
 session.detach   {session_id}                     -> {}
 session.rename   {session_id, title}              -> {}
+session.cwd      {session_id, cwd}                -> {cwd}
 session.fork     {session_id, from_seq,           -> {session_id, workspace}
                   workspace, title?}
 session.delete   {session_id}                     -> {}
@@ -1045,8 +1046,8 @@ detection in `sa attach` with `--line` as the escape hatch, history replay on at
 transcript is continuous across sessions.
 
 The status bar is powerline-style: solid coloured areas joined by arrow separators, one
-area per field (session, state, branch, model, throughput, tokens), with nerdfont glyphs.
-No bracketed text. Single-line editing — cursor movement, word deletion, history — is
+area per field (working directory, state, branch, model, throughput, tokens), with
+nerdfont glyphs. No bracketed text. Single-line editing — cursor movement, word deletion, history — is
 delegated to `tui-input` rather than hand-rolled.
 
 Scope limits, deliberate: no mouse, no text selection, no markdown rendering, no syntax

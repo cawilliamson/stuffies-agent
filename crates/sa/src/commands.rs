@@ -222,6 +222,29 @@ async fn most_recent_session(client: &mut Client) -> Result<Option<String>> {
         .map(str::to_owned))
 }
 
+/// the active session already rooted at this directory, so opening `sa` where a session
+/// is running returns to it instead of starting a second one over the same files.
+async fn session_for_cwd(client: &mut Client) -> Result<Option<String>> {
+    let here = std::env::current_dir().map_err(|e| format!("cannot read cwd: {e}"))?;
+    let here = std::fs::canonicalize(&here).unwrap_or(here);
+    let response = client
+        .call("session.list", json!({}))
+        .await
+        .map_err(|e| format!("session.list failed: {e}"))?;
+    Ok(response
+        .as_array()
+        .and_then(|sessions| {
+            sessions.iter().find(|session| {
+                session["state"] == "active"
+                    && session["cwd"]
+                        .as_str()
+                        .is_some_and(|cwd| std::path::Path::new(cwd) == here)
+            })
+        })
+        .and_then(|session| session["id"].as_str())
+        .map(str::to_owned))
+}
+
 fn render_history(renderer: &mut Renderer, events: &[Value]) {
     for event in events {
         let kind = event["kind"].as_str().unwrap_or_default();
@@ -378,7 +401,7 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
     } else if let Some(id) = session {
         id
     } else {
-        match most_recent_session(&mut client).await? {
+        match session_for_cwd(&mut client).await? {
             Some(id) => id,
             None => create_session(&mut client).await?,
         }
@@ -399,7 +422,12 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let workspace = cwd().unwrap_or_default();
+        // the session's own directory, which is not the process cwd when it was resumed.
+        let workspace = attached["session"]["cwd"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| cwd().ok())
+            .unwrap_or_default();
         let effort = attached["session"]["effort"]
             .as_str()
             .unwrap_or_default()

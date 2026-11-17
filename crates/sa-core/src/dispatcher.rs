@@ -107,6 +107,7 @@ impl Dispatcher {
             "session.attach" => self.session_attach(conn, &params),
             "session.detach" => self.session_detach(conn, &params),
             "session.rename" => self.session_rename(&params),
+            "session.cwd" => self.session_cwd(&params),
             "session.delete" => self.session_delete(&params),
             "session.usage" => self.session_usage(&params),
             "session.fork" => Self::session_fork(&params),
@@ -222,6 +223,16 @@ impl Dispatcher {
             .rename_session(&session_id, &title)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!({}))
+    }
+
+    fn session_cwd(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let cwd = string_field(params, "cwd")?;
+        let cwd = self
+            .manager
+            .set_cwd(&session_id, &cwd)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!({"cwd": cwd}))
     }
 
     fn session_delete(&self, params: &Value) -> Result<Value, RpcError> {
