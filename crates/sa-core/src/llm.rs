@@ -228,8 +228,17 @@ pub type StreamFuture<'a> =
 pub type ModelsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, LlmError>> + Send + 'a>>;
 
+/// what a probe learned about a server's effort values.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiscoveredEfforts {
+    /// the values that behave differently from each other, one per behaviour.
+    pub levels: Vec<String>,
+    /// the value whose behaviour matches the server's own default, if one does.
+    pub default: Option<String>,
+}
+
 /// boxed future for effort discovery.
-pub type EffortsFuture<'a> = Pin<Box<dyn Future<Output = Vec<String>> + Send + 'a>>;
+pub type EffortsFuture<'a> = Pin<Box<dyn Future<Output = DiscoveredEfforts> + Send + 'a>>;
 
 /// what an endpoint says about a model it serves.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -241,11 +250,19 @@ pub struct ModelInfo {
     /// the reasoning effort values the endpoint accepts for this model, in its own order.
     /// empty means it said nothing, and nothing is sent.
     pub effort_levels: Vec<String>,
+    /// the level whose behaviour matches the server's own default, when one was probed. it
+    /// is what a session uses until the operator chooses, so the client can show it.
+    pub default_effort: Option<String>,
 }
 
-/// the effort values worth trying when an endpoint advertises none. they are candidates,
-/// not a list: only the ones a probe shows the server distinguishing are kept.
-pub const EFFORT_CANDIDATES: [&str; 5] = ["none", "minimal", "low", "medium", "high"];
+/// the effort values worth trying when an endpoint advertises none.
+///
+/// they are candidates, not a list: only the ones a probe shows the server distinguishing
+/// are kept. ordered so a behaviour is named by its canonical value rather than an alias,
+/// so a server that treats `minimal` as `low` reports the level as `low`.
+pub const EFFORT_CANDIDATES: [&str; 9] = [
+    "none", "low", "high", "max", "minimal", "medium", "xhigh", "xxhigh", "ultra",
+];
 /// a value no server knows, used to see what "ignored" looks like.
 const EFFORT_SENTINEL: &str = "sa-probe-unknown-effort";
 
@@ -322,7 +339,7 @@ pub trait Provider: Send + Sync {
 
     /// the effort values this endpoint honours, asked of a server that publishes none.
     fn probe_efforts<'a>(&'a self, _model: &'a str) -> EffortsFuture<'a> {
-        Box::pin(async { Vec::new() })
+        Box::pin(async { DiscoveredEfforts::default() })
     }
 }
 
@@ -362,23 +379,19 @@ impl OpenAiProvider {
     /// each candidate and with a value no server knows. a value that behaves like the
     /// unknown one is being ignored; one that behaves differently is real. this is the only
     /// way to learn them from a server that publishes no list.
-    pub async fn discover_efforts(&self, model: &str) -> Vec<String> {
-        let baseline = self.probe_one(model, EFFORT_SENTINEL).await;
-        let Some(baseline) = baseline else {
+    pub async fn discover_efforts(&self, model: &str) -> DiscoveredEfforts {
+        let Some(control) = self.probe_one(model, EFFORT_SENTINEL).await else {
             // the probe itself failed: say nothing rather than invent a list.
-            return Vec::new();
+            return DiscoveredEfforts::default();
         };
 
-        let mut found = Vec::new();
+        let mut probed = Vec::new();
         for candidate in EFFORT_CANDIDATES {
-            let Some(profile) = self.probe_one(model, candidate).await else {
-                continue;
-            };
-            if profile != baseline {
-                found.push(candidate.to_owned());
+            if let Some(profile) = self.probe_one(model, candidate).await {
+                probed.push((candidate.to_owned(), profile));
             }
         }
-        found
+        group_efforts(control, probed)
     }
 
     /// one probe: how much reasoning the model emits for this effort value, if it answers.
@@ -449,12 +462,44 @@ impl OpenAiProvider {
                             id: id.to_owned(),
                             context_limit: advertised_context(model),
                             effort_levels: advertised_efforts(model),
+                            default_effort: None,
                         })
                     })
                     .collect()
             })
             .unwrap_or_default())
     }
+}
+
+/// groups probed values by behaviour.
+///
+/// one representative per distinct profile, plus the value whose behaviour matches the
+/// unknown-value control, which is the server's own default. values that behave like the
+/// control are aliases of the default, not new levels.
+#[must_use]
+pub fn group_efforts(control: usize, probed: Vec<(String, usize)>) -> DiscoveredEfforts {
+    let mut levels: Vec<String> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
+    let mut default = None;
+
+    for (name, profile) in probed {
+        if profile == control {
+            if default.is_none() {
+                default = Some(name);
+            }
+            continue;
+        }
+        if seen.contains(&profile) {
+            continue;
+        }
+        seen.push(profile);
+        levels.push(name);
+    }
+    // the default is a real level: it belongs in the list, first.
+    if let Some(found) = &default {
+        levels.insert(0, found.clone());
+    }
+    DiscoveredEfforts { levels, default }
 }
 
 /// our transcript, in the shape rig sends.
@@ -687,6 +732,7 @@ impl ScriptedProvider {
                 id,
                 context_limit: None,
                 effort_levels: Vec::new(),
+                default_effort: None,
             })
             .collect();
         self
@@ -699,6 +745,7 @@ impl ScriptedProvider {
             id: id.to_owned(),
             context_limit: Some(context_limit),
             effort_levels: Vec::new(),
+            default_effort: None,
         }];
         self
     }
@@ -710,6 +757,7 @@ impl ScriptedProvider {
             id: id.to_owned(),
             context_limit: None,
             effort_levels: levels.iter().map(|level| (*level).to_owned()).collect(),
+            default_effort: None,
         }];
         self
     }
@@ -849,5 +897,59 @@ mod tests {
         assert_eq!(rx.recv().await, Some(Delta::Text("hello".to_owned())));
         assert!(matches!(rx.recv().await, Some(Delta::Done { .. })));
         assert_eq!(rx.recv().await, None);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod effort_tests {
+    use super::*;
+
+    /// the map this endpoint actually produced: one behaviour for the default, one for
+    /// "none", one for "low", one for "max", and aliases in between.
+    #[test]
+    fn a_probe_becomes_one_level_per_behaviour_with_the_default_identified() {
+        let control = 233;
+        let probed = vec![
+            ("none".to_owned(), 495),
+            ("minimal".to_owned(), control),
+            ("low".to_owned(), 229),
+            ("medium".to_owned(), control),
+            ("high".to_owned(), control),
+            ("xhigh".to_owned(), control),
+            ("xxhigh".to_owned(), control),
+            ("max".to_owned(), 630),
+            ("ultra".to_owned(), control),
+        ];
+
+        let found = group_efforts(control, probed);
+        assert_eq!(
+            found.default.as_deref(),
+            Some("minimal"),
+            "the first candidate that behaves like an unknown value is the server's default"
+        );
+        assert_eq!(
+            found.levels,
+            ["minimal", "none", "low", "max"],
+            "one entry per distinct behaviour, default first, aliases dropped"
+        );
+    }
+
+    #[test]
+    fn a_server_that_ignores_everything_yields_only_its_default() {
+        let found = group_efforts(100, vec![("low".to_owned(), 100), ("high".to_owned(), 100)]);
+        assert_eq!(found.default.as_deref(), Some("low"));
+        assert_eq!(
+            found.levels,
+            ["low"],
+            "no distinct behaviour, so no extra levels"
+        );
+    }
+
+    #[test]
+    fn a_failed_probe_yields_nothing() {
+        let found = group_efforts(100, Vec::new());
+        assert!(found.levels.is_empty(), "a failed probe invents nothing");
+        assert!(found.default.is_none());
     }
 }

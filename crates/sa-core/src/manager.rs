@@ -221,7 +221,9 @@ impl Manager {
                 let model = self.default_model();
                 (!model.is_empty()).then_some(model)
             },
-            effort: self.config.reasoning_effort.clone(),
+            // the level the server defaults to, when the probe found it; an operator
+            // override otherwise. never a value this build invented.
+            effort: self.default_effort_for(&self.default_model()),
             owner_host: self.config.host_fingerprint.clone(),
             owner_epoch: 0,
         })?;
@@ -287,6 +289,17 @@ impl Manager {
         self.config.mcp.status()
     }
 
+    /// the effort a session should start on: the level the server itself defaults to, or
+    /// the operator's override. none when neither is known.
+    #[must_use]
+    pub fn default_effort_for(&self, model: &str) -> Option<String> {
+        self.models()
+            .iter()
+            .find(|known| known.id == model)
+            .and_then(|known| known.default_effort.clone())
+            .or_else(|| self.config.reasoning_effort.clone())
+    }
+
     /// the reasoning effort values this model accepts, in the endpoint's own order. empty
     /// means the endpoint advertises none, and none is sent.
     #[must_use]
@@ -329,12 +342,11 @@ impl Manager {
         include_deleted: bool,
     ) -> Result<Vec<SessionSummary>, ManagerError> {
         let mut sessions = self.store.list_sessions(include_deleted)?;
-        if let Some(effort) = &self.config.reasoning_effort {
-            for session in &mut sessions {
-                // the effort a turn will actually use, not a blank where none was stored.
-                if session.effort.as_deref().unwrap_or_default().is_empty() {
-                    session.effort = Some(effort.clone());
-                }
+        for session in &mut sessions {
+            // the effort a turn will actually use, not a blank where none was stored.
+            if session.effort.as_deref().unwrap_or_default().is_empty() {
+                let model = session.model.clone().unwrap_or_default();
+                session.effort = self.default_effort_for(&model);
             }
         }
         Ok(sessions)

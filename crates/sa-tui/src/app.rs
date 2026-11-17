@@ -1323,8 +1323,11 @@ impl App {
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
                 }
-                // a new line, not a send.
-                KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.tab_mut().insert_newline(),
+                // a new line, not a send: ctrl+enter, or ctrl+j which some terminals report
+                // as a bare newline and others as the key.
+                KeyCode::Enter | KeyCode::Char('\n' | '\r' | 'j') => {
+                    self.tab_mut().insert_newline()
+                }
                 _ => {
                     let _ = shift;
                     self.tab_mut().edit(key);
@@ -1347,10 +1350,11 @@ impl App {
             }
             KeyCode::BackTab => Action::NextTab,
             // shift+enter makes a new line; enter alone sends.
-            KeyCode::Enter | KeyCode::Char('\n' | '\r') if newline => {
-                self.tab_mut().insert_newline()
-            }
-            KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.tab_mut().submit(),
+            // ctrl+j arrives as a bare newline and needs no terminal protocol, so it is the
+            // newline that always works. shift+enter and alt+enter join it.
+            KeyCode::Char('\n') => self.tab_mut().insert_newline(),
+            KeyCode::Enter | KeyCode::Char('\r') if newline => self.tab_mut().insert_newline(),
+            KeyCode::Enter | KeyCode::Char('\r') => self.tab_mut().submit(),
             KeyCode::Up => {
                 let tab = self.tab_mut();
                 tab.follow = false;

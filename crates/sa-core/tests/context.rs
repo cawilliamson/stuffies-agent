@@ -42,6 +42,7 @@ fn model(id: &str, context_limit: Option<u64>, efforts: &[&str]) -> ModelInfo {
         id: id.to_owned(),
         context_limit,
         effort_levels: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
+        default_effort: None,
     }
 }
 

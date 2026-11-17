@@ -2200,3 +2200,30 @@ fn the_effort_picker_returns_the_level_that_was_chosen() {
     );
     assert!(app.picker.is_none(), "the picker closes on choice");
 }
+
+#[test]
+fn a_newline_never_needs_a_terminal_protocol() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "a");
+
+    // ctrl+j arrives as a bare newline: it must not send.
+    assert_eq!(app.on_key(key(KeyCode::Char('\n'))), Action::None);
+    typed(&mut app, "b");
+
+    // and as a key event, for terminals that report it that way.
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+        Action::None
+    );
+    typed(&mut app, "c");
+
+    // shift+enter too, where the terminal can report it.
+    assert_eq!(app.on_key(shift_enter()), Action::None);
+    typed(&mut app, "d");
+
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit("a\nb\nc\nd".to_owned()),
+        "enter alone sends the whole thing"
+    );
+}

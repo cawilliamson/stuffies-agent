@@ -138,7 +138,11 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
     let enhanced = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::PushKeyboardEnhancementFlags(
+            // 7, as pi requests: disambiguate, report event types and alternate keys.
+            // disambiguate alone does not make every terminal report shift+enter.
             crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     )
     .is_ok();

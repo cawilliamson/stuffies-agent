@@ -307,12 +307,13 @@ pub async fn sessions_with(client: &mut Client) -> Result<()> {
         println!("no sessions");
         return Ok(());
     }
-    println!("{:<38} {:<12} TITLE", "ID", "STATE");
+    println!("{:<38} {:<10} {:<8} TITLE", "ID", "STATE", "EFFORT");
     for session in sessions {
         println!(
-            "{:<38} {:<12} {}",
+            "{:<38} {:<10} {:<8} {}",
             session["id"].as_str().unwrap_or("-"),
             session["state"].as_str().unwrap_or("-"),
+            session["effort"].as_str().unwrap_or("-"),
             session["title"].as_str().unwrap_or("-"),
         );
     }

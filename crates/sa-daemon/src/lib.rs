@@ -161,26 +161,52 @@ pub async fn run(
                         id: pinned,
                         context_limit: None,
                         effort_levels: Vec::new(),
+                        default_effort: None,
                     }]
                 },
                 |found| vec![found],
             );
     }
 
-    // a server that publishes no effort levels is asked which ones it honours, once.
-    for model in &mut discovered {
-        if model.effort_levels.is_empty() {
-            model.effort_levels = provider.probe_efforts(&model.id).await;
-            tracing::info!(
-                model = %model.id,
-                efforts = ?model.effort_levels,
-                "probed the effort levels"
-            );
-        }
-    }
-
     let models: Arc<std::sync::Mutex<Vec<sa_core::llm::ModelInfo>>> =
         Arc::new(std::sync::Mutex::new(discovered));
+
+    // a server that publishes no effort levels is asked which ones it honours, once, in the
+    // background: one request per candidate is too slow to hold startup behind.
+    {
+        let slot = Arc::clone(&models);
+        let prober = Arc::clone(&provider);
+        tokio::spawn(async move {
+            let targets: Vec<String> = slot
+                .lock()
+                .map(|models| {
+                    models
+                        .iter()
+                        .filter(|model| model.effort_levels.is_empty())
+                        .map(|model| model.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for id in targets {
+                let found = prober.probe_efforts(&id).await;
+                if found.levels.is_empty() {
+                    continue;
+                }
+                tracing::info!(
+                    model = %id,
+                    levels = ?found.levels,
+                    default = ?found.default,
+                    "probed the effort levels"
+                );
+                if let Ok(mut models) = slot.lock() {
+                    if let Some(model) = models.iter_mut().find(|model| model.id == id) {
+                        model.effort_levels = found.levels;
+                        model.default_effort = found.default;
+                    }
+                }
+            }
+        });
+    }
     if models.lock().map_or(true, |m| m.is_empty()) {
         let slot = Arc::clone(&models);
         let provider = Arc::clone(&provider);
