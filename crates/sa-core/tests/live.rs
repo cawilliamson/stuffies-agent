@@ -58,22 +58,29 @@ async fn a_tool_call_and_its_result_round_trip() {
     let ask =
         ChatMessage::user("Read the file Cargo.toml with the read tool, then say what it is.");
 
-    let mut rx = provider
-        .stream(ChatRequest {
-            model: model.clone(),
-            messages: vec![ask.clone()],
-            tools: tools.clone(),
-            max_tokens: Some(256),
-            reasoning_effort: None,
-        })
-        .await
-        .expect("stream");
+    // a model may answer directly instead of calling the tool; that is a property of the
+    // model, not of this code, so the phase is retried rather than failed.
     let mut calls = Vec::new();
-    while let Some(delta) = rx.recv().await {
-        match delta {
-            Delta::ToolCall(call) => calls.push(call),
-            Delta::Failed(reason) => panic!("provider failed: {reason}"),
-            _ => {}
+    for _ in 0..3 {
+        let mut rx = provider
+            .stream(ChatRequest {
+                model: model.clone(),
+                messages: vec![ask.clone()],
+                tools: tools.clone(),
+                max_tokens: Some(256),
+                reasoning_effort: None,
+            })
+            .await
+            .expect("stream");
+        while let Some(delta) = rx.recv().await {
+            match delta {
+                Delta::ToolCall(call) => calls.push(call),
+                Delta::Failed(reason) => panic!("provider failed: {reason}"),
+                _ => {}
+            }
+        }
+        if !calls.is_empty() {
+            break;
         }
     }
     assert!(!calls.is_empty(), "the model must call the tool");
