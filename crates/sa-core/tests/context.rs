@@ -169,3 +169,23 @@ fn a_session_reports_the_effort_a_turn_will_use() {
     let listed = manager.list_sessions(false).expect("list");
     assert_eq!(listed[0].effort.as_deref(), Some("medium"));
 }
+
+#[test]
+fn auxiliary_calls_take_the_least_effort_the_model_offers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = manager(
+        dir.path(),
+        vec![model("m", None, &["none", "low", "high", "max"])],
+    );
+
+    assert_eq!(
+        manager.cheapest_effort("m").as_deref(),
+        Some("none"),
+        "a title needs no thinking"
+    );
+    assert_eq!(
+        manager.cheapest_effort("unknown-model"),
+        None,
+        "with nothing known, the server's own default applies"
+    );
+}

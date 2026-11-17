@@ -300,6 +300,13 @@ impl Manager {
             .or_else(|| self.config.reasoning_effort.clone())
     }
 
+    /// the least effort this model offers, for the calls that only need a sentence: a title
+    /// or a summary. none when nothing is known, which leaves the server's own default.
+    #[must_use]
+    pub fn cheapest_effort(&self, model: &str) -> Option<String> {
+        self.effort_levels(model).first().cloned()
+    }
+
     /// the reasoning effort values this model accepts, in the endpoint's own order. empty
     /// means the endpoint advertises none, and none is sent.
     #[must_use]
@@ -918,7 +925,8 @@ impl Manager {
                 // generous on purpose: a reasoning model spends budget on its trace before
                 // it emits any text, and a tight cap yields an empty title.
                 max_tokens: Some(128),
-                reasoning_effort: self.reasoning_effort(model, None),
+                // a title needs no thinking: take the least effort the model offers.
+                reasoning_effort: self.cheapest_effort(model),
             })
             .await
         {
@@ -1050,7 +1058,8 @@ impl Manager {
                 ))],
                 tools: Vec::new(),
                 max_tokens: Some(1024),
-                reasoning_effort: self.reasoning_effort(model, None),
+                // summarising is reading, not solving: the least effort the model offers.
+                reasoning_effort: self.cheapest_effort(model),
             })
             .await?;
 

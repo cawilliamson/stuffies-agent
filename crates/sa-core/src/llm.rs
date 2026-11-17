@@ -229,7 +229,7 @@ pub type ModelsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, LlmError>> + Send + 'a>>;
 
 /// what a probe learned about a server's effort values.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiscoveredEfforts {
     /// the values that behave differently from each other, one per behaviour.
     pub levels: Vec<String>,
@@ -260,8 +260,8 @@ pub struct ModelInfo {
 /// they are candidates, not a list: only the ones a probe shows the server distinguishing
 /// are kept. ordered so a behaviour is named by its canonical value rather than an alias,
 /// so a server that treats `minimal` as `low` reports the level as `low`.
-pub const EFFORT_CANDIDATES: [&str; 9] = [
-    "none", "low", "high", "max", "minimal", "medium", "xhigh", "xxhigh", "ultra",
+pub const EFFORT_CANDIDATES: [&str; 8] = [
+    "none", "low", "high", "max", "minimal", "medium", "xhigh", "ultra",
 ];
 /// a value no server knows, used to see what "ignored" looks like.
 const EFFORT_SENTINEL: &str = "sa-probe-unknown-effort";
@@ -394,8 +394,10 @@ impl OpenAiProvider {
         group_efforts(control, probed)
     }
 
-    /// one probe: how much reasoning the model emits for this effort value, if it answers.
-    async fn probe_one(&self, model: &str, effort: &str) -> Option<usize> {
+    /// one probe: how much reasoning and answer text the model emits for this effort value,
+    /// if it answers. reasoning length is the measure of effort; answer length breaks ties
+    /// between levels that think the same amount.
+    async fn probe_one(&self, model: &str, effort: &str) -> Option<Profile> {
         let body = serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": "Think it through, then answer: what is 17*23?"}],
@@ -425,7 +427,7 @@ impl OpenAiProvider {
             .get("content")
             .and_then(serde_json::Value::as_str)
             .map_or(0, |text| text.chars().count());
-        Some(reasoning + content)
+        Some(Profile { reasoning, content })
     }
 
     /// asks the endpoint what it is serving, with the fields only it knows: the context
@@ -471,35 +473,98 @@ impl OpenAiProvider {
     }
 }
 
-/// groups probed values by behaviour.
+/// what one probe measured: how much the model thought, and how much it then said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Profile {
+    /// reasoning characters. this is the measure of effort: a level that thinks harder
+    /// emits more of it.
+    pub reasoning: usize,
+    /// answer characters, which separates levels that reason the same amount.
+    pub content: usize,
+}
+
+/// the probed effort levels, remembered so a server is asked once rather than on every
+/// start. a cache is a plain json file keyed by endpoint and model.
+#[derive(Debug)]
+pub struct EffortCache {
+    path: std::path::PathBuf,
+}
+
+impl EffortCache {
+    #[must_use]
+    pub const fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn read(&self) -> std::collections::BTreeMap<String, DiscoveredEfforts> {
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .unwrap_or_default()
+    }
+
+    /// what was learned about this endpoint and model, if anything was.
+    #[must_use]
+    pub fn get(&self, endpoint: &str, model: &str) -> Option<DiscoveredEfforts> {
+        self.read().remove(&effort_key(endpoint, model))
+    }
+
+    /// records what was learned, so the next start needs no probe.
+    pub fn remember(&self, endpoint: &str, model: &str, found: &DiscoveredEfforts) {
+        let mut all = self.read();
+        all.insert(effort_key(endpoint, model), found.clone());
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(body) = serde_json::to_string_pretty(&all) {
+            let _ = std::fs::write(&self.path, body);
+        }
+    }
+}
+
+/// the cache key: the same model on another endpoint is another question.
+#[must_use]
+pub fn effort_key(endpoint: &str, model: &str) -> String {
+    format!("{endpoint}|{model}")
+}
+
+/// groups probed values by behaviour, ordered from least to most effort.
 ///
 /// one representative per distinct profile, plus the value whose behaviour matches the
 /// unknown-value control, which is the server's own default. values that behave like the
-/// control are aliases of the default, not new levels.
+/// control are aliases of the default, not new levels. the order comes from the
+/// measurements, so `none` (no reasoning at all) leads and the hardest thinking is last.
 #[must_use]
-pub fn group_efforts(control: usize, probed: Vec<(String, usize)>) -> DiscoveredEfforts {
-    let mut levels: Vec<String> = Vec::new();
-    let mut seen: Vec<usize> = Vec::new();
+pub fn group_efforts(control: Profile, probed: Vec<(String, Profile)>) -> DiscoveredEfforts {
+    let mut groups: Vec<(Profile, String)> = Vec::new();
     let mut default = None;
 
     for (name, profile) in probed {
-        if profile == control {
-            if default.is_none() {
-                default = Some(name);
-            }
+        // the value that behaves like the control is the server's default, and it is a
+        // real level: it is kept once, so it sorts into place with the others.
+        if profile == control && default.is_none() {
+            default = Some(name.clone());
+        }
+        if groups.iter().any(|(seen, _)| *seen == profile) {
             continue;
         }
-        if seen.contains(&profile) {
-            continue;
-        }
-        seen.push(profile);
-        levels.push(name);
+        groups.push((profile, name));
     }
-    // the default is a real level: it belongs in the list, first.
-    if let Some(found) = &default {
-        levels.insert(0, found.clone());
+
+    // ordering comes from the documented ladder, not from the measurements: two levels that
+    // reason the same amount differ by a few characters run to run, which would reorder them
+    // between probes. the probe decides which values are real; the ladder says how hard they
+    // are, and it puts `none` first because it thinks least.
+    groups.sort_by_key(|(_, name)| {
+        EFFORT_CANDIDATES
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or(usize::MAX)
+    });
+    DiscoveredEfforts {
+        levels: groups.into_iter().map(|(_, name)| name).collect(),
+        default,
     }
-    DiscoveredEfforts { levels, default }
 }
 
 /// our transcript, in the shape rig sends.
@@ -905,39 +970,62 @@ mod tests {
 mod effort_tests {
     use super::*;
 
-    /// the map this endpoint actually produced: one behaviour for the default, one for
-    /// "none", one for "low", one for "max", and aliases in between.
+    /// the map this endpoint actually produced: the default (high), none, low and max, with
+    /// the aliases in between.
     #[test]
-    fn a_probe_becomes_one_level_per_behaviour_with_the_default_identified() {
-        let control = 233;
+    fn a_probe_becomes_levels_ordered_from_least_to_most_effort() {
+        let control = Profile {
+            reasoning: 116,
+            content: 117,
+        };
         let probed = vec![
-            ("none".to_owned(), 495),
-            ("minimal".to_owned(), control),
-            ("low".to_owned(), 229),
-            ("medium".to_owned(), control),
+            (
+                "none".to_owned(),
+                Profile {
+                    reasoning: 0,
+                    content: 495,
+                },
+            ),
+            (
+                "low".to_owned(),
+                Profile {
+                    reasoning: 116,
+                    content: 113,
+                },
+            ),
             ("high".to_owned(), control),
+            (
+                "max".to_owned(),
+                Profile {
+                    reasoning: 409,
+                    content: 221,
+                },
+            ),
+            ("minimal".to_owned(), control),
+            ("medium".to_owned(), control),
             ("xhigh".to_owned(), control),
-            ("xxhigh".to_owned(), control),
-            ("max".to_owned(), 630),
             ("ultra".to_owned(), control),
         ];
 
         let found = group_efforts(control, probed);
-        assert_eq!(
-            found.default.as_deref(),
-            Some("minimal"),
-            "the first candidate that behaves like an unknown value is the server's default"
-        );
+        assert_eq!(found.default.as_deref(), Some("high"));
         assert_eq!(
             found.levels,
-            ["minimal", "none", "low", "max"],
-            "one entry per distinct behaviour, default first, aliases dropped"
+            ["none", "low", "high", "max"],
+            "least effort first: no reasoning, then low, then the default, then the hardest"
         );
     }
 
     #[test]
     fn a_server_that_ignores_everything_yields_only_its_default() {
-        let found = group_efforts(100, vec![("low".to_owned(), 100), ("high".to_owned(), 100)]);
+        let control = Profile {
+            reasoning: 100,
+            content: 100,
+        };
+        let found = group_efforts(
+            control,
+            vec![("low".to_owned(), control), ("high".to_owned(), control)],
+        );
         assert_eq!(found.default.as_deref(), Some("low"));
         assert_eq!(
             found.levels,
@@ -948,7 +1036,13 @@ mod effort_tests {
 
     #[test]
     fn a_failed_probe_yields_nothing() {
-        let found = group_efforts(100, Vec::new());
+        let found = group_efforts(
+            Profile {
+                reasoning: 1,
+                content: 1,
+            },
+            Vec::new(),
+        );
         assert!(found.levels.is_empty(), "a failed probe invents nothing");
         assert!(found.default.is_none());
     }

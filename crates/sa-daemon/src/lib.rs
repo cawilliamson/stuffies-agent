@@ -168,6 +168,24 @@ pub async fn run(
             );
     }
 
+    // effort levels are probed once and then remembered, so a restart costs no requests.
+    let cache = sa_core::llm::EffortCache::new(cfg.state_dir.join("efforts.json"));
+    let endpoint = std::env::var("OPENAI_API_ENDPOINT").unwrap_or_default();
+    for model in &mut discovered {
+        if model.effort_levels.is_empty() {
+            if let Some(found) = cache.get(&endpoint, &model.id) {
+                tracing::info!(
+                    model = %model.id,
+                    levels = ?found.levels,
+                    default = ?found.default,
+                    "effort levels from cache"
+                );
+                model.effort_levels = found.levels;
+                model.default_effort = found.default;
+            }
+        }
+    }
+
     let models: Arc<std::sync::Mutex<Vec<sa_core::llm::ModelInfo>>> =
         Arc::new(std::sync::Mutex::new(discovered));
 
@@ -200,10 +218,11 @@ pub async fn run(
                 );
                 if let Ok(mut models) = slot.lock() {
                     if let Some(model) = models.iter_mut().find(|model| model.id == id) {
-                        model.effort_levels = found.levels;
-                        model.default_effort = found.default;
+                        model.effort_levels = found.levels.clone();
+                        model.default_effort = found.default.clone();
                     }
                 }
+                cache.remember(&endpoint, &id, &found);
             }
         });
     }
@@ -281,7 +300,7 @@ pub async fn run(
     tracing::info!(
         socket = %cfg.socket_path.display(),
         model = %manager.default_model(),
-        effort = ?std::env::var("SA_REASONING_EFFORT").ok(),
+        effort = ?manager.default_effort_for(&manager.default_model()),
         context_limit = ?manager.context_limit(&manager.default_model()),
         "sa daemon listening"
     );
