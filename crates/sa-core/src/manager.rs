@@ -65,6 +65,8 @@ pub struct ManagerConfig {
     pub aux_budget_secs: u64,
     /// what the endpoint reports it serves. shared so a background refresher can fill it in.
     pub models: Arc<Mutex<Vec<crate::llm::ModelInfo>>>,
+    /// the mcp servers this daemon reached. their tools join the built-ins for every turn.
+    pub mcp: Arc<crate::mcp::Hub>,
 }
 
 struct Subscription {
@@ -270,6 +272,12 @@ impl Manager {
             .iter()
             .find(|known| known.id == model)
             .and_then(|known| known.context_limit)
+    }
+
+    /// the mcp servers this daemon reached, for the operator to inspect.
+    #[must_use]
+    pub fn mcp_status(&self) -> Vec<crate::mcp::ServerStatus> {
+        self.config.mcp.status()
     }
 
     /// the reasoning effort values this model accepts, in the endpoint's own order. empty
@@ -627,7 +635,10 @@ impl Manager {
             cancel: Arc::clone(&cancel),
             steering,
         });
-        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::new(PathBuf::from(&row.cwd)));
+        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_mcp(
+            PathBuf::from(&row.cwd),
+            Arc::clone(&self.config.mcp),
+        ));
 
         let model = row.model.clone().unwrap_or_else(|| self.default_model());
 

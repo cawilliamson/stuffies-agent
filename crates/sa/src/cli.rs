@@ -44,6 +44,8 @@ pub enum Command {
     },
     /// list sessions
     Sessions,
+    /// list the configured mcp servers, their tools and their state
+    Mcp,
     /// show the context and skills that would be injected for a directory
     Context {
         /// directory to inspect; defaults to the current one

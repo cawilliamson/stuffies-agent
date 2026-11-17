@@ -22,6 +22,7 @@ fn manager(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
             models: Arc::new(Mutex::new(models)),
+            mcp: Arc::new(sa_core::mcp::Hub::empty()),
         }),
     ))
 }

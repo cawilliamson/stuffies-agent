@@ -21,6 +21,7 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
             models: Arc::new(std::sync::Mutex::new(Vec::new())),
+            mcp: Arc::new(sa_core::mcp::Hub::empty()),
         }),
     ))
 }

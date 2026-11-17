@@ -443,6 +443,36 @@ where
                             Err(err) => app.tab_mut().push(app::Role::Error, err),
                         }
                     }
+                    "/mcp" => match rpc(client, "mcp.list", json!({})).await {
+                        Ok(list) => {
+                            let rows = list.as_array().cloned().unwrap_or_default();
+                            if rows.is_empty() {
+                                app.tab_mut()
+                                    .push(app::Role::System, "no mcp servers configured");
+                            }
+                            for row in rows {
+                                let name = row["name"].as_str().unwrap_or("?");
+                                let text = row["error"].as_str().map_or_else(
+                                    || {
+                                        let tools = row["tools"]
+                                            .as_array()
+                                            .map(|tools| {
+                                                tools
+                                                    .iter()
+                                                    .filter_map(|tool| tool.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            })
+                                            .unwrap_or_default();
+                                        format!("{name}: {tools}")
+                                    },
+                                    |error| format!("{name}: {error}"),
+                                );
+                                app.tab_mut().push(app::Role::System, text);
+                            }
+                        }
+                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
+                    },
                     "/effort" if arg.is_empty() => {
                         // the endpoint's own values, not a list this build invented.
                         let model = app.tab().status.model.clone();

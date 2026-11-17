@@ -6,6 +6,7 @@ pub mod agent;
 pub mod dispatcher;
 pub mod llm;
 pub mod manager;
+pub mod mcp;
 pub mod peer;
 pub mod store;
 pub mod tools;

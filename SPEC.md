@@ -752,6 +752,18 @@ Initial set, all executed in the daemon process with the session's `cwd`:
 read  write  edit  bash  grep  find  ls
 ```
 
+Model Context Protocol servers are the third set. The daemon reads
+`$XDG_CONFIG_HOME/sa/mcp.json` in the format every other MCP client uses
+(`mcpServers`, with `command`/`args`/`env`/`cwd` for stdio or `url`/`headers` for
+streamable HTTP), connects each enabled server once at startup, and offers its tools to
+the model as `mcp__<server>__<tool>`. The prefix is not decoration: a server tool can
+never shadow a built-in, and a call routes on the name alone. `${VAR}` in an `env` or
+`header` value is expanded from the environment, so credentials stay out of the file. A
+server that fails to connect is reported by `sa mcp` and `/mcp` and skipped; it never
+stops the others, and it never stops a turn. The protocol itself is the official SDK's
+job (`rmcp` through `rig-rmcp`); what belongs to this project is where the configuration
+lives, how a tool is named, and when a server is reached.
+
 The knowledge tools (§11.4) are the second set and arrive at v3.0:
 
 ```text

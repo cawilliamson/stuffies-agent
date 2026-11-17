@@ -319,6 +319,48 @@ pub async fn sessions_with(client: &mut Client) -> Result<()> {
     Ok(())
 }
 
+// ---- mcp ----------------------------------------------------------------
+
+pub async fn mcp() -> Result<()> {
+    let mut client = connect().await?;
+    mcp_with(&mut client).await
+}
+
+/// as [`mcp`], over a client the caller already holds.
+pub async fn mcp_with(client: &mut Client) -> Result<()> {
+    let response = client
+        .call("mcp.list", json!({}))
+        .await
+        .map_err(|e| format!("mcp.list failed: {e}"))?;
+    let Some(servers) = response.as_array() else {
+        println!("no mcp servers configured");
+        return Ok(());
+    };
+    if servers.is_empty() {
+        println!(
+            "no mcp servers configured in {}",
+            sa_core::mcp::config_path().display()
+        );
+        return Ok(());
+    }
+    for server in servers {
+        let name = server["name"].as_str().unwrap_or("-");
+        let transport = server["transport"].as_str().unwrap_or("-");
+        if let Some(error) = server["error"].as_str() {
+            println!("{name:<20} {transport:<6} unavailable: {error}");
+        } else {
+            let tools = server["tools"].as_array().map_or(0, Vec::len);
+            println!("{name:<20} {transport:<6} {tools} tools");
+            for tool in server["tools"].as_array().into_iter().flatten() {
+                if let Some(tool) = tool.as_str() {
+                    println!("    {tool}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---- run ----------------------------------------------------------------
 
 pub async fn run_once(prompt: &str) -> Result<()> {
@@ -914,5 +956,18 @@ mod tests {
                 .await
                 .expect("export by id");
         }
+    }
+    #[tokio::test]
+    async fn listing_mcp_servers_reports_their_state_and_tools() {
+        let list = json!([
+            {"name": "filesystem", "transport": "stdio", "tools": ["mcp__filesystem__read_file"], "error": null},
+            {"name": "broken", "transport": "http", "tools": [], "error": "connection refused"},
+        ]);
+        let (mut client, _server) = daemon(vec![("mcp.list", list)]);
+        mcp_with(&mut client).await.expect("servers");
+
+        // no servers is not an error.
+        let (mut client, _server) = daemon(vec![("mcp.list", json!([]))]);
+        mcp_with(&mut client).await.expect("empty");
     }
 }

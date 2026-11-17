@@ -30,12 +30,26 @@ pub enum ToolError {
 
 pub struct ToolRegistry {
     workspace: PathBuf,
+    /// the mcp servers this daemon reached, if any. their tools are the model's too.
+    mcp: Option<std::sync::Arc<crate::mcp::Hub>>,
 }
 
 impl ToolRegistry {
     #[must_use]
     pub const fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            mcp: None,
+        }
+    }
+
+    /// a registry that also offers the tools of every connected mcp server.
+    #[must_use]
+    pub const fn with_mcp(workspace: PathBuf, mcp: std::sync::Arc<crate::mcp::Hub>) -> Self {
+        Self {
+            workspace,
+            mcp: Some(mcp),
+        }
     }
 
     /// canonicalises a caller-supplied path and refuses anything outside the workspace.
@@ -55,6 +69,14 @@ impl ToolRegistry {
 
     async fn call(&self, call: &ToolCall) -> Result<ToolOutcome, ToolError> {
         let args = parse_args(&call.arguments)?;
+        // a server tool is namespaced, so it can never collide with a built-in.
+        if call.name.starts_with(crate::mcp::TOOL_PREFIX) {
+            let Some(hub) = &self.mcp else {
+                return Err(ToolError::Unknown(call.name.clone()));
+            };
+            let output = hub.call(&call.name, &args).await.map_err(ToolError::Args)?;
+            return Ok(text(output));
+        }
         match call.name.as_str() {
             "read" => self.read(&args).await.map(text),
             "write" => self.write(&args).await.map(text),
@@ -219,7 +241,7 @@ impl ToolRegistry {
 
 impl ToolExecutor for ToolRegistry {
     fn specs(&self) -> Vec<ToolSpec> {
-        vec![
+        let mut tools = vec![
             spec(
                 "read",
                 "Read a file as text.",
@@ -260,7 +282,12 @@ impl ToolExecutor for ToolRegistry {
                 ),
                 json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
             ),
-        ]
+        ];
+        // every connected server's tools, named so they cannot shadow a built-in.
+        if let Some(hub) = &self.mcp {
+            tools.extend(hub.specs());
+        }
+        tools
     }
 
     fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {

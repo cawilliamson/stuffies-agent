@@ -180,6 +180,22 @@ pub async fn run(
         });
     }
 
+    // mcp servers are reached once, for the daemon's lifetime, so a turn never pays for a
+    // server start. a server that fails is reported and the rest still work.
+    let mcp_config = sa_core::mcp::Config::load_default();
+    let mcp = Arc::new(sa_core::mcp::Hub::connect(&mcp_config).await);
+    for server in mcp.status() {
+        if let Some(error) = server.error {
+            tracing::warn!(server = %server.name, %error, "mcp server unavailable");
+        } else {
+            tracing::info!(
+                server = %server.name,
+                tools = server.tools.len(),
+                "mcp server connected"
+            );
+        }
+    }
+
     let store = Store::open(&cfg.db_path)?;
     let manager = Arc::new(Manager::new(
         store,
@@ -190,6 +206,7 @@ pub async fn run(
                 .ok()
                 .and_then(|v| v.parse().ok()),
             models,
+            mcp,
             lock_dir: cfg.runtime_dir.join("locks"),
             turn_timeout_secs: cfg.turn_timeout_secs,
             aux_budget_secs: cfg.aux_budget_secs,

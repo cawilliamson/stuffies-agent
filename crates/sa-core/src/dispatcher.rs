@@ -120,6 +120,7 @@ impl Dispatcher {
             "events.subscribe" => self.events_subscribe(conn, &params),
             "events.unsubscribe" => self.events_unsubscribe(&params),
             "model.list" => self.model_list(),
+            "mcp.list" => self.mcp_list(),
             "model.select" => self.model_select(&params),
             "model.effort" => self.model_effort(&params),
             "handoff.export" | "handoff.import" | "handoff.accept" => Err(RpcError::new(
@@ -361,6 +362,21 @@ impl Dispatcher {
                     "effort_levels": effort_levels,
                 })
             })
+            .collect::<Vec<_>>()))
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn mcp_list(&self) -> Result<Value, RpcError> {
+        Ok(json!(self
+            .manager
+            .mcp_status()
+            .into_iter()
+            .map(|server| json!({
+                "name": server.name,
+                "transport": server.transport,
+                "tools": server.tools,
+                "error": server.error,
+            }))
             .collect::<Vec<_>>()))
     }
 
