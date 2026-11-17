@@ -1768,6 +1768,13 @@ fn framed_split(model: &str, thinking: &str, message: &str, width: usize) -> Vec
 ///
 /// reasoning and the reply it produced share one frame: the reasoning sits above a rule and
 /// the reply below it.
+/// a blank row between frames, so one message does not sit against the next.
+fn separate(out: &mut Vec<Line<'static>>) {
+    if !out.is_empty() {
+        out.push(Line::default());
+    }
+}
+
 #[must_use]
 pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
     // fill whatever width the pane has: no cap, or wide terminals leave a dead margin.
@@ -1789,9 +1796,11 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
             }
             if next < tab.transcript.len() && tab.transcript[next].role == Role::Assistant {
                 let message = tab.transcript[next].text.clone();
+                separate(&mut out);
                 out.extend(framed_split(&tab.status.model, &thinking, &message, inner));
                 index = next + 1;
             } else {
+                separate(&mut out);
                 out.extend(framed(
                     &Entry::new(Role::Thinking, thinking),
                     inner,
@@ -1808,6 +1817,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
                 && tab.transcript[index + 1].role == Role::ToolOutput
             {
                 let result = &tab.transcript[index + 1];
+                separate(&mut out);
                 out.extend(framed_tool(
                     &tool,
                     &entry.text,
@@ -1820,6 +1830,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
             }
         }
 
+        separate(&mut out);
         out.extend(framed(entry, inner, &tab.status.model));
         index += 1;
     }

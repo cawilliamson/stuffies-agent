@@ -581,7 +581,12 @@ fn every_frame_row_is_the_same_width() {
     app.tab_mut().push(Role::Thinking, "thinking");
 
     let lines = sa_tui::render(&app, 98);
-    let widths: Vec<usize> = lines.iter().map(ratatui::prelude::Line::width).collect();
+    // the blank rows between frames are spacing, not frame rows.
+    let widths: Vec<usize> = lines
+        .iter()
+        .map(ratatui::prelude::Line::width)
+        .filter(|width| *width > 0)
+        .collect();
     let first = widths.first().copied().unwrap_or(0);
     assert_eq!(first, 98, "frames must fill the pane exactly");
     for (index, width) in widths.iter().enumerate() {
@@ -2225,5 +2230,27 @@ fn a_newline_never_needs_a_terminal_protocol() {
         app.on_key(key(KeyCode::Enter)),
         Action::Submit("a\nb\nc\nd".to_owned()),
         "enter alone sends the whole thing"
+    );
+}
+
+#[test]
+fn messages_are_separated_by_a_blank_row() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::User, "a question");
+    app.tab_mut().push(Role::Assistant, "an answer");
+
+    let lines = sa_tui::render(&app, 80);
+    let widths: Vec<usize> = lines.iter().map(ratatui::prelude::Line::width).collect();
+    let blank = widths.iter().position(|width| *width == 0);
+    assert!(
+        blank.is_some(),
+        "frames must not sit against each other: {widths:?}"
+    );
+
+    // and it is between them, not trailing at the end.
+    let at = blank.expect("a blank row");
+    assert!(
+        at > 0 && at < widths.len() - 1,
+        "the gap belongs between frames"
     );
 }
