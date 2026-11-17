@@ -331,6 +331,24 @@ where
                     }
                 }
             }
+            Action::EffortPicked(level) => {
+                let sid = app.tab().session.clone();
+                match rpc(
+                    client,
+                    "model.effort",
+                    json!({"session_id": sid, "effort": level}),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        app.tab_mut().status.effort = level.clone();
+                        app.touch();
+                        app.tab_mut()
+                            .push(app::Role::System, format!("effort: {level}"));
+                    }
+                    Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
+                }
+            }
             Action::CloseTab => {
                 let cwd = tab_cwd(&app);
                 if let Some(closed) = app.close_tab() {
@@ -476,13 +494,27 @@ where
                     "/effort" if arg.is_empty() => {
                         // the endpoint's own values, not a list this build invented.
                         let model = app.tab().status.model.clone();
+                        let current = app.tab().status.effort.clone();
                         let levels = app.effort_levels(app.tab());
-                        let text = if levels.is_empty() {
-                            format!("{model}: the endpoint advertises no effort levels")
+                        if levels.is_empty() {
+                            app.tab_mut().push(
+                                app::Role::System,
+                                format!("{model}: the endpoint advertises no effort levels"),
+                            );
                         } else {
-                            format!("{model} effort levels: {}", levels.join(", "))
-                        };
-                        app.tab_mut().push(app::Role::System, text);
+                            let items = levels
+                                .into_iter()
+                                .map(|level| app::PickerItem {
+                                    label: if level == current {
+                                        format!("{level} (current)")
+                                    } else {
+                                        level.clone()
+                                    },
+                                    id: level,
+                                })
+                                .collect();
+                            app.open_picker(app::PickerKind::Effort, format!("{model} effort"), items);
+                        }
                     }
                     "/effort" => match rpc(client, "model.effort", json!({"session_id": sid, "effort": arg}))
                         .await
@@ -577,7 +609,7 @@ where
                                         "no closed sessions in this directory",
                                     );
                                 } else {
-                                    app.open_picker("resume", items);
+                                    app.open_picker(app::PickerKind::Resume, "resume", items);
                                 }
                             }
                             Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),

@@ -978,9 +978,19 @@ pub struct PickerItem {
     pub label: String,
 }
 
+/// what a picker is choosing, so its result can be routed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerKind {
+    /// a session to bring back.
+    Resume,
+    /// a reasoning effort level for this tab.
+    Effort,
+}
+
 /// a list the operator chooses from, drawn over the interface.
 #[derive(Debug, Clone)]
 pub struct Picker {
+    pub kind: PickerKind,
     pub title: String,
     pub items: Vec<PickerItem>,
     pub selected: usize,
@@ -1000,6 +1010,8 @@ pub enum Action {
     SwitchTab(usize),
     /// the operator chose a session to resume.
     ResumePicked(String),
+    /// the operator chose a reasoning effort level.
+    EffortPicked(String),
 }
 
 pub struct App {
@@ -1163,8 +1175,14 @@ impl App {
     }
 
     /// opens a picker over the interface, replacing any that is already up.
-    pub fn open_picker(&mut self, title: impl Into<String>, items: Vec<PickerItem>) {
+    pub fn open_picker(
+        &mut self,
+        kind: PickerKind,
+        title: impl Into<String>,
+        items: Vec<PickerItem>,
+    ) {
         self.picker = Some(Picker {
+            kind,
             title: title.into(),
             items,
             selected: 0,
@@ -1243,14 +1261,16 @@ impl App {
                 Action::None
             }
             KeyCode::Enter => {
-                let picked = self
-                    .picker
-                    .as_ref()
-                    .and_then(|p| p.items.get(p.selected))
-                    .map(|item| item.id.clone());
+                let picked = self.picker.as_ref().and_then(|picker| {
+                    let item = picker.items.get(picker.selected)?;
+                    Some((picker.kind, item.id.clone()))
+                });
                 self.picker = None;
                 self.touch();
-                picked.map_or(Action::None, Action::ResumePicked)
+                picked.map_or(Action::None, |(kind, id)| match kind {
+                    PickerKind::Resume => Action::ResumePicked(id),
+                    PickerKind::Effort => Action::EffortPicked(id),
+                })
             }
             KeyCode::Esc => {
                 self.picker = None;

@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use sa_tui::app::{transcript_lines, Action, App, PickerItem, Role, ServedModel};
+use sa_tui::app::{transcript_lines, Action, App, PickerItem, PickerKind, Role, ServedModel};
 use serde_json::json;
 
 const fn key(code: KeyCode) -> KeyEvent {
@@ -1337,6 +1337,7 @@ fn a_short_transcript_never_shows_a_scrollbar() {
 fn the_picker_routes_keys_and_returns_the_chosen_session() {
     let mut app = App::new("session-abcdef", "m");
     app.open_picker(
+        PickerKind::Resume,
         "resume",
         vec![
             PickerItem {
@@ -1365,6 +1366,7 @@ fn the_picker_routes_keys_and_returns_the_chosen_session() {
 fn escape_closes_the_picker_without_choosing() {
     let mut app = App::new("session-abcdef", "m");
     app.open_picker(
+        PickerKind::Resume,
         "resume",
         vec![PickerItem {
             id: "aaa".to_owned(),
@@ -1379,6 +1381,7 @@ fn escape_closes_the_picker_without_choosing() {
 fn keys_go_to_the_picker_not_the_composer() {
     let mut app = App::new("session-abcdef", "m");
     app.open_picker(
+        PickerKind::Resume,
         "resume",
         vec![PickerItem {
             id: "aaa".to_owned(),
@@ -2134,4 +2137,45 @@ fn a_multi_line_prompt_is_drawn_on_separate_rows() {
         q < w && w < e,
         "each line must get its own row: {q} {w} {e}"
     );
+}
+
+#[test]
+fn the_effort_picker_returns_the_level_that_was_chosen() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.tab_mut().status.effort = "none".to_owned();
+    app.served.insert(
+        "deepseek".to_owned(),
+        ServedModel {
+            context_limit: None,
+            effort_levels: vec!["none".to_owned(), "high".to_owned()],
+        },
+    );
+
+    let levels = app.effort_levels(app.tab());
+    let current = app.tab().status.effort.clone();
+    let items: Vec<PickerItem> = levels
+        .into_iter()
+        .map(|level| PickerItem {
+            label: if level == current {
+                format!("{level} (current)")
+            } else {
+                level.clone()
+            },
+            id: level,
+        })
+        .collect();
+    app.open_picker(PickerKind::Effort, "effort", items);
+
+    let shown = screen(&mut app, 100, 20);
+    assert!(
+        shown.contains("none (current)"),
+        "the current level is marked:\n{shown}"
+    );
+
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::EffortPicked("high".to_owned())
+    );
+    assert!(app.picker.is_none(), "the picker closes on choice");
 }
