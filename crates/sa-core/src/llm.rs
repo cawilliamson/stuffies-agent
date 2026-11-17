@@ -8,7 +8,7 @@ use std::pin::Pin;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
@@ -216,6 +216,9 @@ pub enum Delta {
         prompt_tokens: u64,
         completion_tokens: u64,
     },
+    /// the stream failed after it started. carried as a delta so the turn fails with the
+    /// reason rather than completing with an empty answer.
+    Failed(String),
 }
 
 /// boxed stream future, so the trait stays object-safe without an async-trait dependency.
@@ -342,9 +345,7 @@ impl OpenAiProvider {
 
 /// our transcript, in the shape rig sends.
 fn rig_messages(messages: &[ChatMessage]) -> Result<Vec<rig_core::completion::Message>, LlmError> {
-    use rig_core::completion::message::{
-        AssistantMessage, CallId, ProviderCallId, ToolName, UserContent,
-    };
+    use rig_core::completion::message::{AssistantMessage, UserContent};
     use rig_core::completion::{AssistantContent, Message};
 
     let mut out = Vec::new();
@@ -385,10 +386,16 @@ fn rig_messages(messages: &[ChatMessage]) -> Result<Vec<rig_core::completion::Me
                     let arguments: serde_json::Value =
                         serde_json::from_str(&call.function.arguments)
                             .unwrap_or_else(|_| serde_json::json!({}));
-                    content.push(AssistantContent::tool_call(
-                        call.id.clone(),
-                        tool_name(&call.function.name)?,
-                        arguments,
+                    // built from the same CallId the result will use, or the wire sees two
+                    // different ids for one call and the model re-issues it.
+                    content.push(AssistantContent::ToolCall(
+                        rig_core::completion::message::ToolCall::new(
+                            rig_call_id(&call.id)?,
+                            rig_core::completion::message::ToolFunction::new(
+                                tool_name(&call.function.name)?,
+                                arguments,
+                            ),
+                        ),
                     ));
                 }
                 out.push(Message::Assistant(AssistantMessage::new(content)));
@@ -427,13 +434,16 @@ fn tool_name(raw: &str) -> Result<rig_core::completion::message::ToolName, LlmEr
 fn rig_request(request: &ChatRequest) -> Result<rig_core::completion::CompletionRequest, LlmError> {
     use rig_core::completion::ToolDefinition;
 
-    let mut history = rig_messages(&request.messages)?.into_iter();
-    let Some(first) = history.next() else {
+    // rig sends the history first and the "prompt" last, so the newest message is the
+    // prompt and everything before it is history. the other way round reorders the
+    // conversation and the model loses the thread.
+    let mut messages = rig_messages(&request.messages)?;
+    let Some(prompt) = messages.pop() else {
         return Err(LlmError::Stream(
             "a request needs at least one message".to_owned(),
         ));
     };
-    let mut completion = rig_core::completion::CompletionRequest::new(first).messages(history);
+    let mut completion = rig_core::completion::CompletionRequest::new(prompt).messages(messages);
     if let Some(max_tokens) = request.max_tokens {
         completion = completion.max_tokens(max_tokens);
     }
@@ -464,7 +474,9 @@ impl Provider for OpenAiProvider {
         Box::pin(async move {
             use rig_core::streaming::{Item, StreamEvent};
 
-            let model = self.client.completion(request.model.clone());
+            // the chat-completions wire: openai-compatible gateways serve this route,
+            // while the default wire is the responses api and 404s on them.
+            let model = self.client.chat(request.model.clone());
             let mut stream = model
                 .stream(rig_request(&request)?)
                 .map_err(|err| LlmError::Http(err.to_string()))?;
@@ -478,8 +490,8 @@ impl Provider for OpenAiProvider {
                         Ok(Item::Event(event)) => event,
                         Ok(Item::Unknown(_)) => continue,
                         Err(err) => {
-                            tracing::warn!(%err, "model stream ended with an error");
-                            break;
+                            let _ = tx.send(Delta::Failed(err.to_string())).await;
+                            return;
                         }
                     };
                     let delta = match event {

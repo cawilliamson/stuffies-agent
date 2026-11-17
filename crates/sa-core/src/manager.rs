@@ -58,6 +58,10 @@ pub struct ManagerConfig {
     pub host_fingerprint: String,
     pub provider: Arc<dyn Provider>,
     pub max_tokens: Option<u64>,
+    /// an operator override for the context window, for endpoints that advertise none.
+    pub context_limit: Option<u64>,
+    /// the effort to use when a session has not chosen one.
+    pub reasoning_effort: Option<String>,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
     /// how long an auxiliary model call (title, compaction) may take before it is abandoned.
@@ -268,6 +272,9 @@ impl Manager {
     /// advertised. `None` means unknown, and nothing downstream pretends otherwise.
     #[must_use]
     pub fn context_limit(&self, model: &str) -> Option<u64> {
+        if let Some(limit) = self.config.context_limit {
+            return Some(limit);
+        }
         self.models()
             .iter()
             .find(|known| known.id == model)
@@ -690,7 +697,12 @@ impl Manager {
             images,
             max_tokens: self.config.max_tokens,
             // only a value this model actually advertises, or nothing at all.
-            reasoning_effort: self.reasoning_effort(&model, row.effort.as_deref()),
+            reasoning_effort: self.reasoning_effort(
+                &model,
+                row.effort
+                    .as_deref()
+                    .or(self.config.reasoning_effort.as_deref()),
+            ),
         };
 
         // a stalled model stream must not hang the session forever (spec 14, v1.1).

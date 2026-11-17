@@ -206,6 +206,9 @@ impl Agent {
                         )?;
                     }
                     Delta::ToolCall(call) => tool_calls.push(call),
+                    Delta::Failed(reason) => {
+                        return Err(AgentError::Llm(crate::llm::LlmError::Stream(reason)));
+                    }
                     Delta::Done {
                         stop_reason,
                         prompt_tokens,

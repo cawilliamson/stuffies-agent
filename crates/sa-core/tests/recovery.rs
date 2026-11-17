@@ -17,6 +17,8 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
             host_fingerprint: "test-host".to_owned(),
             provider,
             max_tokens: None,
+            context_limit: None,
+            reasoning_effort: None,
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,

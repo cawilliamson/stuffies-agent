@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use rig_rmcp::rmcp::model::CallToolRequestParams;
@@ -17,7 +16,7 @@ use rig_rmcp::rmcp::transport::streamable_http_client::{
 use rig_rmcp::rmcp::transport::TokioChildProcess;
 use rig_rmcp::McpConnection;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 use crate::llm::ToolSpec;
 
