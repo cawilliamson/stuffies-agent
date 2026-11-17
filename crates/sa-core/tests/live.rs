@@ -1,5 +1,6 @@
 //! a live check against the configured endpoint. ignored by default because it needs
-//! credentials: `cargo test -p sa-core --test live -- --ignored --nocapture`.
+//! credentials: `cargo test -p sa-core --test live -- --ignored --test-threads=1 --nocapture`.
+//! one at a time: a shared endpoint throttles parallel callers, which reads as a flake.
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stderr)]
 
 use sa_core::llm::{
@@ -61,7 +62,7 @@ async fn a_tool_call_and_its_result_round_trip() {
     // a model may answer directly instead of calling the tool; that is a property of the
     // model, not of this code, so the phase is retried rather than failed.
     let mut calls = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..5 {
         let mut rx = provider
             .stream(ChatRequest {
                 model: model.clone(),
@@ -82,6 +83,7 @@ async fn a_tool_call_and_its_result_round_trip() {
         if !calls.is_empty() {
             break;
         }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     assert!(!calls.is_empty(), "the model must call the tool");
     eprintln!("[call] {:?}", calls[0]);
@@ -124,5 +126,20 @@ async fn a_tool_call_and_its_result_round_trip() {
     assert!(
         !text.trim().is_empty(),
         "the model must answer after the tool result"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs OPENAI_API_TOKEN; run with --ignored"]
+async fn the_catalog_is_read_from_the_endpoint() {
+    let provider = OpenAiProvider::from_env().expect("credentials");
+    let models = provider.list_models().await.expect("catalog");
+    assert!(!models.is_empty(), "the endpoint must list a model");
+    eprintln!("catalog: {models:?}");
+
+    // the window is whatever the endpoint says, under whatever it calls the field.
+    assert!(
+        models[0].context_limit.is_some(),
+        "the context window must be discovered, not assumed"
     );
 }

@@ -245,7 +245,14 @@ pub struct ModelInfo {
 /// wild: openrouter nests it, others put it at the top level.
 #[must_use]
 pub fn advertised_context(model: &Value) -> Option<u64> {
-    const KEYS: [&str; 3] = ["context_length", "max_context_length", "max_input_tokens"];
+    // `max_model_len` is what a vllm-backed gateway reports, and is the one that matters
+    // in practice; the rest are the shapes other openai-compatible servers use.
+    const KEYS: [&str; 4] = [
+        "max_model_len",
+        "context_length",
+        "max_context_length",
+        "max_input_tokens",
+    ];
     for key in KEYS {
         if let Some(limit) = model.get(key).and_then(Value::as_u64) {
             return Some(limit);
@@ -313,14 +320,20 @@ pub trait Provider: Send + Sync {
 /// types, and the `Delta` stream the agent records.
 pub struct OpenAiProvider {
     client: rig_core::providers::openai::OpenAI,
+    endpoint: String,
+    api_key: String,
 }
 
 impl OpenAiProvider {
     pub fn new(endpoint: impl Into<String>, api_key: impl Into<String>) -> Result<Self, LlmError> {
-        let mut config = rig_core::providers::openai::OpenAIConfig::new(api_key);
-        config.base_url = endpoint.into().trim_end_matches('/').to_owned();
+        let endpoint = endpoint.into();
+        let api_key = api_key.into();
+        let mut config = rig_core::providers::openai::OpenAIConfig::new(api_key.clone());
+        config.base_url = endpoint.trim_end_matches('/').to_owned();
         Ok(Self {
             client: config.client(),
+            endpoint,
+            api_key,
         })
     }
 
@@ -332,14 +345,45 @@ impl OpenAiProvider {
         Self::new(endpoint, api_key)
     }
 
-    /// asks the endpoint what it is serving, so the daemon never has to guess.
-    pub async fn list_models(&self) -> Result<Vec<String>, LlmError> {
-        let listed = self
-            .client
-            .list_models()
+    /// asks the endpoint what it is serving, with the fields only it knows: the context
+    /// window and the effort values. read from the raw payload, because the typed client
+    /// drops whatever a given server chose to call them.
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
+        let url = format!("{}/models", self.endpoint);
+        let response = reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .send()
             .await
             .map_err(|err| LlmError::Http(err.to_string()))?;
-        Ok(listed.data.into_iter().map(|model| model.id).collect())
+        let status = response.status();
+        if !status.is_success() {
+            return Err(LlmError::Status {
+                status: status.as_u16(),
+                body: response.text().await.unwrap_or_default(),
+            });
+        }
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|err| LlmError::Http(err.to_string()))?;
+        Ok(body
+            .get("data")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|model| {
+                        let id = model.get("id").and_then(serde_json::Value::as_str)?;
+                        Some(ModelInfo {
+                            id: id.to_owned(),
+                            context_limit: advertised_context(model),
+                            effort_levels: advertised_efforts(model),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 }
 
@@ -470,6 +514,10 @@ fn rig_request(request: &ChatRequest) -> Result<rig_core::completion::Completion
 }
 
 impl Provider for OpenAiProvider {
+    fn list_models(&self) -> ModelsFuture<'_> {
+        Box::pin(async move { self.list_models().await })
+    }
+
     fn stream(&self, request: ChatRequest) -> StreamFuture<'_> {
         Box::pin(async move {
             use rig_core::streaming::{Item, StreamEvent};

@@ -148,11 +148,23 @@ pub async fn run(
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     } else {
-        discovered = vec![sa_core::llm::ModelInfo {
-            id: cfg.model.clone(),
-            context_limit: None,
-            effort_levels: Vec::new(),
-        }];
+        // a pinned model is still described by the endpoint: the pin says which model to
+        // use, not what its window is.
+        let pinned = cfg.model.clone();
+        let catalog = provider.list_models().await.unwrap_or_default();
+        discovered = catalog
+            .into_iter()
+            .find(|model| model.id == pinned)
+            .map_or_else(
+                || {
+                    vec![sa_core::llm::ModelInfo {
+                        id: pinned,
+                        context_limit: None,
+                        effort_levels: Vec::new(),
+                    }]
+                },
+                |found| vec![found],
+            );
     }
 
     let models: Arc<std::sync::Mutex<Vec<sa_core::llm::ModelInfo>>> =
