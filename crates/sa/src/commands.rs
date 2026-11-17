@@ -34,23 +34,6 @@ fn cwd() -> Result<String> {
         .map_err(|e| format!("cannot read cwd: {e}"))
 }
 
-/// the workspace branch, for the status bar. absent outside a repository.
-fn git_branch() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if branch.is_empty() || branch == "HEAD" {
-        None
-    } else {
-        Some(branch)
-    }
-}
-
 // ---- rendering ----------------------------------------------------------
 
 /// renders a session transcript for a terminal.
@@ -396,6 +379,13 @@ fn help() {
 pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()> {
     let mut client = connect().await?;
 
+    // a terminal gets the whole window: every session is a tab in it, so there is nothing
+    // to choose here beyond which tab to land on.
+    if !line && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        return sa_tui::run(&mut client, session, new).await;
+    }
+
+    // a pipe gets plain lines for one session, which is also what the tests drive.
     let mut session_id = if new {
         create_session(&mut client).await?
     } else if let Some(id) = session {
@@ -410,38 +400,10 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
     let attached = client
         .call(
             "session.attach",
-            json!({"session_id": session_id, "from_seq": 0, "takeover": true}),
+            json!({"session_id": session_id, "from_seq": 0}),
         )
         .await
         .map_err(|e| format!("attach failed: {e}"))?;
-
-    // a terminal gets the tui; a pipe gets plain lines, which is also what the tests drive.
-    if !line && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        // empty means "not known yet": the tui queries the daemon and omits the area.
-        let model = attached["session"]["model"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        // the session's own directory, which is not the process cwd when it was resumed.
-        let workspace = attached["session"]["cwd"]
-            .as_str()
-            .map(str::to_owned)
-            .or_else(|| cwd().ok())
-            .unwrap_or_default();
-        let effort = attached["session"]["effort"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        return sa_tui::run(
-            &mut client,
-            session_id,
-            model,
-            git_branch(),
-            workspace,
-            effort,
-        )
-        .await;
-    }
 
     let mut renderer = Renderer::default();
     if let Some(events) = attached["events"].as_array() {

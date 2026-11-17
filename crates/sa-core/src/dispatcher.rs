@@ -104,8 +104,7 @@ impl Dispatcher {
             "ping" => self.ping(),
             "session.create" => self.session_create(conn, &params),
             "session.list" => self.session_list(&params),
-            "session.attach" => self.session_attach(conn, &params),
-            "session.detach" => self.session_detach(conn, &params),
+            "session.attach" => self.session_attach(&params),
             "session.rename" => self.session_rename(&params),
             "session.cwd" => self.session_cwd(&params),
             "session.delete" => self.session_delete(&params),
@@ -193,27 +192,16 @@ impl Dispatcher {
         Ok(json!(sessions))
     }
 
-    fn session_attach(&self, conn: &ConnState, params: &Value) -> Result<Value, RpcError> {
+    /// history for one session. sessions are not owned by a connection: any number of
+    /// clients may hold the same one, which is what lets several windows show it at once.
+    fn session_attach(&self, params: &Value) -> Result<Value, RpcError> {
         let params: AttachParams = parse(params)?;
         let limit = params.limit.unwrap_or(500).clamp(1, 5000);
         let result = self
             .manager
-            .attach(
-                conn.conn(),
-                conn.client(),
-                &params.session_id,
-                params.from_seq,
-                limit,
-                params.takeover,
-            )
+            .attach(&params.session_id, params.from_seq, limit)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!(result))
-    }
-
-    fn session_detach(&self, conn: &ConnState, params: &Value) -> Result<Value, RpcError> {
-        let session_id = string_field(params, "session_id")?;
-        self.manager.detach(conn.conn(), &session_id);
-        Ok(json!({}))
     }
 
     fn session_rename(&self, params: &Value) -> Result<Value, RpcError> {

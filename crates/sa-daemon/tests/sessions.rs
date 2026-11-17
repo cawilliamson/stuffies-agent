@@ -82,8 +82,16 @@ async fn call(
 ) -> Value {
     let line = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
     framed.send(line.to_string()).await.expect("send");
-    let raw = framed.next().await.expect("frame").expect("valid frame");
-    serde_json::from_str(&raw).expect("json")
+    // announcements such as sessions.changed may arrive before the reply, exactly as they
+    // do for a real client, which skips them too.
+    loop {
+        let raw = framed.next().await.expect("frame").expect("valid frame");
+        let value: Value = serde_json::from_str(&raw).expect("json");
+        if value.get("method").is_some() {
+            continue;
+        }
+        return value;
+    }
 }
 
 async fn create(framed: &mut Framed<UnixStream, LinesCodec>, cwd: &str) -> String {
@@ -148,39 +156,56 @@ async fn creates_lists_and_replays_a_session() {
 }
 
 #[tokio::test]
-async fn a_second_attach_is_refused_and_takeover_evicts() {
+async fn every_client_may_hold_the_same_session() {
     let daemon = Harness::start(Vec::new()).await;
     let mut first = daemon.connect().await;
     let mut second = daemon.connect().await;
     let cwd = daemon.root().display().to_string();
     let session = create(&mut first, &cwd).await;
 
-    let ok = call(
-        &mut first,
-        2,
-        "session.attach",
-        json!({"session_id": session, "from_seq": 0}),
-    )
-    .await;
-    assert!(ok["error"].is_null(), "{ok}");
+    // sessions are not owned by a client: two windows can show the same tab at once.
+    for (id, client) in [(2, &mut first), (2, &mut second)] {
+        let attached = call(
+            client,
+            id,
+            "session.attach",
+            json!({"session_id": session, "from_seq": 0}),
+        )
+        .await;
+        assert!(attached["error"].is_null(), "attach failed: {attached}");
+        assert_eq!(attached["result"]["session"]["id"], session);
+    }
 
-    let busy = call(
-        &mut second,
-        2,
-        "session.attach",
-        json!({"session_id": session, "from_seq": 0}),
-    )
-    .await;
-    assert_eq!(busy["error"]["code"], -32004, "session_busy: {busy}");
+    daemon.stop().await;
+}
 
-    let takeover = call(
-        &mut second,
-        3,
-        "session.attach",
-        json!({"session_id": session, "from_seq": 0, "takeover": true}),
-    )
-    .await;
-    assert!(takeover["error"].is_null(), "takeover failed: {takeover}");
+#[tokio::test]
+async fn a_new_session_is_announced_to_every_client() {
+    let daemon = Harness::start(Vec::new()).await;
+    let mut first = daemon.connect().await;
+    let mut second = daemon.connect().await;
+    let cwd = daemon.root().display().to_string();
+
+    // both windows are idle and subscribed to nothing: the announcement is how a window
+    // learns that a session exists, so its tab strip can show it.
+    let session = create(&mut first, &cwd).await;
+
+    let mut announced = false;
+    for _ in 0..100 {
+        let frame = tokio::time::timeout(Duration::from_millis(200), second.next()).await;
+        match frame {
+            Ok(Some(Ok(raw))) => {
+                let value: Value = serde_json::from_str(&raw).expect("json");
+                if value["method"] == "sessions.changed" {
+                    announced = true;
+                    break;
+                }
+            }
+            Ok(Some(Err(err))) => panic!("bad frame: {err}"),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    assert!(announced, "the other window must hear about {session}");
 
     daemon.stop().await;
 }

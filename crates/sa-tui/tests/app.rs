@@ -415,7 +415,7 @@ fn scroll_clamps_to_the_rendered_transcript() {
 fn the_layout_renders_at_several_sizes() {
     for (width, height) in [(20u16, 6u16), (40, 10), (100, 30), (200, 60)] {
         let mut app = App::new("session-abcdef", "deepseek");
-        app.branch = Some("main".to_owned());
+        app.tab_mut().branch = Some("main".to_owned());
         app.add_tab("second-session", "deepseek");
         app.tab_mut().push(Role::User, "hello there");
         app.tab_mut().push(
@@ -1558,5 +1558,35 @@ fn a_sent_image_is_drawn_inside_the_user_message() {
     assert!(
         rendered.contains('\u{2580}'),
         "the picture is drawn in the message:\n{rendered}"
+    );
+}
+
+#[test]
+fn the_strip_keeps_a_tab_for_every_live_session() {
+    let mut app = App::new("one", "m");
+    app.add_tab("two", "m");
+    app.add_tab("three", "m");
+    app.switch_tab(1);
+
+    // a session deleted elsewhere loses its tab; the rest keep theirs.
+    let survived = app.retain_tabs(&["one", "three"]);
+    assert!(!survived, "the active tab was the deleted one");
+    let live: Vec<&str> = app.tabs.iter().map(|tab| tab.session.as_str()).collect();
+    assert_eq!(live, ["one", "three"]);
+
+    // and the tab that stayed active is still the one the operator was on.
+    app.switch_tab(1);
+    assert!(
+        app.retain_tabs(&["one", "three"]),
+        "an untouched tab survives"
+    );
+    assert_eq!(app.tab().session, "three");
+}
+
+#[test]
+fn a_tab_label_always_keeps_the_session_id() {
+    assert_eq!(
+        sa_tui::app::tab_label("session-abcdef", "fix the parser"),
+        "fix the parser (session-)"
     );
 }

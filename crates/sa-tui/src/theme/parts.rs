@@ -232,7 +232,7 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
         Color::Rgb(0xd8, 0xd8, 0xd8),
         Color::Rgb(0x2a, 0x2a, 0x2a),
     )];
-    if let Some(branch) = &app.branch {
+    if let Some(branch) = &tab.branch {
         segments.push((
             format!(" \u{e725} {branch} "),
             Color::Rgb(0xd8, 0xd8, 0xf0),
@@ -349,7 +349,7 @@ pub fn facts(app: &App) -> Vec<(&'static str, String)> {
             ),
         ),
     ];
-    if let Some(branch) = &app.branch {
+    if let Some(branch) = &tab.branch {
         out.insert(1, ("branch", branch.clone()));
     }
     out.retain(|(_, value)| !value.is_empty());

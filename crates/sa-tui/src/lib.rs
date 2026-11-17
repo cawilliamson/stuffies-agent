@@ -88,15 +88,9 @@ pub fn draw<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-/// runs the interactive terminal front end against an attached session.
-pub async fn run(
-    client: &mut Client,
-    session: String,
-    model: String,
-    branch: Option<String>,
-    cwd: String,
-    effort: String,
-) -> Result<(), String> {
+/// runs the interactive terminal front end. every session the daemon knows about is a tab
+/// in this one window; `session` only says which tab to land on.
+pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Result<(), String> {
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
     let _restore = Restore;
@@ -105,44 +99,55 @@ pub async fn run(
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
     terminal.clear().map_err(|e| e.to_string())?;
 
-    let mut app = App::new(session.clone(), model.clone());
-    app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
-    app.branch = branch;
-    app.tab_mut().cwd = cwd;
-    app.tab_mut().status.effort = effort;
-    if app.tab().status.model.is_empty() {
-        if let Ok(list) = rpc(client, "model.list", json!({})).await {
-            if let Some(id) = list
-                .as_array()
-                .and_then(|m| m.first())
-                .and_then(|m| m["id"].as_str())
-            {
-                app.tab_mut().status.model = id.to_owned();
-            }
-        }
-    }
+    let here = std::env::current_dir()
+        .map(|path| {
+            std::fs::canonicalize(&path)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        })
+        .unwrap_or_default();
+    let fallback_model = default_model(client).await;
+    let mut rows = list_sessions(client).await?;
 
-    if let Ok(replay) = rpc(
-        client,
-        "events.replay",
-        json!({"session_id": session, "from_seq": 0, "limit": 5000}),
-    )
-    .await
-    {
-        if let Some(events) = replay["events"].as_array() {
-            for event in events {
-                let kind = event["kind"].as_str().unwrap_or_default();
-                app.tab_mut().on_event(kind, &event["payload"]);
-            }
-        }
+    // landing tab: the one already working here, or a fresh session for this directory.
+    let landing = if new {
+        None
+    } else {
+        session
+            .clone()
+            .filter(|id| rows.iter().any(|row| row["id"] == *id))
+            .or_else(|| {
+                rows.iter()
+                    .find(|row| row["state"] == "active" && row["cwd"] == here.as_str())
+                    .and_then(|row| row["id"].as_str())
+                    .map(str::to_owned)
+            })
+    };
+    let landing = if let Some(id) = landing {
+        id
+    } else {
+        let id = create_session(client, &here).await?;
+        rows = list_sessions(client).await?;
+        id
+    };
+
+    // the strip is ordered by creation time so tabs never shuffle under the operator.
+    rows.sort_by_key(|row| row["created_at"].as_i64().unwrap_or_default());
+    let Some(first) = rows.first() else {
+        return Err("the daemon reported no sessions".to_owned());
+    };
+    let mut app = App::new(
+        first["id"].as_str().unwrap_or_default().to_owned(),
+        tab_model(first, &fallback_model),
+    );
+    app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+    for row in &rows {
+        open_tab(client, &mut app, row, &fallback_model).await;
     }
-    rpc(
-        client,
-        "events.subscribe",
-        json!({"session_id": session, "from_seq": 0}),
-    )
-    .await
-    .map_err(|e| format!("subscribe failed: {e}"))?;
+    if let Some(index) = app.tabs.iter().position(|tab| tab.session == landing) {
+        app.switch_tab(index);
+    }
 
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
@@ -225,10 +230,12 @@ pub async fn run(
                             }
                         }
                     }
-                    "evicted" => {
-                        let sid = frame["params"]["session_id"].as_str().unwrap_or_default();
-                        if let Some(tab) = app.tab_for(sid) {
-                            tab.push(app::Role::System, "another client took this session");
+                    "sessions.changed" => {
+                        // a session was created or deleted somewhere: every window shows
+                        // every session, so bring the strip back in line.
+                        let cwd = tab_cwd(&app);
+                        if let Err(err) = sync_tabs(client, &mut app, &fallback_model, &cwd).await {
+                            app.tab_mut().push(app::Role::Error, err);
                         }
                     }
                     _ => {}
@@ -245,81 +252,44 @@ pub async fn run(
                 // a new tab starts where the current one works, not where the process
                 // happens to have been started.
                 let cwd = tab_cwd(&app);
-                match rpc(client, "session.create", json!({"cwd": cwd})).await {
-                    Ok(created) => {
-                        if let Some(id) = created["session_id"].as_str() {
-                            app.add_tab(id.to_owned(), model.clone());
-                            app.tab_mut().cwd = cwd;
-                            let _ = rpc(
-                                client,
-                                "events.subscribe",
-                                json!({"session_id": id, "from_seq": 0}),
-                            )
-                            .await;
+                match create_session(client, &cwd).await {
+                    Ok(id) => {
+                        if let Err(err) = sync_tabs(client, &mut app, &fallback_model, &cwd).await {
+                            app.tab_mut().push(app::Role::Error, err);
+                        } else if let Some(index) =
+                            app.tabs.iter().position(|tab| tab.session == id)
+                        {
+                            app.switch_tab(index);
                         }
                     }
-                    Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
+                    Err(err) => app.tab_mut().push(app::Role::Error, err),
                 }
             }
             Action::ResumePicked(id) => {
                 if let Some(index) = app.tabs.iter().position(|tab| tab.session == id) {
                     app.switch_tab(index);
                 } else {
-                    app.add_tab(id.clone(), model.clone());
-                    if let Some(cwd) = session_cwd(client, &id).await {
-                        app.tab_mut().cwd = cwd;
+                    let cwd = tab_cwd(&app);
+                    if let Err(err) = sync_tabs(client, &mut app, &fallback_model, &cwd).await {
+                        app.tab_mut().push(app::Role::Error, err);
+                    } else if let Some(index) = app.tabs.iter().position(|tab| tab.session == id) {
+                        app.switch_tab(index);
                     }
-                    if let Ok(replay) = rpc(
-                        client,
-                        "events.replay",
-                        json!({"session_id": id, "from_seq": 0, "limit": 5000}),
-                    )
-                    .await
-                    {
-                        if let Some(events) = replay["events"].as_array() {
-                            for event in events {
-                                let kind = event["kind"].as_str().unwrap_or_default();
-                                if let Some(tab) = app.tab_for(&id) {
-                                    tab.on_event(kind, &event["payload"]);
-                                }
-                            }
-                        }
-                    }
-                    let _ = rpc(
-                        client,
-                        "events.subscribe",
-                        json!({"session_id": id, "from_seq": 0}),
-                    )
-                    .await;
                 }
             }
             Action::CloseTab => {
-                if app.tabs.len() <= 1 {
-                    // closing the last tab leaves a fresh one rather than an empty screen.
-                    let cwd = tab_cwd(&app);
-                    match rpc(client, "session.create", json!({"cwd": cwd})).await {
-                        Ok(created) => {
-                            if let Some(id) = created["session_id"].as_str() {
-                                let id = id.to_owned();
-                                let previous = app.tab().session.clone();
-                                app.replace_active(id.clone(), model.clone());
-                                app.tab_mut().cwd = cwd;
-                                let _ =
-                                    rpc(client, "session.delete", json!({"session_id": previous}))
-                                        .await;
-                                let _ = rpc(
-                                    client,
-                                    "events.subscribe",
-                                    json!({"session_id": id, "from_seq": 0}),
-                                )
-                                .await;
-                            }
-                        }
-                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
-                    }
-                } else if let Some(closed) = app.close_tab() {
+                let cwd = tab_cwd(&app);
+                if let Some(closed) = app.close_tab() {
                     // a closed tab is retired, not parked: sessions are tabs, not history.
                     let _ = rpc(client, "session.delete", json!({"session_id": closed})).await;
+                } else {
+                    // the last tab: retire it and let the strip refill, rather than leaving
+                    // the window with nothing to type into.
+                    let previous = app.tab().session.clone();
+                    let _ = rpc(client, "session.delete", json!({"session_id": previous})).await;
+                    if let Err(err) = sync_tabs(client, &mut app, &fallback_model, &cwd).await {
+                        app.tab_mut().push(app::Role::Error, err);
+                    }
                 }
             }
             Action::Cancel => {
@@ -393,13 +363,19 @@ pub async fn run(
                     ),
                     "/new" => {
                         let cwd = tab_cwd(&app);
-                        if let Ok(created) = rpc(client, "session.create", json!({"cwd": cwd.clone()})).await {
-                            if let Some(id) = created["session_id"].as_str() {
-                                app.add_tab(id.to_owned(), model.clone());
-                                app.tab_mut().cwd = cwd;
-                                let _ = rpc(client, "events.subscribe", json!({"session_id": id, "from_seq": 0}))
-                                    .await;
+                        match create_session(client, &cwd).await {
+                            Ok(id) => {
+                                if let Err(err) =
+                                    sync_tabs(client, &mut app, &fallback_model, &cwd).await
+                                {
+                                    app.tab_mut().push(app::Role::Error, err);
+                                } else if let Some(index) =
+                                    app.tabs.iter().position(|tab| tab.session == id)
+                                {
+                                    app.switch_tab(index);
+                                }
                             }
+                            Err(err) => app.tab_mut().push(app::Role::Error, err),
                         }
                     }
                     "/theme" if arg.is_empty() => {
@@ -468,7 +444,10 @@ pub async fn run(
                             {
                                 Ok(result) => {
                                     let cwd = result["cwd"].as_str().unwrap_or(&cwd).to_owned();
-                                    app.tab_mut().cwd = cwd.clone();
+                                    let branch = app::git_branch(&cwd);
+                                    let tab = app.tab_mut();
+                                    tab.cwd = cwd.clone();
+                                    tab.branch = branch;
                                     app.touch();
                                     app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
                                 }
@@ -519,21 +498,113 @@ pub async fn run(
             .map_err(|e| e.to_string())?;
         let _ = std::io::stdout().flush();
     }
-
-    for tab in &app.tabs {
-        let _ = rpc(client, "session.detach", json!({"session_id": tab.session})).await;
-    }
     Ok(())
 }
 
-/// the directory a session works in, as listed by the daemon.
-async fn session_cwd(client: &mut Client, id: &str) -> Option<String> {
-    let list = rpc(client, "session.list", json!({})).await.ok()?;
-    list.as_array()?
-        .iter()
-        .find(|row| row["id"] == id)
-        .and_then(|row| row["cwd"].as_str())
+/// the model the daemon will use when a session has not chosen one.
+async fn default_model(client: &mut Client) -> String {
+    rpc(client, "model.list", json!({}))
+        .await
+        .ok()
+        .and_then(|list| {
+            list.as_array()
+                .and_then(|models| models.first())
+                .and_then(|model| model["id"].as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
+}
+
+/// the session rows the daemon knows about.
+async fn list_sessions(client: &mut Client) -> Result<Vec<Value>, String> {
+    let list = rpc(client, "session.list", json!({})).await?;
+    Ok(list.as_array().cloned().unwrap_or_default())
+}
+
+/// the model a tab starts on: the session's own choice, or the daemon's default.
+fn tab_model(row: &Value, fallback: &str) -> String {
+    row["model"]
+        .as_str()
+        .filter(|model| !model.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+/// creates a session rooted at `cwd` and returns its id.
+async fn create_session(client: &mut Client, cwd: &str) -> Result<String, String> {
+    let created = rpc(client, "session.create", json!({"cwd": cwd})).await?;
+    created["session_id"]
+        .as_str()
         .map(str::to_owned)
+        .ok_or_else(|| "session.create returned no id".to_owned())
+}
+
+/// fills one tab from a session row: its directory, model, effort, title and history, then
+/// subscribes it. a tab that already exists is left alone.
+async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_model: &str) {
+    let Some(id) = row["id"].as_str() else {
+        return;
+    };
+    if app.tabs.iter().any(|tab| tab.session == id) {
+        return;
+    }
+    app.add_tab(id.to_owned(), tab_model(row, fallback_model));
+    let tab = app.tab_mut();
+    tab.cwd = row["cwd"].as_str().unwrap_or_default().to_owned();
+    tab.branch = app::git_branch(&tab.cwd);
+    tab.status.effort = row["effort"].as_str().unwrap_or_default().to_owned();
+    if let Some(title) = row["title"].as_str() {
+        tab.title = app::tab_label(id, title);
+    }
+
+    if let Ok(replay) = rpc(
+        client,
+        "events.replay",
+        json!({"session_id": id, "from_seq": 0, "limit": 5000}),
+    )
+    .await
+    {
+        if let Some(events) = replay["events"].as_array() {
+            for event in events {
+                let kind = event["kind"].as_str().unwrap_or_default();
+                if let Some(tab) = app.tab_for(id) {
+                    tab.on_event(kind, &event["payload"]);
+                }
+            }
+        }
+    }
+    let _ = rpc(
+        client,
+        "events.subscribe",
+        json!({"session_id": id, "from_seq": 0}),
+    )
+    .await;
+}
+
+/// brings the strip in line with the daemon: a session created anywhere becomes a tab, a
+/// deleted one loses its tab, and the window never ends up with no tabs at all.
+async fn sync_tabs(
+    client: &mut Client,
+    app: &mut App,
+    fallback_model: &str,
+    cwd: &str,
+) -> Result<(), String> {
+    let mut rows = list_sessions(client).await?;
+    if rows.is_empty() {
+        // a window with no tabs has nothing to type into, so make one to fill it.
+        create_session(client, cwd).await?;
+        rows = list_sessions(client).await?;
+    }
+    let live: Vec<&str> = rows.iter().filter_map(|row| row["id"].as_str()).collect();
+    let active = app.tab().session.clone();
+    app.retain_tabs(&live);
+    for row in &rows {
+        open_tab(client, app, row, fallback_model).await;
+    }
+    if let Some(index) = app.tabs.iter().position(|tab| tab.session == active) {
+        app.switch_tab(index);
+    }
+    Ok(())
 }
 
 /// the directory the active tab works in, falling back to the process directory.

@@ -136,9 +136,7 @@ Session lifecycle:
 ```text
 session.create   {cwd, title?}                    -> {session_id, seq}
 session.list     {include_deleted?}               -> [{id, title, state, cwd, owner, updated_at}]
-session.attach   {session_id, from_seq, limit?,   -> {session, events[], more, next_seq}
-                  takeover?}
-session.detach   {session_id}                     -> {}
+session.attach   {session_id, from_seq, limit?}  -> {session, events[], more, next_seq}
 session.rename   {session_id, title}              -> {}
 session.cwd      {session_id, cwd}                -> {cwd}
 session.fork     {session_id, from_seq,           -> {session_id, workspace}
@@ -206,7 +204,7 @@ Server to client, never acknowledged:
 event            {session_id, seq, kind, payload}
 gap              {session_id, from_seq, to_seq}   -- client fell behind, re-sync required
 turn.state       {session_id, turn_id, state}
-evicted          {session_id, reason}             -- another client took over (§3.6)
+sessions.changed {}                               -- the set of sessions changed (§3.6)
 log              {level, message}                 -- daemon diagnostics
 ```
 
@@ -237,22 +235,20 @@ Filter shape:
 `more` is true the caller continues from `next_seq`. A replay that would cross a `gap`
 boundary returns `more: true` rather than a partial window.
 
-### 3.6 Client exclusivity
+### 3.6 Concurrent clients
 
-`DECIDED`: at most one client is attached to a session at a time. The daemon refuses a
-second `session.attach` with `session_busy`, naming the holder's client name and the time
-of attachment.
+`DECIDED`: sessions are not owned by a client. Any number of clients may attach to, read,
+and drive the same session at once; there is no `session_busy`, no takeover and no
+`evicted` notification.
 
-- `takeover: true` overrides the refusal. The incumbent receives `evicted`, loses write
-  authority, and may re-attach to regain it. Takeover does not interrupt a running turn.
-- Detached turns are unaffected. `turn.start {detach: true}` runs with no client attached;
-  that is the point of the design, not an exception to this rule.
-
-Presence is therefore a single field, not a set: a session is either attended or not.
-
-`DECIDED`: the web surface (§4.3) drives detached turns and subscribes; it never attaches.
-Several browser tabs may therefore watch one session, and §3.6 constrains only interactive
-control, which is the CLI's job.
+- A session is a record in the log, not a lease. Nothing about it is tied to the
+  connection that created it.
+- The set of sessions is a property of the daemon, not of a client. When a session is
+  created or deleted the daemon sends `sessions.changed` to every connection, so each
+  window can bring its tab strip back in line.
+- Every terminal window therefore shows every session as a tab. There is no hidden
+  session and no "attach to the other one": one window, one strip, all of it.
+- `turn.start {detach: true}` remains available for turns driven with no client watching.
 
 ---
 
@@ -962,7 +958,7 @@ Each of these has a required behaviour and a test in the milestone that introduc
 | daemon killed mid-turn | on restart, append `turn.interrupted` and a terminal `tool.failed` for any in-flight call; no tool retry; client sees the interruption |
 | SSH carrier drops | daemon and turn unaffected; client reconnects and replays from its cursor |
 | client stalls | bounded queue (4096 events / 8 MiB), `gap` notification, client dropped from live subscription; agent unaffected |
-| second client attaches | refused with `session_busy` naming the holder; `takeover` evicts the incumbent |
+| a second client attaches | allowed; both see the same events, neither is evicted |
 | stale bundle (old epoch) | import rejected, target unchanged |
 | two hosts claim the session | lower epoch loses; its writes are rejected, not merged |
 | two sessions, one repository | second turn waits on the workspace lock; reported as `waiting_workspace` |
@@ -997,7 +993,7 @@ detached turns and compaction underneath it.
 Sub-work, in order:
 
 1. Protocol, framing, hello gate, unix socket, `sa rpc --stdio` (Appendix A).
-2. sqlite event log, blob spill, replay, session lifecycle, attach exclusivity, crash
+2. sqlite event log, blob spill, replay, session lifecycle, concurrent clients, crash
    recovery.
 3. OpenAI-compatible provider, streaming into the log, usage accounting.
 4. Tools, workspace lock, checkpoint.
@@ -1042,8 +1038,14 @@ a daemon start writes nothing into the workspace and `git status` stays clean.
 persistent input line are the difference between reading a log and using an agent.
 
 Sub-work: ratatui application in `sa-tui` (transcript, input line, status bar), TTY
-detection in `sa attach` with `--line` as the escape hatch, history replay on attach so a
-transcript is continuous across sessions.
+detection in `sa attach` with `--line` as the escape hatch, history replay for every
+session so each tab's transcript is continuous.
+
+The window shows every session the daemon knows about as a tab: there is one view of
+everything the agent is doing, across every session and model, and no per-session attach
+to lose track of. `sa` in a directory lands on the tab already working there, or opens a
+new one for it. Sessions live in the daemon's store, so they survive a daemon restart and
+come back as tabs.
 
 The status bar is powerline-style: solid coloured areas joined by arrow separators, one
 area per field (working directory, state, branch, model, throughput, tokens), with
@@ -1186,7 +1188,7 @@ normative text is in the sections above.
 | 7 | no permission system: no autonomy, no allowlist, no prompts | §8 |
 | 8 | no permission system; tools run or fail on path escape | §8 |
 | 9 | checkpoint before every unattended turn | §8.1 |
-| 10 | at most one attached client per session; takeover evicts | §3.6 |
+| 10 | any number of clients per session; every window shows every session | §3.6 |
 | 11 | session deletion is a tombstone, not a purge | §5.7 |
 | 12 | workspace is exactly one git repo; remote optional | §7.1 |
 | 13 | workspace lock keyed on git common directory | §7.4 |

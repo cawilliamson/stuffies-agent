@@ -82,6 +82,7 @@ impl SessionRow {
             owner_epoch: self.owner_epoch,
             model: self.model.clone(),
             effort: self.effort.clone(),
+            created_at: self.created_at,
             updated_at: self.updated_at,
         }
     }

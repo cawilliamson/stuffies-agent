@@ -71,12 +71,6 @@ pub struct ManagerConfig {
     pub models: Arc<Mutex<Vec<String>>>,
 }
 
-struct Attached {
-    conn: u64,
-    client: String,
-    since: i64,
-}
-
 struct Subscription {
     conn: u64,
     session_id: String,
@@ -96,7 +90,6 @@ struct Inner {
     next_sub: u64,
     conns: HashMap<u64, mpsc::Sender<Value>>,
     subs: HashMap<u64, Subscription>,
-    attached: HashMap<String, Attached>,
     turns: HashMap<String, RunningTurn>,
 }
 
@@ -142,7 +135,20 @@ impl Manager {
         if let Ok(mut inner) = self.inner.lock() {
             inner.conns.remove(&conn);
             inner.subs.retain(|_, sub| sub.conn != conn);
-            inner.attached.retain(|_, a| a.conn != conn);
+        }
+    }
+
+    /// tells every connected client that the set of sessions changed, so each window can
+    /// bring its tab strip back in line. sessions are not owned by a client, so this is a
+    /// plain announcement rather than a handover.
+    fn announce_sessions(&self) {
+        let Ok(inner) = self.inner.lock() else { return };
+        for conn in inner.conns.keys().copied() {
+            Self::push(
+                &inner,
+                conn,
+                json!({"jsonrpc": "2.0", "method": "sessions.changed", "params": {}}),
+            );
         }
     }
 
@@ -235,6 +241,7 @@ impl Manager {
             }),
         )?;
 
+        self.announce_sessions();
         Ok(CreateSessionResult {
             session_id: id,
             seq,
@@ -318,6 +325,7 @@ impl Manager {
             kinds::SESSION_STATE,
             &json!({"state": "deleted", "reason": "session.delete"}),
         )?;
+        self.announce_sessions();
         Ok(())
     }
 
@@ -346,66 +354,17 @@ impl Manager {
 
     // ---- attach / replay --------------------------------------------
 
+    /// history for one session. no ownership: every client may read and write the same
+    /// session at once, which is what lets several windows show the same tab.
     pub fn attach(
         &self,
-        conn: u64,
-        client: &str,
         session_id: &str,
         from_seq: u64,
         limit: usize,
-        takeover: bool,
     ) -> Result<AttachResult, ManagerError> {
         let Some(row) = self.store.get_session(session_id)? else {
             return Err(ManagerError::Rpc(not_found(session_id)));
         };
-
-        {
-            let mut inner = self.lock()?;
-            if let Some(existing) = inner.attached.get(session_id) {
-                if existing.conn != conn && !takeover {
-                    return Err(ManagerError::Rpc(
-                        RpcError::new(
-                            code::SESSION_BUSY,
-                            format!(
-                                "session {session_id} is attached to {} since {}",
-                                existing.client, existing.since
-                            ),
-                        )
-                        .with_data(json!({"client": existing.client, "since": existing.since})),
-                    ));
-                }
-                let evicted = existing.conn;
-                inner.attached.insert(
-                    session_id.to_owned(),
-                    Attached {
-                        conn,
-                        client: client.to_owned(),
-                        since: crate::store::now_seconds(),
-                    },
-                );
-                if evicted != conn {
-                    Self::push(
-                        &inner,
-                        evicted,
-                        json!({
-                            "jsonrpc": "2.0",
-                            "method": "evicted",
-                            "params": {"session_id": session_id, "reason": "takeover"},
-                        }),
-                    );
-                }
-            } else {
-                inner.attached.insert(
-                    session_id.to_owned(),
-                    Attached {
-                        conn,
-                        client: client.to_owned(),
-                        since: crate::store::now_seconds(),
-                    },
-                );
-            }
-        }
-
         let (events, more) = self.store.events_since(session_id, from_seq, limit)?;
         let next_seq = events.last().map_or(from_seq, |e| e.seq);
         Ok(AttachResult {
@@ -414,18 +373,6 @@ impl Manager {
             more,
             next_seq,
         })
-    }
-
-    pub fn detach(&self, conn: u64, session_id: &str) {
-        if let Ok(mut inner) = self.inner.lock() {
-            if inner
-                .attached
-                .get(session_id)
-                .is_some_and(|a| a.conn == conn)
-            {
-                inner.attached.remove(session_id);
-            }
-        }
     }
 
     pub fn replay(

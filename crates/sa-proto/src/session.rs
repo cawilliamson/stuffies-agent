@@ -71,6 +71,8 @@ pub struct SessionSummary {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// when the session was made. a client orders its tabs by this so they never shuffle.
+    pub created_at: i64,
     pub updated_at: i64,
 }
 
@@ -108,8 +110,6 @@ pub struct AttachParams {
     pub from_seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-    #[serde(default)]
-    pub takeover: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

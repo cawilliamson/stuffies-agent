@@ -211,6 +211,8 @@ pub struct Tab {
     pub title: String,
     /// the directory this tab works in. tools and context follow it.
     pub cwd: String,
+    /// the git branch of `cwd`, for the status bar. absent outside a repository.
+    pub branch: Option<String>,
     pub transcript: Vec<Entry>,
     input: tui_input::Input,
     pub status: Status,
@@ -261,6 +263,7 @@ impl Tab {
                 title
             },
             cwd: String::new(),
+            branch: None,
             transcript: Vec::new(),
             input: tui_input::Input::default(),
             status: Status {
@@ -802,6 +805,36 @@ fn blend(pixel: [u8; 4]) -> Color {
     )
 }
 
+/// the tab label for a session: the generated title, always keeping the id visible so a
+/// tab stays identifiable after it is renamed.
+#[must_use]
+pub fn tab_label(session: &str, title: &str) -> String {
+    let short: String = session.chars().take(8).collect();
+    format!("{title} ({short})")
+}
+
+/// the git branch of a directory, for the status bar. absent outside a repository.
+#[must_use]
+pub fn git_branch(cwd: &str) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if branch.is_empty() || branch == "HEAD" {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
 /// one selectable row in a picker.
 #[derive(Debug, Clone)]
 pub struct PickerItem {
@@ -836,7 +869,6 @@ pub enum Action {
 pub struct App {
     pub tabs: Vec<Tab>,
     pub active: usize,
-    pub branch: Option<String>,
     pub revision: u64,
     /// index into the compiled-in theme registry.
     pub theme: usize,
@@ -856,7 +888,6 @@ impl App {
         Self {
             tabs: vec![tab],
             active: 0,
-            branch: None,
             revision: 1,
             theme: crate::theme::default_index(),
             spinner: 0,
@@ -916,12 +947,27 @@ impl App {
     /// applies a generated session title to the tab that owns it. the id is always kept,
     /// so a tab stays identifiable after it is renamed.
     pub fn apply_rename(&mut self, session: &str, title: &str) {
-        let short: String = session.chars().take(8).collect();
+        let label = tab_label(session, title);
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.session == session) {
-            tab.title = format!("{title} ({short})");
+            tab.title = label;
             tab.push(Role::System, format!("title: {title}"));
         }
         self.touch();
+    }
+
+    /// drops every tab whose session is no longer in `keep`, leaving the same tab active
+    /// where it survives. returns whether the active tab survived.
+    pub fn retain_tabs(&mut self, keep: &[&str]) -> bool {
+        let active = self.tab().session.clone();
+        self.tabs.retain(|tab| keep.contains(&tab.session.as_str()));
+        let survived = self.tabs.iter().any(|tab| tab.session == active);
+        self.active = self
+            .tabs
+            .iter()
+            .position(|tab| tab.session == active)
+            .unwrap_or(0);
+        self.touch();
+        survived
     }
 
     /// replaces the active tab with a fresh one, keeping the strip non-empty.
