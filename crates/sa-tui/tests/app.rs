@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use sa_tui::app::{transcript_lines, Action, App, PickerItem, Role};
+use sa_tui::app::{transcript_lines, Action, App, PickerItem, Role, ServedModel};
 use serde_json::json;
 
 const fn key(code: KeyCode) -> KeyEvent {
@@ -1831,7 +1831,13 @@ fn status_row(app: &mut App, width: u16, height: u16) -> String {
 #[test]
 fn the_meter_uses_the_window_the_model_advertises() {
     let mut app = App::new("session-abcdef", "big-model");
-    app.limits.insert("big-model".to_owned(), 1_000_000);
+    app.served.insert(
+        "big-model".to_owned(),
+        ServedModel {
+            context_limit: Some(1_000_000),
+            effort_levels: Vec::new(),
+        },
+    );
     app.tab_mut().status.context_tokens = 90_000;
 
     let status = status_row(&mut app, 160, 24);
@@ -1854,5 +1860,31 @@ fn the_meter_invents_no_percentage_without_a_window() {
     assert!(
         status.contains("90k tokens"),
         "the measured figure is still shown:\n{status}"
+    );
+}
+
+#[test]
+fn the_effort_levels_shown_are_the_endpoints_own() {
+    let mut app = App::new("session-abcdef", "deepseek");
+    app.served.insert(
+        "deepseek".to_owned(),
+        ServedModel {
+            context_limit: None,
+            effort_levels: vec!["none".to_owned(), "high".to_owned()],
+        },
+    );
+
+    assert_eq!(
+        app.effort_levels(app.tab()),
+        vec!["none".to_owned(), "high".to_owned()],
+        "the endpoint's own values, in its own order"
+    );
+
+    // a model the endpoint said nothing about gets no invented list.
+    app.tab_mut().status.model = "silent".to_owned();
+    let levels = app.effort_levels(app.tab());
+    assert!(
+        levels.is_empty(),
+        "no advertised levels means none: {levels:?}"
     );
 }

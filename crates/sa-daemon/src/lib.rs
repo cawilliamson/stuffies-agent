@@ -151,6 +151,7 @@ pub async fn run(
         discovered = vec![sa_core::llm::ModelInfo {
             id: cfg.model.clone(),
             context_limit: None,
+            effort_levels: Vec::new(),
         }];
     }
 
@@ -188,18 +189,10 @@ pub async fn run(
             max_tokens: std::env::var("SA_MAX_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok()),
-            reasoning_effort: std::env::var("SA_REASONING_EFFORT").ok(),
-            default_effort: std::env::var("SA_REASONING_EFFORT")
-                .unwrap_or_else(|_| "medium".to_owned()),
             models,
             lock_dir: cfg.runtime_dir.join("locks"),
             turn_timeout_secs: cfg.turn_timeout_secs,
             aux_budget_secs: cfg.aux_budget_secs,
-            // an override for endpoints that do not advertise a window; otherwise the
-            // limit comes from the model itself and is unknown when it says nothing.
-            context_limit: std::env::var("SA_CONTEXT_LIMIT")
-                .ok()
-                .and_then(|v| v.parse().ok()),
         }),
     ));
 

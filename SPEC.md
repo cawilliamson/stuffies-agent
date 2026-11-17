@@ -177,9 +177,18 @@ Administration:
 
 ```text
 ping             {}                               -> {version, uptime_seconds, sessions}
-model.list       {}                               -> [{id, context_limit, capabilities}]
+model.list       {}                               -> [{id, context_limit, capabilities,
+                                                      effort_levels}]
 model.select     {session_id, model}              -> {}
 ```
+
+`model.list` reports what the endpoint says about itself: its context window, the
+reasoning effort values it accepts, and its capabilities. Everything is discovered at
+daemon start, and re-discovered in the background while the endpoint is unreachable. There
+is no compiled-in default window and no invented effort list: a field the endpoint does
+not report is absent, and a client shows nothing rather than a guess. `SA_CONTEXT_LIMIT`
+and `SA_REASONING_EFFORT` no longer exist; the only override left is `SA_MODEL`, which
+pins a model id.
 
 Knowledge:
 

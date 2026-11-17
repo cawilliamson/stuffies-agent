@@ -233,6 +233,9 @@ pub struct ModelInfo {
     /// the model's context window, when the endpoint reports one. absent means unknown,
     /// which is not the same as a guessed default.
     pub context_limit: Option<u64>,
+    /// the reasoning effort values the endpoint accepts for this model, in its own order.
+    /// empty means it said nothing, and nothing is sent.
+    pub effort_levels: Vec<String>,
 }
 
 /// the context window an endpoint advertises for a model, under the shapes seen in the
@@ -257,6 +260,38 @@ pub fn advertised_context(model: &Value) -> Option<u64> {
         }
     }
     None
+}
+
+/// the reasoning effort values an endpoint advertises for a model, under the shapes seen in
+/// the wild. empty means the endpoint said nothing about effort at all.
+#[must_use]
+pub fn advertised_efforts(model: &Value) -> Vec<String> {
+    const PATHS: [&str; 4] = [
+        "/reasoning_effort_levels",
+        "/effort_levels",
+        "/reasoning/effort_levels",
+        "/reasoning_effort/values",
+    ];
+    for path in PATHS {
+        let Some(items) = model.pointer(path).and_then(Value::as_array) else {
+            continue;
+        };
+        let levels: Vec<String> = items
+            .iter()
+            .filter_map(|item| {
+                item.as_str().map(str::to_owned).or_else(|| {
+                    item.get("value")
+                        .or_else(|| item.get("name"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+            })
+            .collect();
+        if !levels.is_empty() {
+            return levels;
+        }
+    }
+    Vec::new()
 }
 
 pub trait Provider: Send + Sync {
@@ -329,6 +364,7 @@ impl OpenAiProvider {
                         Some(ModelInfo {
                             id: id.to_owned(),
                             context_limit: advertised_context(model),
+                            effort_levels: advertised_efforts(model),
                         })
                     })
                     .collect()
@@ -555,6 +591,7 @@ impl ScriptedProvider {
             .map(|id| ModelInfo {
                 id,
                 context_limit: None,
+                effort_levels: Vec::new(),
             })
             .collect();
         self
@@ -566,6 +603,18 @@ impl ScriptedProvider {
         self.models = vec![ModelInfo {
             id: id.to_owned(),
             context_limit: Some(context_limit),
+            effort_levels: Vec::new(),
+        }];
+        self
+    }
+
+    /// advertises a model that accepts these reasoning effort values.
+    #[must_use]
+    pub fn with_efforts(mut self, id: &str, levels: &[&str]) -> Self {
+        self.models = vec![ModelInfo {
+            id: id.to_owned(),
+            context_limit: None,
+            effort_levels: levels.iter().map(|level| (*level).to_owned()).collect(),
         }];
         self
     }

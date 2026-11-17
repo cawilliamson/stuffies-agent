@@ -346,18 +346,19 @@ impl Dispatcher {
     #[allow(clippy::unnecessary_wraps)]
     fn model_list(&self) -> Result<Value, RpcError> {
         let models = self.manager.models();
-        let levels = crate::manager::Manager::effort_levels();
         Ok(json!(models
             .into_iter()
             .map(|model| {
                 let id = model.id;
                 let context_limit = model.context_limit;
+                let effort_levels = model.effort_levels;
                 json!({
                     "id": id,
                     // absent when the endpoint did not say, so a client shows no guess.
                     "context_limit": context_limit,
                     "capabilities": ["tools", "streaming"],
-                    "effort_levels": levels,
+                    // the endpoint's own values, in its own order. empty means none.
+                    "effort_levels": effort_levels,
                 })
             })
             .collect::<Vec<_>>()))
@@ -366,10 +367,20 @@ impl Dispatcher {
     fn model_effort(&self, params: &Value) -> Result<Value, RpcError> {
         let session_id = string_field(params, "session_id")?;
         let effort = string_field(params, "effort")?;
-        if !crate::manager::Manager::effort_levels().contains(&effort.as_str()) {
+        let model = self
+            .manager
+            .store()
+            .get_session(&session_id)
+            .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?
+            .and_then(|row| row.model)
+            .unwrap_or_default();
+        let levels = self.manager.effort_levels(&model);
+        // an endpoint that advertises nothing cannot be second-guessed, so anything goes;
+        // one that does advertises is obeyed.
+        if !levels.is_empty() && !levels.contains(&effort) {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
-                format!("unknown effort level: {effort}"),
+                format!("{model} accepts {}: not {effort}", levels.join(", ")),
             ));
         }
         self.manager

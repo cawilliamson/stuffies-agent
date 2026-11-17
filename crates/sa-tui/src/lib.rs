@@ -147,10 +147,7 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
         tab_model(first, &fallback_model),
     );
     app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
-    app.limits = catalog
-        .into_iter()
-        .filter_map(|(id, limit)| limit.map(|limit| (id, limit)))
-        .collect();
+    app.served = catalog.into_iter().collect();
     for row in &rows {
         open_tab(client, &mut app, row, &fallback_model).await;
     }
@@ -410,12 +407,15 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
                         ),
                     },
                     "/effort" if arg.is_empty() => {
-                        let levels = crate::app::Status::default();
-                        let _ = levels;
-                        app.tab_mut().push(
-                            app::Role::System,
-                            "effort levels: low, medium, high",
-                        );
+                        // the endpoint's own values, not a list this build invented.
+                        let model = app.tab().status.model.clone();
+                        let levels = app.effort_levels(app.tab());
+                        let text = if levels.is_empty() {
+                            format!("{model}: the endpoint advertises no effort levels")
+                        } else {
+                            format!("{model} effort levels: {}", levels.join(", "))
+                        };
+                        app.tab_mut().push(app::Role::System, text);
                     }
                     "/effort" => match rpc(client, "model.effort", json!({"session_id": sid, "effort": arg}))
                         .await
@@ -533,7 +533,7 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
 }
 
 /// the model the daemon will use when a session has not chosen one.
-async fn model_catalog(client: &mut Client) -> Vec<(String, Option<u64>)> {
+async fn model_catalog(client: &mut Client) -> Vec<(String, app::ServedModel)> {
     rpc(client, "model.list", json!({}))
         .await
         .ok()
@@ -543,7 +543,23 @@ async fn model_catalog(client: &mut Client) -> Vec<(String, Option<u64>)> {
                     .iter()
                     .filter_map(|model| {
                         let id = model["id"].as_str()?;
-                        Some((id.to_owned(), model["context_limit"].as_u64()))
+                        let effort_levels = model["effort_levels"]
+                            .as_array()
+                            .map(|levels| {
+                                levels
+                                    .iter()
+                                    .filter_map(|level| level.as_str())
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Some((
+                            id.to_owned(),
+                            app::ServedModel {
+                                context_limit: model["context_limit"].as_u64(),
+                                effort_levels,
+                            },
+                        ))
                     })
                     .collect()
             })

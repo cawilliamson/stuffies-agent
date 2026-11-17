@@ -184,6 +184,13 @@ impl Entry {
     }
 }
 
+/// what an endpoint reports about one model it serves.
+#[derive(Debug, Clone, Default)]
+pub struct ServedModel {
+    pub context_limit: Option<u64>,
+    pub effort_levels: Vec<String>,
+}
+
 /// a rendered transcript, reused until its content or width changes. rebuilding it on every
 /// scroll keypress is what made scrolling crawl.
 pub struct Cache {
@@ -910,9 +917,9 @@ pub struct App {
     /// the terminal's image protocol, resolved once at startup. none means the terminal
     /// cannot show pictures, so attachments still send but do not preview.
     pub image_picker: Option<ratatui_image::picker::Picker>,
-    /// the context window each model advertises, as the endpoint reported it. a model that
-    /// is absent here has no known window and is not given a guessed one.
-    pub limits: std::collections::HashMap<String, u64>,
+    /// what the endpoint says about each model it serves. a model absent here has no
+    /// known window or effort list, and is not given guessed ones.
+    pub served: std::collections::HashMap<String, ServedModel>,
 }
 
 impl App {
@@ -928,7 +935,7 @@ impl App {
             picker: None,
             confirm: None,
             image_picker: None,
-            limits: std::collections::HashMap::new(),
+            served: std::collections::HashMap::new(),
         }
     }
 
@@ -943,10 +950,20 @@ impl App {
     /// the context window for the active tab's model. zero means unknown.
     #[must_use]
     pub fn context_limit(&self, tab: &Tab) -> u64 {
-        self.limits
+        self.served
             .get(&tab.status.model)
-            .copied()
+            .and_then(|model| model.context_limit)
             .unwrap_or(tab.status.context_limit)
+    }
+
+    /// the reasoning effort values the active tab's model accepts, as the endpoint lists
+    /// them. empty means it advertises none.
+    #[must_use]
+    pub fn effort_levels(&self, tab: &Tab) -> Vec<String> {
+        self.served
+            .get(&tab.status.model)
+            .map(|model| model.effort_levels.clone())
+            .unwrap_or_default()
     }
 
     #[must_use]

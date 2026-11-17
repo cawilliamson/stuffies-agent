@@ -58,17 +58,11 @@ pub struct ManagerConfig {
     pub host_fingerprint: String,
     pub provider: Arc<dyn Provider>,
     pub max_tokens: Option<u64>,
-    pub reasoning_effort: Option<String>,
-    /// an operator override. absent means the endpoint's advertised window is used, and if
-    /// that is absent too the limit is genuinely unknown rather than guessed.
-    pub context_limit: Option<u64>,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
     /// how long an auxiliary model call (title, compaction) may take before it is abandoned.
     /// without this a stalled provider blocks the turn before the agent even starts.
     pub aux_budget_secs: u64,
-    /// reasoning effort applied to new sessions when none is chosen.
-    pub default_effort: String,
     /// what the endpoint reports it serves. shared so a background refresher can fill it in.
     pub models: Arc<Mutex<Vec<crate::llm::ModelInfo>>>,
 }
@@ -221,8 +215,7 @@ impl Manager {
                 let model = self.default_model();
                 (!model.is_empty()).then_some(model)
             },
-            effort: (!self.config.default_effort.is_empty())
-                .then(|| self.config.default_effort.clone()),
+            effort: None,
             owner_host: self.config.host_fingerprint.clone(),
             owner_epoch: 0,
         })?;
@@ -273,19 +266,33 @@ impl Manager {
     /// advertised. `None` means unknown, and nothing downstream pretends otherwise.
     #[must_use]
     pub fn context_limit(&self, model: &str) -> Option<u64> {
-        if let Some(limit) = self.config.context_limit {
-            return Some(limit);
-        }
         self.models()
             .iter()
             .find(|known| known.id == model)
             .and_then(|known| known.context_limit)
     }
 
-    /// the reasoning effort levels this build offers.
+    /// the reasoning effort values this model accepts, in the endpoint's own order. empty
+    /// means the endpoint advertises none, and none is sent.
     #[must_use]
-    pub fn effort_levels() -> Vec<&'static str> {
-        vec!["low", "medium", "high"]
+    pub fn effort_levels(&self, model: &str) -> Vec<String> {
+        self.models()
+            .iter()
+            .find(|known| known.id == model)
+            .map(|known| known.effort_levels.clone())
+            .unwrap_or_default()
+    }
+
+    /// the effort to put on a request: the session's own choice when the model accepts it,
+    /// otherwise the model's first advertised value. nothing at all when it advertises none.
+    #[must_use]
+    pub fn reasoning_effort(&self, model: &str, chosen: Option<&str>) -> Option<String> {
+        let levels = self.effort_levels(model);
+        let first = levels.first().cloned()?;
+        match chosen {
+            Some(chosen) if levels.iter().any(|level| level == chosen) => Some(chosen.to_owned()),
+            _ => Some(first),
+        }
     }
 
     /// changes a session's reasoning effort, recording it in the log.
@@ -671,10 +678,8 @@ impl Manager {
             context: crate::workspace::context(&workspace, None),
             images,
             max_tokens: self.config.max_tokens,
-            reasoning_effort: row
-                .effort
-                .clone()
-                .or_else(|| self.config.reasoning_effort.clone()),
+            // only a value this model actually advertises, or nothing at all.
+            reasoning_effort: self.reasoning_effort(&model, row.effort.as_deref()),
         };
 
         // a stalled model stream must not hang the session forever (spec 14, v1.1).
@@ -866,7 +871,7 @@ impl Manager {
                 // generous on purpose: a reasoning model spends budget on its trace before
                 // it emits any text, and a tight cap yields an empty title.
                 max_tokens: Some(128),
-                reasoning_effort: Some("low".to_owned()),
+                reasoning_effort: self.reasoning_effort(model, None),
             })
             .await
         {
@@ -998,7 +1003,7 @@ impl Manager {
                 ))],
                 tools: Vec::new(),
                 max_tokens: Some(1024),
-                reasoning_effort: Some("low".to_owned()),
+                reasoning_effort: self.reasoning_effort(model, None),
             })
             .await?;
 
