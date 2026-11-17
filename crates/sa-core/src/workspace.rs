@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map_or_else(|| home().join(".config"), PathBuf::from)
-        .join("sa")
+        .join("stuffies-agent")
 }
 
 fn home() -> PathBuf {

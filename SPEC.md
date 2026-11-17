@@ -48,7 +48,7 @@ it are deferred.
 
 - A plugin/extension host. `sa` is native code; there is no third-party extension API.
 - Writing anything into the workspace. See §6.1; this is absolute.
-- Compatibility with pi's config layout. `sa` keeps its own root (`$XDG_CONFIG_HOME/sa`),
+- Compatibility with pi's config layout. `sa` keeps its own root (`$XDG_CONFIG_HOME/stuffies-agent`),
   though it deploys per-project context with the same directory-naming scheme so one
   dotfiles module can serve both agents.
 - Multi-tenant deployment. One daemon serves one unix user. Several *people* may share it
@@ -311,14 +311,14 @@ onto `from_seq`. A websocket would duplicate a reconnect protocol the daemon alr
 
 #### Binding
 
-Loopback only, `127.0.0.1:7420` by default, overridable in `$XDG_CONFIG_HOME/sa/web.toml`.
+Loopback only, `127.0.0.1:7420` by default, overridable in `$XDG_CONFIG_HOME/stuffies-agent/web.toml`.
 The listener is
 disabled unless that file exists. TLS is terminated by a reverse proxy, never by the daemon.
 `X-Forwarded-For` is honoured only when the immediate peer is loopback.
 
 #### Authentication
 
-On first start with the listener enabled, the daemon generates `$XDG_STATE_HOME/sa/web.token`,
+On first start with the listener enabled, the daemon generates `$XDG_STATE_HOME/stuffies-agent/web.token`,
 32 bytes hex, mode `0600`.
 
 - `POST /login {token}` compares in constant time and, on success, sets `sa_session`: 32 bytes
@@ -427,7 +427,7 @@ owner = { host_fingerprint, epoch }
 ```
 
 `host_fingerprint` is sha256 of `/etc/machine-id` when readable, otherwise a UUID generated
-once at daemon start and stored at `$XDG_STATE_HOME/sa/machine-id`, mode `0600`. It is not a
+once at daemon start and stored at `$XDG_STATE_HOME/stuffies-agent/machine-id`, mode `0600`. It is not a
 hostname and not a network address.
 
 `epoch` increments on every successful handoff. Fencing rules:
@@ -502,7 +502,7 @@ when it arrives, is a separate `session.purge` method rather than a flag on `del
 
 ### 6.1 Live store
 
-`DECIDED`: sqlite in WAL mode at `$XDG_STATE_HOME/sa/sa.db` is the sole source of truth for
+`DECIDED`: sqlite in WAL mode at `$XDG_STATE_HOME/stuffies-agent/sa.db` is the sole source of truth for
 live sessions. One daemon serves many workspaces, so the store is daemon-wide and each
 session records its own `cwd`.
 
@@ -530,16 +530,16 @@ cache. `git status` after any `sa` operation is byte-identical to before it.
 Everything sa needs lives in the two XDG roots:
 
 ```text
-$XDG_CONFIG_HOME/sa/                     user-authored, deployable from dotfiles
-  web.toml                               web listener config (spec 4.3)
-  workspaces/<slug>/SOUL.md              persona, read only
-  workspaces/<slug>/AGENTS.md            project context, read only
+$XDG_CONFIG_HOME/stuffies-agent/        user-authored, deployable from dotfiles
+  web.toml                              web listener config (spec 4.3)
+  workspaces/<slug>/SOUL.md             persona, read only
+  workspaces/<slug>/AGENTS.md           project context, read only
 
-$XDG_STATE_HOME/sa/                      runtime state, never hand-edited
-  sa.db  sa.db-wal  sa.db-shm            session store
-  knowledge.db                           derived knowledge index (spec 11.2)
-  knowledge/                             knowledge content (spec 11.1)
-  machine-id                             host fingerprint fallback (spec 5.3)
+$XDG_STATE_HOME/stuffies-agent/         runtime state, never hand-edited
+  sa.db  sa.db-wal  sa.db-shm           session store
+  knowledge.db                          derived knowledge index (spec 11.2)
+  knowledge/                            knowledge content (spec 11.1)
+  machine-id                            host fingerprint fallback (spec 5.3)
 ```
 
 `<slug>` is the workspace path with the leading `/` stripped and remaining `/` replaced by
@@ -753,7 +753,7 @@ read  write  edit  bash  grep  find  ls
 ```
 
 Model Context Protocol servers are the third set. The daemon reads
-`$XDG_CONFIG_HOME/sa/mcp.json` in the format every other MCP client uses
+`$XDG_CONFIG_HOME/stuffies-agent/mcp.json` in the format every other MCP client uses
 (`mcpServers`, with `command`/`args`/`env`/`cwd` for stdio or `url`/`headers` for
 streamable HTTP), connects each enabled server once at startup, and offers its tools to
 the model as `mcp__<server>__<tool>`. The prefix is not decoration: a server tool can
@@ -793,7 +793,7 @@ is green and only if a measured turn is latency-bound on tool calls.
 
 - The daemon owns model credentials. Clients never see a key.
 - Configuration is daemon-local: environment (`OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`) and
-  a credential file under `$XDG_CONFIG_HOME/sa/` at mode `0600`.
+  a credential file under `$XDG_CONFIG_HOME/stuffies-agent/` at mode `0600`.
 - Bundles carry no credentials. A handoff to a host without credentials fails at import
   verification, not mid-turn.
 
@@ -855,7 +855,7 @@ outside its namespaces.
 ### 11.1 Layout
 
 ```text
-$XDG_STATE_HOME/sa/knowledge/          default root, overridable in knowledge.toml
+$XDG_STATE_HOME/stuffies-agent/knowledge/          default root, overridable in knowledge.toml
   shared/            read by every session
   user/<id>/         read and written by one user
   workspace/<id>/    read and written by sessions in one workspace
@@ -870,7 +870,7 @@ root may itself be a git repository, and `sa knowledge` commits on write when it
 
 ### 11.2 Index
 
-`$XDG_STATE_HOME/sa/knowledge.db`, sqlite FTS5 over `path`, `namespace`, `title`, `body`.
+`$XDG_STATE_HOME/stuffies-agent/knowledge.db`, sqlite FTS5 over `path`, `namespace`, `title`, `body`.
 
 The index is derived and rebuildable: `knowledge.reindex` walks the root and rebuilds it. A
 missing or corrupt index is never an error, only a reindex. Files win every disagreement.
@@ -887,7 +887,7 @@ A session is created with a resolved namespace set, recorded in `session.created
 {"knowledge_namespaces": ["shared", "user:chris", "workspace:stuffies"]}
 ```
 
-Resolution happens at session creation from `$XDG_CONFIG_HOME/sa/knowledge.toml`:
+Resolution happens at session creation from `$XDG_CONFIG_HOME/stuffies-agent/knowledge.toml`:
 
 ```toml
 [users.chris]
@@ -962,7 +962,7 @@ required for the motivating workflow.
 - `sa` auto-spawns the daemon when the socket is absent, guarded by an exclusive bind lock
   so auto-spawn and systemd can never both start a daemon.
 - The daemon never exits because its last client disconnected.
-- The web listener (§4.3) starts only when `$XDG_CONFIG_HOME/sa/web.toml` exists. It is a
+- The web listener (§4.3) starts only when `$XDG_CONFIG_HOME/stuffies-agent/web.toml` exists. It is a
   carrier, not a
   supervisor: it never owns the daemon's lifetime, and stopping it does not stop a turn.
 - Graceful shutdown drains in-flight turns or marks them `interrupted`; it never truncates

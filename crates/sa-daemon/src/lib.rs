@@ -43,7 +43,7 @@ impl Config {
                 },
                 PathBuf::from,
             )
-            .join("sa");
+            .join("stuffies-agent");
         let socket_path = std::env::var_os("SA_SOCKET")
             .map_or_else(|| runtime_dir.join(socket::SOCKET_FILE), PathBuf::from);
         let state_dir = std::env::var_os("SA_STATE_DIR").map_or(state_dir, PathBuf::from);

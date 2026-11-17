@@ -11,8 +11,13 @@ pub const SOCKET_FILE: &str = "daemon.sock";
 #[must_use]
 pub fn default_runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
-        || std::env::temp_dir().join(format!("sa-{}", nix::unistd::geteuid().as_raw())),
-        |dir| PathBuf::from(dir).join("sa"),
+        || {
+            std::env::temp_dir().join(format!(
+                "stuffies-agent-{}",
+                nix::unistd::geteuid().as_raw()
+            ))
+        },
+        |dir| PathBuf::from(dir).join("stuffies-agent"),
     )
 }
 
