@@ -6,7 +6,6 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;

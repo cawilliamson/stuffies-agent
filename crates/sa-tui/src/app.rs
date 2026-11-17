@@ -17,12 +17,6 @@ const MIN_SPAN: std::time::Duration = std::time::Duration::from_millis(500);
 /// lines moved per arrow key.
 const SCROLL_STEP: u16 = 3;
 
-/// how many editor states the undo stack keeps.
-const UNDO_LIMIT: usize = 128;
-
-/// a run of typing inside this window undoes as one step, rather than per character.
-const UNDO_COALESCE: std::time::Duration = std::time::Duration::from_millis(500);
-
 /// how long the scrollbar stays up after the last scroll. it is a hint, not furniture.
 const SCROLLBAR_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
 /// lines moved per page key.
@@ -1029,6 +1023,10 @@ pub struct App {
     /// the terminal's image protocol, resolved once at startup. none means the terminal
     /// cannot show pictures, so attachments still send but do not preview.
     pub image_picker: Option<ratatui_image::picker::Picker>,
+    /// the last few key events as the terminal delivered them, for `/keys`. a terminal that
+    /// cannot report shift+enter sends a plain enter, and this is how that is told apart
+    /// from a key we mishandle.
+    pub recent_keys: std::collections::VecDeque<String>,
     /// what the endpoint says about each model it serves. a model absent here has no
     /// known window or effort list, and is not given guessed ones.
     pub served: std::collections::HashMap<String, ServedModel>,
@@ -1046,6 +1044,7 @@ impl App {
             picker: None,
             confirm: None,
             image_picker: None,
+            recent_keys: std::collections::VecDeque::new(),
             served: std::collections::HashMap::new(),
         }
     }
@@ -1284,6 +1283,14 @@ impl App {
         }
     }
 
+    /// records what the terminal delivered, keeping the last few.
+    pub fn note_key(&mut self, key: KeyEvent) {
+        if self.recent_keys.len() >= 8 {
+            self.recent_keys.pop_front();
+        }
+        self.recent_keys.push_back(format!("{key:?}"));
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         if self.confirm.is_some() {
             return self.on_confirm_key(key);
@@ -1307,8 +1314,7 @@ impl App {
                     self.tab_mut().undo();
                     Action::None
                 }
-                // pi kills to the line start here; the library's default kills the line.
-                // emacs mode's own kill-to-line-start, which keeps its undo coherent.
+                // emacs mode binds ctrl+u to undo; the terminal convention is kill-to-start.
                 KeyCode::Char('u') => {
                     self.tab_mut().edit(key);
                     Action::None
@@ -1341,7 +1347,9 @@ impl App {
             }
             KeyCode::BackTab => Action::NextTab,
             // shift+enter makes a new line; enter alone sends.
-            KeyCode::Enter | KeyCode::Char('\n' | '\r') if shift => self.tab_mut().insert_newline(),
+            KeyCode::Enter | KeyCode::Char('\n' | '\r') if newline => {
+                self.tab_mut().insert_newline()
+            }
             KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.tab_mut().submit(),
             KeyCode::Up => {
                 let tab = self.tab_mut();

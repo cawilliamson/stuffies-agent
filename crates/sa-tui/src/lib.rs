@@ -121,6 +121,20 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
     // newline arrives as a send. it is pushed unconditionally: asking first needs a reply
     // many terminals never send, and one that does not speak the protocol ignores the
     // sequence.
+    // SA_KEYLOG writes what the terminal actually delivers, which is the only way to tell a
+    // key the terminal cannot report from a key we mishandle.
+    let keylog = std::env::var_os("SA_KEYLOG").map(std::path::PathBuf::from);
+    if let Some(path) = &keylog {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(path).ok();
+        if let Some(file) = file.as_mut() {
+            let _ = writeln!(
+                file,
+                "supports_keyboard_enhancement: {:?}",
+                crossterm::terminal::supports_keyboard_enhancement()
+            );
+        }
+    }
     let enhanced = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::PushKeyboardEnhancementFlags(
@@ -206,6 +220,9 @@ where
         app.switch_tab(index);
     }
 
+    // what the terminal actually delivers, when SA_KEYLOG names a file.
+    let keylog = std::env::var_os("SA_KEYLOG").map(std::path::PathBuf::from);
+
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -252,6 +269,13 @@ where
             }
             Incoming::Resize => app.touch(),
             Incoming::Key(key) => {
+                app.note_key(key);
+                if let Some(path) = &keylog {
+                    use std::io::Write as _;
+                    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+                        let _ = writeln!(file, "{key:?}");
+                    }
+                }
                 action = app.on_key(key);
                 // a key press must always produce a frame, even inside the throttle window.
                 force_draw = true;
@@ -464,6 +488,20 @@ where
                             }
                             Err(err) => app.tab_mut().push(app::Role::Error, err),
                         }
+                    }
+                    "/keys" => {
+                        let seen = app
+                            .recent_keys
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        let text = if seen.is_empty() {
+                            "no keys seen yet".to_owned()
+                        } else {
+                            format!("keys the terminal delivered: {seen}")
+                        };
+                        app.tab_mut().push(app::Role::System, text);
                     }
                     "/mcp" => match rpc(client, "mcp.list", json!({})).await {
                         Ok(list) => {
