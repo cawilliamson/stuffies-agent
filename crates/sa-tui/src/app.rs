@@ -1294,6 +1294,9 @@ impl App {
 
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        // a newline without sending. alt is the alias for terminals that cannot tell
+        // shift+enter from enter.
+        let newline = shift || key.modifiers.contains(KeyModifiers::ALT);
 
         if ctrl {
             return match key.code {

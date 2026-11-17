@@ -228,7 +228,13 @@ pub async fn run(
     let dispatcher = Arc::new(Dispatcher::new(Arc::clone(&manager)));
     let own_uid = nix::unistd::geteuid().as_raw();
 
-    tracing::info!(socket = %cfg.socket_path.display(), "sa daemon listening");
+    tracing::info!(
+        socket = %cfg.socket_path.display(),
+        model = %manager.default_model(),
+        effort = ?std::env::var("SA_REASONING_EFFORT").ok(),
+        context_limit = ?manager.context_limit(&manager.default_model()),
+        "sa daemon listening"
+    );
 
     tokio::pin!(shutdown);
     loop {

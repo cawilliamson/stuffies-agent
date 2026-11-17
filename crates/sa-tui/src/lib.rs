@@ -118,16 +118,16 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
     // without this the terminal reports shift+enter as a plain enter, and the operator's
-    // newline arrives as a send. terminals that do not speak it ignore the request.
-    let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    if enhanced {
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::PushKeyboardEnhancementFlags(
-                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            )
-        );
-    }
+    // newline arrives as a send. it is pushed unconditionally: asking first needs a reply
+    // many terminals never send, and one that does not speak the protocol ignores the
+    // sequence.
+    let enhanced = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    )
+    .is_ok();
     let _restore = Restore { enhanced };
 
     let backend = CrosstermBackend::new(std::io::stdout());
@@ -1155,6 +1155,56 @@ mod daemon_tests {
             .expect("a turn must have been started");
         assert_eq!(started["params"]["prompt"], "hello");
         assert_eq!(started["params"]["session_id"], "s1");
+    }
+
+    #[tokio::test]
+    async fn the_bar_shows_the_effort_and_the_context_meter() {
+        let mut replies = startup_replies();
+        // the session carries an effort, and the endpoint advertises a window.
+        replies[0] = (
+            "model.list",
+            json!([{"id": "m", "context_limit": 1_000_000}]),
+        );
+        replies[1] = (
+            "session.list",
+            json!([{
+                "id": "s1", "title": "work", "state": "active", "cwd": "/tmp",
+                "model": "m", "effort": "medium", "created_at": 1, "updated_at": 2,
+            }]),
+        );
+        let (mut client, _server) = daemon(replies);
+
+        let backend = ratatui::backend::TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let quit = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(vec![quit]),
+        )
+        .await
+        .expect("run");
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            screen.contains("m:medium"),
+            "the effort is shown:\n{screen}"
+        );
+        assert!(
+            screen.contains('%'),
+            "the meter has a percentage:\n{screen}"
+        );
     }
 
     #[tokio::test]
