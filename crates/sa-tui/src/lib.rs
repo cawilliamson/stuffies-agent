@@ -4,7 +4,7 @@
 //! something visible changed, so an idle session costs nothing.
 
 pub mod app;
-pub mod theme;
+pub mod ui;
 
 use std::io::Write;
 
@@ -78,12 +78,12 @@ pub fn draw<B: ratatui::backend::Backend>(
 ) -> std::io::Result<()> {
     terminal
         .draw(|frame| {
-            if let Some((x, y)) = theme::at(app.theme).render(frame, app) {
+            if let Some((x, y)) = ui::render(frame, app) {
                 frame.set_cursor_position((x, y));
             }
-            crate::theme::parts::attachment_preview(frame, app);
-            crate::theme::parts::picker(frame, app);
-            crate::theme::parts::confirm_prompt(frame, app);
+            ui::attachment_preview(frame, app);
+            ui::picker(frame, app);
+            ui::confirm_prompt(frame, app);
         })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
@@ -397,26 +397,6 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
                             Err(err) => app.tab_mut().push(app::Role::Error, err),
                         }
                     }
-                    "/theme" if arg.is_empty() => {
-                        let names: Vec<&str> =
-                            theme::THEMES.iter().map(|t| t.name()).collect();
-                        app.tab_mut().push(
-                            app::Role::System,
-                            format!("themes: {}", names.join(", ")),
-                        );
-                    }
-                    "/theme" => match theme::index_of(arg) {
-                        Some(index) => {
-                            app.theme = index;
-                            app.touch();
-                            app.tab_mut()
-                                .push(app::Role::System, format!("theme: {arg}"));
-                        }
-                        None => app.tab_mut().push(
-                            app::Role::Error,
-                            format!("no theme named {arg}, try /theme"),
-                        ),
-                    },
                     "/effort" if arg.is_empty() => {
                         // the endpoint's own values, not a list this build invented.
                         let model = app.tab().status.model.clone();
@@ -752,5 +732,228 @@ mod tests {
         frame.force();
         frame.render(&mut terminal, &mut app).expect("draw");
         assert_ne!(frame.drawn, first, "forcing must redraw");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod daemon_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    /// a scripted daemon on the far end of a socketpair. it answers the named methods with
+    /// canned results and records every request, so a test can assert what the client
+    /// actually asked the daemon to do.
+    fn daemon(
+        replies: Vec<(&'static str, Value)>,
+    ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
+        let (ours, theirs) = UnixStream::pair().expect("socketpair");
+        let handle = tokio::spawn(async move {
+            let (read, mut write) = theirs.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let mut seen = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(request) = serde_json::from_str::<Value>(&line) else {
+                    break;
+                };
+                seen.push(request.clone());
+                let method = request["method"].as_str().unwrap_or_default();
+                let result = replies
+                    .iter()
+                    .find(|(name, _)| *name == method)
+                    .map_or_else(|| json!({}), |(_, value)| value.clone());
+                let reply = json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
+                if write
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            seen
+        });
+        (Client::from_stream(ours), handle)
+    }
+
+    fn session_row(id: &str, cwd: &str) -> Value {
+        json!({
+            "id": id,
+            "title": "work",
+            "state": "active",
+            "cwd": cwd,
+            "model": "m",
+            "effort": "high",
+            "created_at": 1,
+            "updated_at": 2,
+        })
+    }
+
+    #[tokio::test]
+    async fn open_tab_hydrates_a_tab_that_already_exists() {
+        // the regression: the app's own first slot is a tab object with no history, and it
+        // must still be replayed and subscribed or it stays deaf for the whole run.
+        let replay = json!({"events": [
+            {"kind": "turn.started", "payload": {"prompt": "hello"}},
+            {"kind": "llm.delta", "payload": {"text": "hi"}},
+        ]});
+        let (mut client, server) = daemon(vec![
+            ("events.replay", replay),
+            ("events.subscribe", json!({"subscription_id": 1})),
+        ]);
+
+        let mut app = App::new("s1", "m");
+        assert!(app.needs_hydration("s1"));
+
+        open_tab(
+            &mut client,
+            &mut app,
+            &session_row("s1", "/tmp"),
+            "fallback",
+        )
+        .await;
+
+        assert!(app.tab().hydrated, "the tab must be hydrated");
+        assert!(
+            !app.tab().transcript.is_empty(),
+            "history must be replayed into the tab"
+        );
+        assert_eq!(app.tab().cwd, "/tmp");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        assert!(seen.iter().any(|r| r["method"] == "events.replay"));
+        assert!(
+            seen.iter().any(|r| r["method"] == "events.subscribe"),
+            "a tab that is not subscribed never learns its turn finished"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_tab_replays_only_once() {
+        let (mut client, server) = daemon(vec![
+            ("events.replay", json!({"events": []})),
+            ("events.subscribe", json!({"subscription_id": 1})),
+        ]);
+
+        let mut app = App::new("s1", "m");
+        let row = session_row("s1", "/tmp");
+        open_tab(&mut client, &mut app, &row, "fallback").await;
+        open_tab(&mut client, &mut app, &row, "fallback").await;
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let replays = seen
+            .iter()
+            .filter(|r| r["method"] == "events.replay")
+            .count();
+        assert_eq!(replays, 1, "a hydrated tab is not replayed again");
+    }
+
+    #[tokio::test]
+    async fn sync_tabs_opens_a_tab_for_a_session_it_has_not_seen() {
+        let list = json!([session_row("s1", "/tmp"), session_row("s2", "/tmp")]);
+        let (mut client, _server) = daemon(vec![
+            ("session.list", list),
+            ("events.replay", json!({"events": []})),
+            ("events.subscribe", json!({"subscription_id": 1})),
+        ]);
+
+        let mut app = App::new("s1", "m");
+        sync_tabs(&mut client, &mut app, "m", "/tmp")
+            .await
+            .expect("sync");
+
+        let sessions: Vec<&str> = app.tabs.iter().map(|tab| tab.session.as_str()).collect();
+        assert_eq!(sessions, ["s1", "s2"]);
+        assert!(!app.needs_hydration("s1"), "the tab is hydrated");
+    }
+
+    #[tokio::test]
+    async fn sync_tabs_drops_the_tab_of_a_deleted_session() {
+        let (mut client, _server) = daemon(vec![
+            ("session.list", json!([session_row("s1", "/tmp")])),
+            ("events.replay", json!({"events": []})),
+            ("events.subscribe", json!({"subscription_id": 1})),
+        ]);
+
+        let mut app = App::new("s1", "m");
+        app.tab_mut().hydrated = true;
+        app.add_tab("gone", "m");
+        app.tab_mut().hydrated = true;
+
+        sync_tabs(&mut client, &mut app, "m", "/tmp")
+            .await
+            .expect("sync");
+
+        let sessions: Vec<&str> = app.tabs.iter().map(|tab| tab.session.as_str()).collect();
+        assert_eq!(sessions, ["s1"], "a deleted session loses its tab");
+    }
+
+    #[tokio::test]
+    async fn the_catalog_reads_what_the_endpoint_advertises() {
+        let list = json!([
+            {"id": "big", "context_limit": 1_000_000, "effort_levels": ["none", "high"]},
+            {"id": "silent"},
+        ]);
+        let (mut client, _server) = daemon(vec![("model.list", list)]);
+
+        let catalog = model_catalog(&mut client).await;
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog[0].0, "big");
+        assert_eq!(catalog[0].1.context_limit, Some(1_000_000));
+        assert_eq!(catalog[0].1.effort_levels, ["none", "high"]);
+        assert_eq!(
+            catalog[1].1.context_limit, None,
+            "an endpoint that says nothing is not given a guess"
+        );
+    }
+
+    #[tokio::test]
+    async fn creating_a_session_returns_the_id_and_reports_a_failure() {
+        let (mut client, _server) = daemon(vec![(
+            "session.create",
+            json!({"session_id": "abc", "seq": 1}),
+        )]);
+        assert_eq!(
+            create_session(&mut client, "/tmp").await,
+            Ok("abc".to_owned())
+        );
+
+        let (mut client, _server) = daemon(vec![("session.create", json!({}))]);
+        assert!(create_session(&mut client, "/tmp").await.is_err());
+    }
+
+    #[test]
+    fn a_cwd_argument_resolves_against_the_tab() {
+        let base = std::env::temp_dir().join("sa-tui-resolve-dir");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inner")).expect("dirs");
+        let base = std::fs::canonicalize(&base).expect("canonical");
+
+        let resolved = resolve_dir(&base.display().to_string(), "inner").expect("resolved");
+        assert_eq!(
+            std::path::Path::new(&resolved),
+            base.join("inner"),
+            "a relative path means relative to where the tab works"
+        );
+        assert!(
+            resolve_dir(&base.display().to_string(), "nope").is_none(),
+            "a path that does not exist is refused"
+        );
+    }
+
+    #[test]
+    fn the_tab_directory_falls_back_to_the_process_directory() {
+        let mut app = App::new("s1", "m");
+        assert_eq!(
+            tab_cwd(&app),
+            std::env::current_dir().expect("cwd").display().to_string(),
+            "an unset tab directory uses where the process was started"
+        );
+
+        app.tab_mut().cwd = "/work/project".to_owned();
+        assert_eq!(tab_cwd(&app), "/work/project");
     }
 }

@@ -969,8 +969,6 @@ pub struct App {
     pub tabs: Vec<Tab>,
     pub active: usize,
     pub revision: u64,
-    /// index into the compiled-in theme registry.
-    pub theme: usize,
     /// animation frame for the activity spinner.
     pub spinner: usize,
     /// the open picker, if any. keys route to it while it is up.
@@ -993,7 +991,6 @@ impl App {
             tabs: vec![tab],
             active: 0,
             revision: 1,
-            theme: crate::theme::default_index(),
             spinner: 0,
             picker: None,
             confirm: None,

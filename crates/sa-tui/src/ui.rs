@@ -1,6 +1,7 @@
-//! shared pieces themes compose. no layout decisions here.
+//! the one screen layout, and the pieces it is built from. there is no theming layer:
+//! adding a second visual means adding a second `render`, not a registry.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -16,14 +17,6 @@ pub const RULE: Color = Color::Rgb(0x2a, 0x30, 0x3a);
 
 /// the transcript for a pane, pinned to the newest content when following.
 pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    transcript_with(frame, area, app, std::convert::identity);
-}
-
-/// as [`transcript`], for the themes that decorate the paragraph themselves.
-pub fn transcript_with<F>(frame: &mut Frame<'_>, area: Rect, app: &mut App, decorate: F)
-where
-    F: FnOnce(Paragraph<'static>) -> Paragraph<'static>,
-{
     // the bar column is reserved even while the bar is hidden: reflowing the text as it
     // appears would invalidate the render cache and make the whole pane jump.
     let bar_column = area.width > 1;
@@ -85,8 +78,7 @@ where
     let scroll = tab.scroll;
     let span = tab.max_scroll;
     let visible = tab.scroll_touched.is_some() && span > 0;
-    let paragraph = decorate(Paragraph::new(content).scroll((scroll, 0)));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(Paragraph::new(content).scroll((scroll, 0)), area);
 
     if visible {
         let mut bar_state =
@@ -405,32 +397,6 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
     Some((area.x + 2 + u16::try_from(column).unwrap_or(0), area.y + 1))
 }
 
-/// key/value facts about the session, for sidebars and dashboards.
-#[must_use]
-pub fn facts(app: &App) -> Vec<(&'static str, String)> {
-    let tab = app.tab();
-    let mut out = vec![
-        ("session", tab.session.chars().take(8).collect::<String>()),
-        ("cwd", short_path(&tab.cwd)),
-        ("model", tab.status.model.clone()),
-        ("effort", tab.status.effort.clone()),
-        ("rate", format!("{:.1} t/s", tab.tok_per_sec)),
-        (
-            "tokens",
-            format!(
-                "{}/{}",
-                compact(tab.status.prompt_tokens),
-                compact(tab.status.completion_tokens)
-            ),
-        ),
-    ];
-    if let Some(branch) = &tab.branch {
-        out.insert(1, ("branch", branch.clone()));
-    }
-    out.retain(|(_, value)| !value.is_empty());
-    out
-}
-
 /// abbreviates large counts.
 #[must_use]
 pub fn compact(count: u64) -> String {
@@ -443,16 +409,7 @@ pub fn compact(count: u64) -> String {
     }
 }
 
-/// a bordered pane with a title.
-#[must_use]
-pub fn pane(title: &str, edge: Color) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {title} "))
-        .border_style(Style::default().fg(edge))
-}
-
-/// draws the open picker over the interface. shared, so every theme gets it.
+/// draws the open picker over the interface.
 pub fn picker(frame: &mut Frame<'_>, app: &App) {
     let Some(picker) = &app.picker else {
         return;
@@ -506,7 +463,7 @@ pub fn picker(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// draws the yes/no question over the interface. shared, so every theme gets it.
+/// draws the yes/no question over the interface.
 pub fn confirm_prompt(frame: &mut Frame<'_>, app: &App) {
     let Some(question) = &app.confirm else {
         return;
@@ -584,4 +541,31 @@ pub fn attachment_preview(frame: &mut Frame<'_>, app: &mut App) {
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     frame.render_stateful_widget(ratatui_image::StatefulImage::default(), inner, protocol);
+}
+
+/// draws the whole screen, returning where the text cursor belongs.
+pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(frame.area());
+
+    frame.render_widget(Paragraph::new(tab_bar(app, rows[0].width)), rows[0]);
+
+    let border = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(RULE));
+    let inner = border.inner(rows[1]);
+    frame.render_widget(border, rows[1]);
+    transcript(frame, inner, app);
+
+    let cursor = composer(frame, rows[2], app);
+    frame.render_widget(Paragraph::new(status_bar(app, rows[3].width)), rows[3]);
+    cursor
 }

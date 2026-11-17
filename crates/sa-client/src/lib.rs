@@ -48,6 +48,17 @@ impl Client {
         })
     }
 
+    /// a client over an already-connected stream. used by tests, which stand a scripted
+    /// daemon on the other end instead of a real socket.
+    #[must_use]
+    pub fn from_stream(stream: UnixStream) -> Self {
+        Self {
+            framed: Framed::new(stream, LinesCodec::new_with_max_length(MAX_LINE_LEN)),
+            next_id: 0,
+            queued: std::collections::VecDeque::new(),
+        }
+    }
+
     /// performs the mandatory `hello` handshake (spec 3.1).
     pub async fn handshake(&mut self, client: &str) -> Result<HelloResult, ClientError> {
         let params = HelloParams {

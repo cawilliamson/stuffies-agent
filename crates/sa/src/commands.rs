@@ -638,3 +638,182 @@ pub async fn export(session: Option<String>, format: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    /// a scripted daemon on the far end of a socketpair, so the client half of a command
+    /// can be exercised without a real daemon.
+    fn daemon(
+        replies: Vec<(&'static str, Value)>,
+    ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
+        let (ours, theirs) = UnixStream::pair().expect("socketpair");
+        let handle = tokio::spawn(async move {
+            let (read, mut write) = theirs.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let mut seen = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(request) = serde_json::from_str::<Value>(&line) else {
+                    break;
+                };
+                seen.push(request.clone());
+                let method = request["method"].as_str().unwrap_or_default();
+                let result = replies
+                    .iter()
+                    .find(|(name, _)| *name == method)
+                    .map_or_else(|| json!({}), |(_, value)| value.clone());
+                let reply = json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
+                if write
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            seen
+        });
+        (Client::from_stream(ours), handle)
+    }
+
+    #[test]
+    fn tool_arguments_summarise_to_their_most_useful_field() {
+        assert_eq!(
+            summarise_args(&json!({"path": "src/main.rs"})),
+            "src/main.rs"
+        );
+        assert_eq!(summarise_args(&json!({"command": "ls -la"})), "ls -la");
+        assert_eq!(summarise_args(&json!({"pattern": "fn main"})), "fn main");
+        assert_eq!(
+            summarise_args(&json!({"content": "abcdef"})),
+            "6 bytes",
+            "a write reports its size"
+        );
+        assert_eq!(summarise_args(&json!({})), "");
+    }
+
+    #[test]
+    fn long_values_are_cut_with_a_marker() {
+        assert_eq!(truncate_chars("short", 10), "short");
+        assert_eq!(truncate_chars("abcdefghij", 5), "abcde\u{2026}");
+    }
+
+    #[test]
+    fn a_tool_result_preview_is_bounded_and_says_how_much_it_hid() {
+        let many = (0..20)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let shown = preview(&many, "bash");
+        assert_eq!(shown.len(), TOOL_PREVIEW_LINES + 1);
+        assert!(shown.last().expect("tail").contains("20 lines"));
+
+        assert_eq!(preview("", "read"), vec!["(no output)".to_owned()]);
+        assert_eq!(preview("one line", "read"), vec!["one line".to_owned()]);
+    }
+
+    #[test]
+    fn the_renderer_tracks_tool_calls_and_takes_every_event_kind() {
+        let mut renderer = Renderer::default();
+        renderer.event(
+            "tool.requested",
+            &json!({"tool": "bash", "call_id": "c1", "args": {"command": "ls"}}),
+        );
+        assert_eq!(
+            renderer.tool_names.get("c1").map(String::as_str),
+            Some("bash")
+        );
+
+        // every kind must render without panicking, including one it does not know.
+        for kind in [
+            "llm.delta",
+            "llm.reasoning",
+            "tool.completed",
+            "tool.failed",
+            "turn.completed",
+            "turn.interrupted",
+            "compaction.applied",
+            "not.a.kind",
+        ] {
+            renderer.event(
+                kind,
+                &json!({
+                    "text": "x",
+                    "call_id": "c1",
+                    "output": "out",
+                    "cause": "cause",
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn history_replay_skips_the_live_deltas() {
+        let mut renderer = Renderer::default();
+        let events = vec![
+            json!({"kind": "llm.delta", "payload": {"text": "streamed"}}),
+            json!({"kind": "turn.completed", "payload": {"usage": {}}}),
+        ];
+        render_history(&mut renderer, &events);
+    }
+
+    #[tokio::test]
+    async fn the_session_for_this_directory_is_found_by_its_cwd() {
+        let here = std::env::current_dir().expect("cwd");
+        let here = std::fs::canonicalize(&here).unwrap_or(here);
+        let elsewhere = "/somewhere/else";
+        let list = json!([
+            {"id": "other", "state": "active", "cwd": elsewhere},
+            {"id": "mine", "state": "active", "cwd": here.display().to_string()},
+            {"id": "deleted", "state": "deleted", "cwd": here.display().to_string()},
+        ]);
+        let (mut client, _server) = daemon(vec![("session.list", list)]);
+
+        assert_eq!(
+            session_for_cwd(&mut client).await.expect("list"),
+            Some("mine".to_owned()),
+            "the live session rooted here, not another directory's"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_most_recent_session_is_the_first_listed() {
+        let list = json!([{"id": "newest"}, {"id": "older"}]);
+        let (mut client, _server) = daemon(vec![("session.list", list)]);
+        assert_eq!(
+            most_recent_session(&mut client).await.expect("list"),
+            Some("newest".to_owned())
+        );
+
+        let (mut client, _server) = daemon(vec![("session.list", json!([]))]);
+        assert_eq!(most_recent_session(&mut client).await.expect("list"), None);
+    }
+
+    #[tokio::test]
+    async fn creating_a_session_reports_the_id_or_the_failure() {
+        let (mut client, _server) = daemon(vec![("session.create", json!({"session_id": "abc"}))]);
+        assert_eq!(create_session(&mut client).await, Ok("abc".to_owned()));
+
+        let (mut client, _server) = daemon(vec![("session.create", json!({}))]);
+        assert!(create_session(&mut client).await.is_err());
+    }
+
+    #[test]
+    fn the_context_command_reads_a_directory_without_a_daemon() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("AGENTS.md"), "be brief").expect("write");
+        std::fs::create_dir_all(dir.path().join("skills/demo")).expect("dirs");
+        std::fs::write(
+            dir.path().join("skills/demo/SKILL.md"),
+            "---\nname: demo\n---\nbody",
+        )
+        .expect("write");
+
+        context(Some(dir.path().display().to_string())).expect("context");
+    }
+}

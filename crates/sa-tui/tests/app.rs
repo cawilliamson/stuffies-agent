@@ -1804,7 +1804,7 @@ fn the_tab_strip_never_draws_wider_than_its_room() {
     for active in [0usize, 1, 14, 28, 29] {
         app.switch_tab(active);
         for width in [20u16, 40, 60, 80, 120, 200] {
-            let drawn = sa_tui::theme::parts::tab_bar(&app, width).width();
+            let drawn = sa_tui::ui::tab_bar(&app, width).width();
             assert!(
                 drawn <= usize::from(width),
                 "the strip drew {drawn} cells into {width}"
