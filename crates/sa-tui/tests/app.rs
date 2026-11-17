@@ -2003,3 +2003,49 @@ fn the_effort_levels_shown_are_the_endpoints_own() {
         "no advertised levels means none: {levels:?}"
     );
 }
+
+#[test]
+fn a_tab_standing_in_the_strip_still_needs_hydrating() {
+    let mut app = App::new("session-abcdef", "m");
+
+    // the app's own first slot: a tab object exists, but nothing has been replayed into it,
+    // so it must still be hydrated or it stays deaf for the whole run.
+    assert!(
+        app.needs_hydration("session-abcdef"),
+        "a tab with no history is not hydrated"
+    );
+
+    app.tab_mut().hydrated = true;
+    assert!(!app.needs_hydration("session-abcdef"));
+    assert!(app.needs_hydration("never-seen"));
+}
+
+#[test]
+fn an_error_alone_is_not_work() {
+    let mut app = App::new("session-abcdef", "m");
+    app.add_tab("session-second", "m");
+    app.tab_mut()
+        .push(Role::Error, "rpc: session has no turn to steer");
+
+    assert!(!app.tab().has_content(), "an error is not work");
+    assert_eq!(
+        app.on_key(ctrl('w')),
+        Action::CloseTab,
+        "closing a tab that only holds an error must not ask"
+    );
+}
+
+#[test]
+fn a_turn_started_anywhere_shows_as_running_but_a_replayed_one_does_not() {
+    let mut app = App::new("s", "m");
+
+    // history: a turn that finished long ago is not running now.
+    app.tab_mut()
+        .on_replay("turn.started", &json!({"prompt": "old"}));
+    assert!(!app.tab().status.turn_running, "a replayed turn is history");
+
+    // live: another window starting a turn is a running turn here too.
+    app.tab_mut()
+        .on_event("turn.started", &json!({"prompt": "now"}));
+    assert!(app.tab().status.turn_running, "a live turn is running");
+}

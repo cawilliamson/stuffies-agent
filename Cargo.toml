@@ -79,3 +79,4 @@ significant_drop_tightening = "allow" # store guards are held for exactly one st
 assigning_clones = "allow"       # clone_from cannot reuse an allocation from &str
 too_many_lines = "allow"         # one readable function beats artificial splitting
 multiple_crate_versions = "allow" # transitive duplicates we do not control
+struct_excessive_bools = "allow"  # a view state machine has independent flags, not a mode

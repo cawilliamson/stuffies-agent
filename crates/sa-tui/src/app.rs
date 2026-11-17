@@ -223,6 +223,9 @@ pub struct Tab {
     pub title: String,
     /// the directory this tab works in. tools and context follow it.
     pub cwd: String,
+    /// whether history has been replayed and the event stream subscribed. a tab that is not
+    /// hydrated is deaf: it shows nothing and never learns that its turn finished.
+    pub hydrated: bool,
     /// the git branch of `cwd`, for the status bar. absent outside a repository.
     pub branch: Option<String>,
     pub transcript: Vec<Entry>,
@@ -280,6 +283,7 @@ impl Tab {
                 title
             },
             cwd: String::new(),
+            hydrated: false,
             branch: None,
             transcript: Vec::new(),
             input: tui_input::Input::default(),
@@ -330,14 +334,16 @@ impl Tab {
     }
 
     /// whether closing this tab would throw away work: a conversation, tool output, or a
-    /// prompt typed but not sent. notices the app wrote itself do not count.
+    /// prompt typed but not sent. notices the app wrote itself, and errors, do not count.
     #[must_use]
     pub fn has_content(&self) -> bool {
         !self.input.value().trim().is_empty()
-            || self
-                .transcript
-                .iter()
-                .any(|entry| entry.role != Role::System)
+            || self.transcript.iter().any(|entry| {
+                matches!(
+                    entry.role,
+                    Role::User | Role::Assistant | Role::Thinking | Role::Tool | Role::ToolOutput
+                )
+            })
     }
 
     pub fn set_input(&mut self, text: &str) {
@@ -756,6 +762,7 @@ impl Tab {
                 // a new turn starts a clean meter. a replay of an old turn must not wipe
                 // a figure that belongs to what is happening now.
                 if live {
+                    self.status.turn_running = true;
                     self.stream_chars = 0;
                     self.stream_elapsed = std::time::Duration::ZERO;
                     self.last_delta = None;
@@ -1001,6 +1008,17 @@ impl App {
         if let Some(tab) = self.tabs.get_mut(active) {
             tab.touch();
         }
+    }
+
+    /// whether a session still needs its history replayed and its events subscribed. a tab
+    /// that exists but was never hydrated is deaf: it shows nothing and never learns that
+    /// its turn finished.
+    #[must_use]
+    pub fn needs_hydration(&self, session: &str) -> bool {
+        !self
+            .tabs
+            .iter()
+            .any(|tab| tab.session == session && tab.hydrated)
     }
 
     /// the context window for the active tab's model. zero means unknown.

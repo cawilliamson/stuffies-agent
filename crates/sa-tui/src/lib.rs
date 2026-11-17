@@ -318,21 +318,32 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
                     .collect();
                 // a prompt sent while a turn runs redirects it rather than being refused.
                 if app.tab().status.turn_running {
-                    if let Err(err) = rpc(
+                    match rpc(
                         client,
                         "turn.steer",
-                        json!({"session_id": sid, "prompt": prompt}),
+                        json!({"session_id": sid, "prompt": prompt.clone()}),
                     )
                     .await
                     {
-                        app.tab_mut().push(app::Role::Error, err.clone());
+                        Ok(_) => {
+                            app.touch();
+                            frame.force();
+                            frame
+                                .render(&mut terminal, &mut app)
+                                .map_err(|e| e.to_string())?;
+                            continue;
+                        }
+                        // the daemon has no turn for this session, so this window's idea of
+                        // "running" is stale. start a real turn instead of losing the text.
+                        Err(err) => {
+                            app.tab_mut().status.turn_running = false;
+                            app.tab_mut().working = None;
+                            app.tab_mut().push(
+                                app::Role::System,
+                                format!("no turn to steer ({err}); sending as a new turn"),
+                            );
+                        }
                     }
-                    app.touch();
-                    frame.force();
-                    frame
-                        .render(&mut terminal, &mut app)
-                        .map_err(|e| e.to_string())?;
-                    continue;
                 }
                 app.tab_mut().status.turn_running = true;
                 app.tab_mut().working = Some(app::working_word());
@@ -597,18 +608,21 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
     let Some(id) = row["id"].as_str() else {
         return;
     };
-    let fresh = !app.tabs.iter().any(|tab| tab.session == id);
-    if fresh {
+    // a tab standing in the strip without history is deaf: it shows nothing, and a turn it
+    // starts is never seen to finish. hydrate on the flag, not on whether a tab object
+    // happens to exist, or the app's own first slot is left permanently blank.
+    if !app.needs_hydration(id) {
+        if let Some(tab) = app.tab_for(id) {
+            tab.apply_session_row(row);
+        }
+        return;
+    }
+    if !app.tabs.iter().any(|tab| tab.session == id) {
         app.add_tab(id.to_owned(), tab_model(row, fallback_model));
     }
-    // the row is the authority for where a tab works and what it is called, whether the tab
-    // is new or was already standing empty in the strip.
     if let Some(tab) = app.tab_for(id) {
         tab.apply_session_row(row);
-    }
-    if !fresh {
-        // history and the event stream are attached once per tab, not on every sync.
-        return;
+        tab.hydrated = true;
     }
 
     if let Ok(replay) = rpc(
