@@ -303,22 +303,21 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// talks to any openai-compatible chat completions endpoint.
+/// talks to any openai-compatible chat completions endpoint, through rig's provider.
+///
+/// the wire work — sse framing, tool-call deltas, retries, the reasoning field a gateway
+/// uses — is rig's. what stays here is the shape this project speaks: our message and tool
+/// types, and the `Delta` stream the agent records.
 pub struct OpenAiProvider {
-    endpoint: String,
-    api_key: String,
-    client: reqwest::Client,
+    client: rig_core::providers::openai::OpenAI,
 }
 
 impl OpenAiProvider {
     pub fn new(endpoint: impl Into<String>, api_key: impl Into<String>) -> Result<Self, LlmError> {
-        let client = reqwest::Client::builder()
-            .build()
-            .map_err(|e| LlmError::Http(e.to_string()))?;
+        let mut config = rig_core::providers::openai::OpenAIConfig::new(api_key);
+        config.base_url = endpoint.into().trim_end_matches('/').to_owned();
         Ok(Self {
-            endpoint: endpoint.into().trim_end_matches('/').to_owned(),
-            api_key: api_key.into(),
-            client,
+            client: config.client(),
         })
     }
 
@@ -329,191 +328,186 @@ impl OpenAiProvider {
         let api_key = std::env::var("OPENAI_API_TOKEN").map_err(|_| LlmError::NoCredentials)?;
         Self::new(endpoint, api_key)
     }
+
+    /// asks the endpoint what it is serving, so the daemon never has to guess.
+    pub async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        let listed = self
+            .client
+            .list_models()
+            .await
+            .map_err(|err| LlmError::Http(err.to_string()))?;
+        Ok(listed.data.into_iter().map(|model| model.id).collect())
+    }
 }
 
-impl OpenAiProvider {
-    /// asks the endpoint what it is serving, so the daemon never has to guess.
-    pub async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
-        let url = format!("{}/models", self.endpoint);
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.api_key)
-            .send()
-            .await
-            .map_err(|e| LlmError::Http(e.to_string()))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(LlmError::Status {
-                status: status.as_u16(),
-                body: response.text().await.unwrap_or_default(),
-            });
-        }
-        let body: Value = response
-            .json()
-            .await
-            .map_err(|e| LlmError::Http(e.to_string()))?;
-        Ok(body
-            .get("data")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|model| {
-                        let id = model.get("id").and_then(Value::as_str)?;
-                        Some(ModelInfo {
-                            id: id.to_owned(),
-                            context_limit: advertised_context(model),
-                            effort_levels: advertised_efforts(model),
+/// our transcript, in the shape rig sends.
+fn rig_messages(messages: &[ChatMessage]) -> Result<Vec<rig_core::completion::Message>, LlmError> {
+    use rig_core::completion::message::{
+        AssistantMessage, CallId, ProviderCallId, ToolName, UserContent,
+    };
+    use rig_core::completion::{AssistantContent, Message};
+
+    let mut out = Vec::new();
+    // a tool result must name its tool, and the assistant turn that asked for it knows it.
+    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for message in messages {
+        let text = message
+            .content
+            .as_ref()
+            .and_then(MessageContent::as_text)
+            .unwrap_or_default()
+            .to_owned();
+        match message.role.as_str() {
+            "system" => out.push(Message::system(text)),
+            "user" => {
+                let content = match &message.content {
+                    Some(MessageContent::Parts(parts)) => parts
+                        .iter()
+                        .map(|part| match part {
+                            ContentPart::Text { text } => UserContent::text(text.clone()),
+                            ContentPart::ImageUrl { image_url } => {
+                                UserContent::image_url(image_url.url.clone(), None, None)
+                            }
                         })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default())
+                        .collect(),
+                    _ => vec![UserContent::text(text)],
+                };
+                out.push(Message::User { content });
+            }
+            "assistant" => {
+                let mut content: Vec<AssistantContent> = Vec::new();
+                if !text.is_empty() {
+                    content.push(AssistantContent::text(text));
+                }
+                for call in message.tool_calls.iter().flatten() {
+                    names.insert(call.id.clone(), call.function.name.clone());
+                    let arguments: serde_json::Value =
+                        serde_json::from_str(&call.function.arguments)
+                            .unwrap_or_else(|_| serde_json::json!({}));
+                    content.push(AssistantContent::tool_call(
+                        call.id.clone(),
+                        tool_name(&call.function.name)?,
+                        arguments,
+                    ));
+                }
+                out.push(Message::Assistant(AssistantMessage::new(content)));
+            }
+            "tool" => {
+                let id = message.tool_call_id.clone().unwrap_or_default();
+                let name = names.get(&id).cloned().unwrap_or_default();
+                out.push(Message::tool_result(
+                    rig_call_id(&id)?,
+                    tool_name(&name)?,
+                    text,
+                ));
+            }
+            other => {
+                return Err(LlmError::Stream(format!("unknown message role: {other}")));
+            }
+        }
     }
+    Ok(out)
+}
+
+/// rig's identifiers are newtypes that refuse an empty string, so building one is a step
+/// that can fail rather than a cast.
+fn rig_call_id(raw: &str) -> Result<rig_core::completion::message::CallId, LlmError> {
+    rig_core::completion::message::ProviderCallId::new(raw)
+        .map(rig_core::completion::message::CallId::from)
+        .ok_or_else(|| LlmError::Stream(format!("empty tool call id: {raw:?}")))
+}
+
+fn tool_name(raw: &str) -> Result<rig_core::completion::message::ToolName, LlmError> {
+    rig_core::completion::message::ToolName::new(raw)
+        .map_err(|_| LlmError::Stream(format!("empty tool name: {raw:?}")))
+}
+
+/// our request, in the shape rig sends.
+fn rig_request(request: &ChatRequest) -> Result<rig_core::completion::CompletionRequest, LlmError> {
+    use rig_core::completion::ToolDefinition;
+
+    let mut history = rig_messages(&request.messages)?.into_iter();
+    let Some(first) = history.next() else {
+        return Err(LlmError::Stream(
+            "a request needs at least one message".to_owned(),
+        ));
+    };
+    let mut completion = rig_core::completion::CompletionRequest::new(first).messages(history);
+    if let Some(max_tokens) = request.max_tokens {
+        completion = completion.max_tokens(max_tokens);
+    }
+    if !request.tools.is_empty() {
+        completion = completion.tools(
+            request
+                .tools
+                .iter()
+                .filter_map(|tool| {
+                    Some(ToolDefinition::new(
+                        tool_name(&tool.name).ok()?,
+                        tool.description.clone(),
+                        tool.parameters.clone(),
+                    ))
+                })
+                .collect::<Vec<ToolDefinition>>(),
+        );
+    }
+    if let Some(effort) = &request.reasoning_effort {
+        completion =
+            completion.additional_params(serde_json::json!({ "reasoning_effort": effort }));
+    }
+    Ok(completion)
 }
 
 impl Provider for OpenAiProvider {
-    fn list_models(&self) -> ModelsFuture<'_> {
-        Box::pin(async move { Self::list_models(self).await })
-    }
-
     fn stream(&self, request: ChatRequest) -> StreamFuture<'_> {
         Box::pin(async move {
-            let url = format!("{}/chat/completions", self.endpoint);
-            let body = json!({
-                "model": request.model,
-                "messages": request.messages,
-                "tools": request.tools.iter().map(|t| json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    }
-                })).collect::<Vec<_>>(),
-                "stream": true,
-                "stream_options": {"include_usage": true},
-                "max_tokens": request.max_tokens,
-                "reasoning_effort": request.reasoning_effort,
-            });
+            use rig_core::streaming::{Item, StreamEvent};
 
-            let response = self
-                .client
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| LlmError::Http(e.to_string()))?;
+            let model = self.client.completion(request.model.clone());
+            let mut stream = model
+                .stream(rig_request(&request)?)
+                .map_err(|err| LlmError::Http(err.to_string()))?;
 
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                return Err(LlmError::Status {
-                    status: status.as_u16(),
-                    body,
-                });
-            }
-
-            let (tx, rx) = mpsc::channel(256);
-            let mut stream = response.bytes_stream();
+            let (tx, rx) = tokio::sync::mpsc::channel(256);
             tokio::spawn(async move {
-                let mut parser = SseParser::default();
-                let mut calls: Vec<ToolCall> = Vec::new();
-                let mut prompt_tokens = 0;
-                let mut completion_tokens = 0;
-                let mut stop_reason = String::from("stop");
+                use futures_util::StreamExt as _;
 
-                while let Some(chunk) = stream.next().await {
-                    let Ok(bytes) = chunk else { break };
-                    for payload in parser.feed(&bytes) {
-                        if payload == "[DONE]" {
-                            continue;
+                while let Some(item) = stream.next().await {
+                    let event = match item {
+                        Ok(Item::Event(event)) => event,
+                        Ok(Item::Unknown(_)) => continue,
+                        Err(err) => {
+                            tracing::warn!(%err, "model stream ended with an error");
+                            break;
                         }
-                        let Ok(value) = serde_json::from_str::<Value>(&payload) else {
-                            continue;
-                        };
-                        if let Some(usage) = value.get("usage").filter(|u| !u.is_null()) {
-                            prompt_tokens = usage
-                                .get("prompt_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0);
-                            completion_tokens = usage
-                                .get("completion_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0);
-                        }
-                        let Some(choice) = value
-                            .get("choices")
-                            .and_then(|c| c.get(0))
-                            .filter(|c| !c.is_null())
-                        else {
-                            continue;
-                        };
-                        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-                            stop_reason = reason.to_owned();
-                        }
-                        let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
-                        if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                            if !text.is_empty()
-                                && tx.send(Delta::Text(text.to_owned())).await.is_err()
-                            {
-                                return;
-                            }
-                        }
-                        if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
-                            if !text.is_empty()
-                                && tx.send(Delta::Reasoning(text.to_owned())).await.is_err()
-                            {
-                                return;
-                            }
-                        }
-                        if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array)
-                        {
-                            for call in tool_calls {
-                                let index =
-                                    call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                                while calls.len() <= index {
-                                    calls.push(ToolCall {
-                                        id: String::new(),
-                                        name: String::new(),
-                                        arguments: String::new(),
-                                    });
-                                }
-                                let slot = &mut calls[index];
-                                if let Some(id) = call.get("id").and_then(Value::as_str) {
-                                    slot.id = id.to_owned();
-                                }
-                                if let Some(function) = call.get("function") {
-                                    if let Some(name) = function.get("name").and_then(Value::as_str)
-                                    {
-                                        slot.name.push_str(name);
-                                    }
-                                    if let Some(args) =
-                                        function.get("arguments").and_then(Value::as_str)
-                                    {
-                                        slot.arguments.push_str(args);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                for call in calls {
-                    if call.name.is_empty() {
-                        continue;
-                    }
-                    if tx.send(Delta::ToolCall(call)).await.is_err() {
+                    };
+                    let delta = match event {
+                        StreamEvent::Text { text, .. } => Delta::Text(text),
+                        StreamEvent::Reasoning { text, .. } => Delta::Reasoning(text),
+                        StreamEvent::End {
+                            content: rig_core::completion::AssistantContent::ToolCall(call),
+                            ..
+                        } => Delta::ToolCall(ToolCall {
+                            id: call.id.to_string(),
+                            name: call.function.name.to_string(),
+                            arguments: serde_json::Value::Object(call.function.arguments)
+                                .to_string(),
+                        }),
+                        _ => continue,
+                    };
+                    if tx.send(delta).await.is_err() {
                         return;
                     }
                 }
+
+                // usage and the stop reason come from the accumulated reply.
+                let partial = stream.partial();
                 let _ = tx
                     .send(Delta::Done {
-                        stop_reason,
-                        prompt_tokens,
-                        completion_tokens,
+                        stop_reason: "stop".to_owned(),
+                        prompt_tokens: partial.usage.input_tokens.unwrap_or_default(),
+                        completion_tokens: partial.usage.output_tokens.unwrap_or_default(),
                     })
                     .await;
             });
@@ -521,39 +515,6 @@ impl Provider for OpenAiProvider {
             Ok(rx)
         })
     }
-}
-
-/// incremental server-sent-events splitter for the chat completions stream.
-#[derive(Default)]
-struct SseParser {
-    buffer: Vec<u8>,
-}
-
-impl SseParser {
-    fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.buffer.extend_from_slice(chunk);
-        let mut out = Vec::new();
-        while let Some(pos) = find(&self.buffer, b"\n\n") {
-            let block: Vec<u8> = self.buffer.drain(..pos + 2).collect();
-            for line in block.split(|b| *b == b'\n') {
-                let line = String::from_utf8_lossy(line);
-                let line = line.trim_end_matches('\r');
-                if let Some(data) = line.strip_prefix("data:") {
-                    let data = data.trim();
-                    if !data.is_empty() {
-                        out.push(data.to_owned());
-                    }
-                }
-            }
-        }
-        out
-    }
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
 }
 
 /// stands in when no credentials are configured. the daemon still starts, so session
@@ -665,21 +626,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sse_parser_handles_split_chunks_and_multiple_events() {
-        let mut parser = SseParser::default();
-        assert_eq!(
-            parser.feed(b"data: {\"a\":1}"),
-            [] as [std::string::String; 0]
+    fn a_transcript_maps_onto_the_providers_shape() {
+        use rig_core::completion::Message;
+
+        let messages = vec![
+            ChatMessage::system("be brief"),
+            ChatMessage::user("hello"),
+            ChatMessage {
+                role: "assistant".to_owned(),
+                content: Some(MessageContent::Text("calling".to_owned())),
+                tool_calls: Some(vec![WireToolCall {
+                    id: "c1".to_owned(),
+                    kind: "function".to_owned(),
+                    function: WireFunction {
+                        name: "read".to_owned(),
+                        arguments: "{\"path\":\"a\"}".to_owned(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: "tool".to_owned(),
+                content: Some(MessageContent::Text("file body".to_owned())),
+                tool_calls: None,
+                tool_call_id: Some("c1".to_owned()),
+            },
+        ];
+
+        let mapped = rig_messages(&messages).expect("mapped");
+        assert!(matches!(mapped[0], Message::System { .. }));
+        assert!(matches!(mapped[1], Message::User { .. }));
+        assert!(matches!(mapped[2], Message::Assistant(_)));
+        // the result must name the tool it answers, or the model cannot pair them.
+        let rendered = format!("{:?}", mapped[3]);
+        assert!(rendered.contains("file body"), "{rendered}");
+        assert!(
+            rendered.contains("read"),
+            "the tool keeps its name: {rendered}"
         );
-        let out = parser.feed(b"\n\ndata: {\"b\":2}\n\n");
-        assert_eq!(out, vec!["{\"a\":1}".to_owned(), "{\"b\":2}".to_owned()]);
     }
 
     #[test]
-    fn sse_parser_ignores_comments_and_blank_lines() {
-        let mut parser = SseParser::default();
-        let out = parser.feed(b": keepalive\n\ndata: [DONE]\n\n");
-        assert_eq!(out, vec!["[DONE]".to_owned()]);
+    fn a_request_carries_the_tools_the_cap_and_the_effort() {
+        let request = ChatRequest {
+            model: "m".to_owned(),
+            messages: vec![ChatMessage::system("be brief"), ChatMessage::user("hi")],
+            tools: vec![ToolSpec {
+                name: "read".to_owned(),
+                description: "Read a file.".to_owned(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            max_tokens: Some(64),
+            reasoning_effort: Some("high".to_owned()),
+        };
+
+        let built = format!("{:?}", rig_request(&request).expect("request"));
+        assert!(
+            built.contains("be brief"),
+            "the system turn survives: {built}"
+        );
+        assert!(built.contains("hi"), "the user turn survives: {built}");
+        assert!(built.contains("read"), "{built}");
+        assert!(built.contains("64"), "the cap is carried: {built}");
+        assert!(built.contains("high"), "the effort is carried: {built}");
     }
 
     #[tokio::test]
