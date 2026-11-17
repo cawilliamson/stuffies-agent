@@ -429,6 +429,9 @@ fn help() {
     );
 }
 
+// the tui it hands off to holds an `Rc` editor clipboard, so this future is not `Send`.
+// it is awaited by `main` directly and never spawned.
+#[allow(clippy::future_not_send)]
 pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()> {
     let mut client = connect().await?;
 

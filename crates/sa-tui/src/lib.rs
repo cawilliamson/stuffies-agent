@@ -111,6 +111,9 @@ pub fn draw<B: ratatui::backend::Backend>(
 
 /// runs the interactive terminal front end. every session the daemon knows about is a tab
 /// in this one window; `session` only says which tab to land on.
+// the editor holds an `Rc` clipboard, so the app is not `Send` and neither is this future.
+// it is awaited by the one task that owns the terminal, never spawned.
+#[allow(clippy::future_not_send)]
 pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Result<(), String> {
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
@@ -136,6 +139,7 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
 /// the interaction itself, over a terminal and an event source the caller supplies. a test
 /// drives this with a test backend and a scripted key stream, which is the only way to reach
 /// the loop without owning a tty.
+#[allow(clippy::future_not_send)]
 async fn run_with<S, B>(
     client: &mut Client,
     session: Option<String>,
@@ -692,6 +696,7 @@ async fn create_session(client: &mut Client, cwd: &str) -> Result<String, String
 
 /// fills one tab from a session row: its directory, model, effort, title and history, then
 /// subscribes it. a tab that already exists is left alone.
+#[allow(clippy::future_not_send)]
 async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_model: &str) {
     let Some(id) = row["id"].as_str() else {
         return;
@@ -740,6 +745,7 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
 
 /// brings the strip in line with the daemon: a session created anywhere becomes a tab, a
 /// deleted one loses its tab, and the window never ends up with no tabs at all.
+#[allow(clippy::future_not_send)]
 async fn sync_tabs(
     client: &mut Client,
     app: &mut App,

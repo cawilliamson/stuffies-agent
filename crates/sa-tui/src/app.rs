@@ -229,16 +229,14 @@ pub struct Tab {
     /// the git branch of `cwd`, for the status bar. absent outside a repository.
     pub branch: Option<String>,
     pub transcript: Vec<Entry>,
-    input: tui_input::Input,
+    editor: edtui::EditorState,
+    keys: edtui::EditorEventHandler,
     pub status: Status,
     /// the word in the in-progress header. cleared when the turn ends, which is what
     /// makes the header disappear.
     pub working: Option<String>,
     /// images queued for the next prompt.
     pub attachments: Vec<Attachment>,
-    /// editor states for undo, newest last.
-    undo: Vec<(String, usize)>,
-    last_edit: Option<std::time::Instant>,
     pub scroll: u16,
     pub max_scroll: u16,
     /// when the operator last scrolled. drives the scrollbar's appearance.
@@ -286,15 +284,27 @@ impl Tab {
             hydrated: false,
             branch: None,
             transcript: Vec::new(),
-            input: tui_input::Input::default(),
+            editor: {
+                let mut editor = edtui::EditorState::default();
+                editor.mode = edtui::EditorMode::Insert;
+                editor
+            },
+            keys: {
+                // emacs mode binds ctrl+u to undo; this composer kills to the line start,
+                // which is what the rest of the terminal does.
+                let mut handler = edtui::events::KeyEventHandler::emacs_mode();
+                handler.insert(
+                    edtui::events::KeyEventRegister::i(vec![edtui::events::KeyInput::ctrl('u')]),
+                    edtui::actions::DeleteToFirstCharOfLine,
+                );
+                edtui::EditorEventHandler::new(handler)
+            },
             status: Status {
                 model: model.into(),
                 ..Status::default()
             },
             working: None,
             attachments: Vec::new(),
-            undo: Vec::new(),
-            last_edit: None,
             scroll_touched: None,
             scroll: 0,
             max_scroll: 0,
@@ -328,16 +338,22 @@ impl Tab {
         self.touch();
     }
 
+    /// the composer's text: the editor's lines joined by newlines.
     #[must_use]
-    pub fn input_text(&self) -> &str {
-        self.input.value()
+    pub fn input_text(&self) -> String {
+        self.editor
+            .lines
+            .iter_row()
+            .map(|row| row.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// whether closing this tab would throw away work: a conversation, tool output, or a
     /// prompt typed but not sent. notices the app wrote itself, and errors, do not count.
     #[must_use]
     pub fn has_content(&self) -> bool {
-        !self.input.value().trim().is_empty()
+        !self.input_text().trim().is_empty()
             || self.transcript.iter().any(|entry| {
                 matches!(
                     entry.role,
@@ -347,66 +363,28 @@ impl Tab {
     }
 
     pub fn set_input(&mut self, text: &str) {
-        self.input = tui_input::Input::new(text.to_owned());
+        self.editor = edtui::EditorState::new(edtui::Lines::from(text));
+        self.editor.mode = edtui::EditorMode::Insert;
         self.touch();
     }
 
-    /// applies an editor command directly, for the keys whose meaning we override.
-    fn edit_request(&mut self, request: tui_input::InputRequest) -> Action {
-        self.snapshot(false);
-        self.input.handle(request);
+    /// steps back one edit. the history is the editor's.
+    fn undo(&mut self) {
+        self.editor.undo();
         self.touch();
-        Action::None
     }
 
-    /// records the current editor state, coalescing a run of plain typing so undo steps
-    /// back a phrase rather than a character.
-    fn snapshot(&mut self, coalesce: bool) {
-        let now = std::time::Instant::now();
-        let recent = self
-            .last_edit
-            .is_some_and(|at| now.duration_since(at) < UNDO_COALESCE);
-        if !(coalesce && recent && !self.undo.is_empty()) {
-            self.undo
-                .push((self.input.value().to_owned(), self.input.cursor()));
-            if self.undo.len() > UNDO_LIMIT {
-                self.undo.remove(0);
-            }
-        }
-        self.last_edit = Some(now);
-    }
-
-    /// steps back one editor state. returns false when there is nothing left to undo.
-    fn undo(&mut self) -> bool {
-        let current = (self.input.value().to_owned(), self.input.cursor());
-        while let Some((value, cursor)) = self.undo.pop() {
-            // movement keys record states that are identical; skip rather than no-op.
-            if (value.as_str(), cursor) == (current.0.as_str(), current.1) {
-                continue;
-            }
-            self.input = std::mem::take(&mut self.input)
-                .with_value(value)
-                .with_cursor(cursor);
-            self.last_edit = None;
-            self.touch();
-            return true;
-        }
-        false
-    }
-
+    /// hands a key to the editor: insertion, deletion, movement and its own undo.
     fn edit(&mut self, key: KeyEvent) {
-        use tui_input::backend::crossterm::EventHandler;
-        let plain = matches!(key.code, KeyCode::Char(_)) && key.modifiers.is_empty();
-        self.snapshot(plain);
-        self.input.handle_event(&crossterm::event::Event::Key(key));
+        self.keys.on_key_event(key, &mut self.editor);
         self.touch();
     }
 
     /// completes the path token at the cursor. returns true when the text changed, so
     /// tab keeps its other meanings when there is nothing to complete.
     fn complete_path(&mut self) -> bool {
-        let text = self.input.value().to_owned();
-        let cursor = self.input.cursor();
+        let text = self.input_text();
+        let cursor = self.cursor_offset();
         let byte = text
             .char_indices()
             .nth(cursor)
@@ -424,16 +402,14 @@ impl Tab {
         let replacement = completed;
         let new_text = format!("{}{}{}", &text[..start], replacement, &text[byte..]);
         let new_cursor = text[..start].chars().count() + replacement.chars().count();
-        self.input = std::mem::take(&mut self.input)
-            .with_value(new_text)
-            .with_cursor(new_cursor);
-        self.touch();
+        self.set_input(&new_text);
+        self.cursor_to(new_cursor);
         true
     }
 
     /// completes the directory named in `/cwd`. returns true when the text changed.
     fn complete_cwd(&mut self) -> bool {
-        let text = self.input.value().to_owned();
+        let text = self.input_text();
         let Some(arg) = cwd_arg(&text) else {
             return false;
         };
@@ -441,37 +417,63 @@ impl Tab {
             return false;
         };
         let new_text = format!("/cwd {completed}");
-        let new_cursor = new_text.chars().count();
-        self.input = std::mem::take(&mut self.input)
-            .with_value(new_text)
-            .with_cursor(new_cursor);
-        self.touch();
+        self.set_input(&new_text);
+        self.cursor_to_end();
         true
     }
 
     /// inserts a line break at the cursor without sending, so a prompt can be composed over
     /// several lines.
     fn insert_newline(&mut self) -> Action {
-        self.snapshot(false);
-        let text = self.input.value().to_owned();
-        let cursor = self.input.cursor();
-        let byte = text
-            .char_indices()
-            .nth(cursor)
-            .map_or(text.len(), |(index, _)| index);
-        let new_text = format!("{}{}{}", &text[..byte], '\n', &text[byte..]);
-        self.input = std::mem::take(&mut self.input)
-            .with_value(new_text)
-            .with_cursor(cursor + 1);
-        self.touch();
+        // the editor's own newline action, so its undo history stays coherent.
+        self.edit(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         Action::None
+    }
+
+    /// the cursor as an offset in characters from the start of the text.
+    fn cursor_offset(&self) -> usize {
+        let (line, column) = (self.editor.cursor.row, self.editor.cursor.col);
+        let text = self.input_text();
+        let mut offset = 0;
+        for (index, row) in text.split('\n').enumerate() {
+            if index == line {
+                return offset + column.min(row.chars().count());
+            }
+            offset += row.chars().count() + 1;
+        }
+        text.chars().count()
+    }
+
+    /// puts the cursor at an offset in characters from the start of the text.
+    fn cursor_to(&mut self, offset: usize) {
+        let text = self.input_text();
+        let mut remaining = offset;
+        for (index, row) in text.split('\n').enumerate() {
+            let width = row.chars().count();
+            if remaining <= width {
+                self.editor.cursor = edtui::Index2::new(index, remaining);
+                return;
+            }
+            remaining -= width + 1;
+        }
+        self.cursor_to_end();
+    }
+
+    fn cursor_to_end(&mut self) {
+        let text = self.input_text();
+        let line = text.matches('\n').count();
+        let column = text
+            .rsplit('\n')
+            .next()
+            .map_or(0, |row| row.chars().count());
+        self.editor.cursor = edtui::Index2::new(line, column);
     }
 
     /// the composer's text split into lines, with where the cursor sits among them.
     #[must_use]
     pub fn input_lines(&self) -> (Vec<String>, usize, usize) {
-        let text = self.input.value();
-        let cursor = self.input.cursor();
+        let text = self.input_text();
+        let cursor = self.cursor_offset();
         let mut lines: Vec<String> = vec![String::new()];
         let mut at: Option<(usize, usize)> = None;
         for (index, character) in text.chars().enumerate() {
@@ -496,11 +498,11 @@ impl Tab {
     /// the line, where the operator is actually typing.
     #[must_use]
     pub fn suggestion(&self) -> Option<String> {
-        let text = self.input.value();
-        if self.input.cursor() != text.chars().count() {
+        let text = self.input_text();
+        if self.cursor_offset() != text.chars().count() {
             return None;
         }
-        let arg = cwd_arg(text)?;
+        let arg = cwd_arg(&text)?;
         let completed = complete_dir_token(arg)?;
         let rest = completed.strip_prefix(arg)?.to_owned();
         (!rest.is_empty()).then_some(rest)
@@ -509,15 +511,15 @@ impl Tab {
     /// whether the composer holds the `/cwd` command, whose argument is always a directory.
     #[must_use]
     pub fn is_cwd_command(&self) -> bool {
-        cwd_arg(self.input.value()).is_some()
+        cwd_arg(&self.input_text()).is_some()
     }
 
     fn submit(&mut self) -> Action {
-        let text = self.input.value().trim().to_owned();
+        let text = self.input_text().trim().to_owned();
         if text.is_empty() {
             return Action::None;
         }
-        self.input.reset();
+        self.set_input("");
         self.follow = true;
         self.touch();
         if text.starts_with('/') {
@@ -1193,7 +1195,8 @@ impl App {
     /// keeps attachments in step with the image paths in the composer, so the operator
     /// just types a filename rather than running a command.
     fn refresh_attachments(&mut self) {
-        let wanted = attachment_paths(self.tab().input_text());
+        let text = self.tab().input_text();
+        let wanted = attachment_paths(&text);
         let Self {
             tabs,
             active,
@@ -1302,9 +1305,11 @@ impl App {
                     Action::None
                 }
                 // pi kills to the line start here; the library's default kills the line.
-                KeyCode::Char('u') => self
-                    .tab_mut()
-                    .edit_request(tui_input::InputRequest::DeleteFromStart),
+                // emacs mode's own kill-to-line-start, which keeps its undo coherent.
+                KeyCode::Char('u') => {
+                    self.tab_mut().edit(key);
+                    Action::None
+                }
                 KeyCode::Char('w' | 'W') => self.request_close(),
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
