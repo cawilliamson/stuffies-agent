@@ -351,12 +351,6 @@ impl Tab {
         self.touch();
     }
 
-    #[must_use]
-    pub fn input_view(&self, width: usize) -> (usize, usize) {
-        let scroll = self.input.visual_scroll(width.max(1));
-        (scroll, self.input.visual_cursor().saturating_sub(scroll))
-    }
-
     /// applies an editor command directly, for the keys whose meaning we override.
     fn edit_request(&mut self, request: tui_input::InputRequest) -> Action {
         self.snapshot(false);
@@ -453,6 +447,49 @@ impl Tab {
             .with_cursor(new_cursor);
         self.touch();
         true
+    }
+
+    /// inserts a line break at the cursor without sending, so a prompt can be composed over
+    /// several lines.
+    fn insert_newline(&mut self) -> Action {
+        self.snapshot(false);
+        let text = self.input.value().to_owned();
+        let cursor = self.input.cursor();
+        let byte = text
+            .char_indices()
+            .nth(cursor)
+            .map_or(text.len(), |(index, _)| index);
+        let new_text = format!("{}{}{}", &text[..byte], '\n', &text[byte..]);
+        self.input = std::mem::take(&mut self.input)
+            .with_value(new_text)
+            .with_cursor(cursor + 1);
+        self.touch();
+        Action::None
+    }
+
+    /// the composer's text split into lines, with where the cursor sits among them.
+    #[must_use]
+    pub fn input_lines(&self) -> (Vec<String>, usize, usize) {
+        let text = self.input.value();
+        let cursor = self.input.cursor();
+        let mut lines: Vec<String> = vec![String::new()];
+        let mut at: Option<(usize, usize)> = None;
+        for (index, character) in text.chars().enumerate() {
+            if index == cursor {
+                let line = lines.len().saturating_sub(1);
+                at = Some((line, lines[line].chars().count()));
+            }
+            if character == '\n' {
+                lines.push(String::new());
+            } else if let Some(last) = lines.last_mut() {
+                last.push(character);
+            }
+        }
+        let (line, column) = at.unwrap_or_else(|| {
+            let line = lines.len().saturating_sub(1);
+            (line, lines[line].chars().count())
+        });
+        (lines, line, column)
     }
 
     /// the completion offered for `/cwd`, drawn dimmed after the cursor. only at the end of
@@ -1252,6 +1289,8 @@ impl App {
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
                 }
+                // a new line, not a send.
+                KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.tab_mut().insert_newline(),
                 _ => {
                     let _ = shift;
                     self.tab_mut().edit(key);
@@ -1273,6 +1312,8 @@ impl App {
                 Action::None
             }
             KeyCode::BackTab => Action::NextTab,
+            // shift+enter makes a new line; enter alone sends.
+            KeyCode::Enter | KeyCode::Char('\n' | '\r') if shift => self.tab_mut().insert_newline(),
             KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.tab_mut().submit(),
             KeyCode::Up => {
                 let tab = self.tab_mut();

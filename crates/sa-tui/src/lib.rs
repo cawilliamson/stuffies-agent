@@ -72,10 +72,19 @@ impl Frame {
     }
 }
 
-struct Restore;
+struct Restore {
+    /// whether the keyboard enhancement protocol was turned on, so it is turned back off.
+    enhanced: bool,
+}
 
 impl Drop for Restore {
     fn drop(&mut self) {
+        if self.enhanced {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::PopKeyboardEnhancementFlags
+            );
+        }
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
     }
@@ -105,7 +114,18 @@ pub fn draw<B: ratatui::backend::Backend>(
 pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Result<(), String> {
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
-    let _restore = Restore;
+    // without this the terminal reports shift+enter as a plain enter, and the operator's
+    // newline arrives as a send. terminals that do not speak it ignore the request.
+    let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if enhanced {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        );
+    }
+    let _restore = Restore { enhanced };
 
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;

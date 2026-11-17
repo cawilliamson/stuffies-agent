@@ -12,6 +12,9 @@ use ratatui::Frame;
 
 use crate::app::{self, App};
 
+/// the tallest the composer may grow to hold a multi-line prompt.
+const MAX_COMPOSER_ROWS: usize = 10;
+
 /// the muted rule colour used across layouts.
 pub const RULE: Color = Color::Rgb(0x2a, 0x30, 0x3a);
 
@@ -360,8 +363,13 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
 /// a bordered composer. returns where the text cursor belongs.
 pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u16)> {
     let tab = app.tab();
-    let field = usize::from(area.width.saturating_sub(4));
-    let (hscroll, column) = tab.input_view(field);
+    let (lines, cursor_line, cursor_column) = tab.input_lines();
+    let inner_height = usize::from(area.height.saturating_sub(2)).max(1);
+    let field = usize::from(area.width.saturating_sub(4)).max(1);
+    // keep the cursor in view: along its own line, and vertically within the box.
+    let hscroll = cursor_column.saturating_sub(field.saturating_sub(1));
+    let vscroll = cursor_line.saturating_sub(inner_height.saturating_sub(1));
+
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -378,23 +386,30 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
         }
     }
 
+    let mut rendered: Vec<Line<'static>> = lines
+        .iter()
+        .map(|line| Line::from(Span::styled(line.clone(), Style::default().fg(app::INK))))
+        .collect();
+    // the rest of the completion, shown where it would land.
+    if let Some(ghost) = tab.suggestion() {
+        if let Some(last) = rendered.last_mut() {
+            last.push_span(Span::styled(ghost, Style::default().fg(app::FAINT)));
+        }
+    }
+
     frame.render_widget(
-        Paragraph::new({
-            let mut line = Line::from(Span::styled(
-                tab.input_text().to_owned(),
-                Style::default().fg(app::INK),
-            ));
-            // the rest of the completion, shown where it would land.
-            if let Some(ghost) = tab.suggestion() {
-                line.push_span(Span::styled(ghost, Style::default().fg(app::FAINT)));
-            }
-            line
-        })
-        .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
-        .block(block),
+        Paragraph::new(rendered)
+            .scroll((
+                u16::try_from(vscroll).unwrap_or(u16::MAX),
+                u16::try_from(hscroll).unwrap_or(u16::MAX),
+            ))
+            .block(block),
         area,
     );
-    Some((area.x + 2 + u16::try_from(column).unwrap_or(0), area.y + 1))
+    Some((
+        area.x + 2 + u16::try_from(cursor_column.saturating_sub(hscroll)).unwrap_or(0),
+        area.y + 1 + u16::try_from(cursor_line.saturating_sub(vscroll)).unwrap_or(0),
+    ))
 }
 
 /// abbreviates large counts.
@@ -545,12 +560,15 @@ pub fn attachment_preview(frame: &mut Frame<'_>, app: &mut App) {
 
 /// draws the whole screen, returning where the text cursor belongs.
 pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
+    // a composed prompt may be several lines: give it the room, up to a cap.
+    let input_rows = app.tab().input_lines().0.len().clamp(1, MAX_COMPOSER_ROWS);
+    let composer_height = u16::try_from(input_rows).unwrap_or(1).saturating_add(2);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
         .split(frame.area());

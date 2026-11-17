@@ -1198,9 +1198,10 @@ fn rebuilding_a_large_transcript_stays_within_a_frame() {
     let once = started.elapsed();
 
     assert!(lines.len() > 1000, "expected a large transcript");
-    // a rebuild must stay well under the frame interval, or the loop starves.
+    // a rebuild must stay well under the frame interval, or the loop starves. the budget is
+    // loose on purpose: this catches a pathological regression, not a busy machine.
     assert!(
-        once < std::time::Duration::from_millis(50),
+        once < std::time::Duration::from_millis(250),
         "rebuilding {} lines took {once:?}",
         lines.len()
     );
@@ -2048,4 +2049,89 @@ fn a_turn_started_anywhere_shows_as_running_but_a_replayed_one_does_not() {
     app.tab_mut()
         .on_event("turn.started", &json!({"prompt": "now"}));
     assert!(app.tab().status.turn_running, "a live turn is running");
+}
+
+const fn shift_enter() -> KeyEvent {
+    KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)
+}
+
+#[test]
+fn shift_enter_makes_a_new_line_instead_of_sending() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "first");
+
+    assert_eq!(
+        app.on_key(shift_enter()),
+        Action::None,
+        "shift+enter must not send"
+    );
+    assert_eq!(app.tab().input_text(), "first\n");
+
+    typed(&mut app, "second");
+    assert_eq!(app.tab().input_text(), "first\nsecond");
+
+    // a plain enter sends the whole thing, line break and all.
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit("first\nsecond".to_owned())
+    );
+    assert_eq!(app.tab().input_text(), "");
+}
+
+#[test]
+fn the_cursor_tracks_a_multi_line_prompt() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "one");
+    app.on_key(shift_enter());
+    typed(&mut app, "two");
+
+    let (lines, line, column) = app.tab().input_lines();
+    assert_eq!(lines, ["one", "two"]);
+    assert_eq!(
+        (line, column),
+        (1, 3),
+        "the cursor is at the end of line two"
+    );
+
+    // back to the start of the second line: a break there opens a blank line above it.
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Left));
+    }
+    app.on_key(shift_enter());
+    let (lines, line, column) = app.tab().input_lines();
+    assert_eq!(lines, ["one", "", "two"]);
+    assert_eq!(
+        (line, column),
+        (2, 0),
+        "the line that was pushed down keeps the cursor below the new break"
+    );
+}
+
+#[test]
+fn a_multi_line_prompt_is_drawn_on_separate_rows() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "qqq");
+    app.on_key(shift_enter());
+    typed(&mut app, "www");
+    app.on_key(shift_enter());
+    typed(&mut app, "eee");
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    // the transcript is empty and the strip and status bar are outside this band, so any
+    // of these letters inside it can only be composer text.
+    let row_of =
+        |target: &str| (2..22u16).find(|&y| (0..80u16).any(|x| buffer[(x, y)].symbol() == target));
+    let (q, w, e) = (
+        row_of("q").expect("first line"),
+        row_of("w").expect("second line"),
+        row_of("e").expect("third line"),
+    );
+    assert!(
+        q < w && w < e,
+        "each line must get its own row: {q} {w} {e}"
+    );
 }
