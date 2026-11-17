@@ -113,7 +113,8 @@ const SPINNER: [&str; 10] = [
     "\u{2807}", "\u{280f}",
 ];
 
-/// shortens a tab label while keeping its trailing `(session)` marker intact.
+/// shortens a tab label while keeping its trailing `(session)` marker intact, then cuts it
+/// hard so the result never exceeds the budget.
 fn fit_label(label: &str, max: usize) -> String {
     if label.chars().count() <= max {
         return label.to_owned();
@@ -124,35 +125,117 @@ fn fit_label(label: &str, max: usize) -> String {
         .unwrap_or_default();
     let room = max.saturating_sub(tail.chars().count() + 1);
     let head: String = label.chars().take(room).collect();
-    format!("{head}\u{2026}{tail}")
+    let fitted = format!("{head}\u{2026}{tail}");
+    if fitted.chars().count() <= max {
+        return fitted;
+    }
+    // the marker alone can be wider than the budget, so cut to what is really there.
+    let mut cut: String = fitted.chars().take(max.saturating_sub(1)).collect();
+    if max > 0 {
+        cut.push('\u{2026}');
+    }
+    cut
 }
 
-/// the session tab strip.
-#[must_use]
-pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
-    const MAX_LABEL: usize = 28;
+/// the widest a single tab label may be, before it is cut to keep its id marker.
+const TAB_LABEL_MAX: usize = 28;
 
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut used: usize = 0;
+/// one tab's text: the busy spinner, its position, and its title.
+fn tab_text(app: &App, index: usize, cap: usize) -> String {
+    let tab = &app.tabs[index];
+    let mark = if tab.status.turn_running {
+        format!("{} ", SPINNER[app.spinner % SPINNER.len()])
+    } else {
+        String::new()
+    };
+    fit_label(&format!("{mark}{} {}", index + 1, tab.title), cap)
+}
 
-    for (index, tab) in app.tabs.iter().enumerate() {
-        let busy = tab.status.turn_running;
-        let mark = if busy {
-            format!("{} ", SPINNER[app.spinner % SPINNER.len()])
-        } else {
-            String::new()
-        };
-        let mut label = fit_label(&format!("{mark}{} {}", index + 1, tab.title), MAX_LABEL);
-        let cell = label.chars().count() + 2;
-        let _ = &mut label;
-        if used + cell + 3 > usize::from(width) {
+/// how wide a label may be, so the active tab fits beside its markers and the plus.
+fn label_cap(room: usize, tabs: usize) -> usize {
+    let widest = marker_cells(tabs);
+    let spare = room.saturating_sub(2 + widest * 2 + 2);
+    TAB_LABEL_MAX.min(spare.max(8))
+}
+
+/// the cells one tab occupies: its chip padding and its text, before any divider.
+fn tab_cells(label: &str) -> usize {
+    label.chars().count() + 2
+}
+
+/// cells an overflow marker needs: `\u{2039}12` or `12\u{203a}`.
+fn marker_cells(count: usize) -> usize {
+    count.to_string().len() + 1
+}
+
+/// the run of tabs to draw so the active one is always on screen, grown outwards from it
+/// until the width is spent. the active tab is included even when it alone overflows.
+fn visible_tabs(widths: &[usize], active: usize, budget: usize) -> (usize, usize) {
+    let len = widths.len();
+    if len == 0 {
+        return (0, 0);
+    }
+    let active = active.min(len - 1);
+    let mut start = active;
+    let mut end = active + 1;
+    let mut used = widths[active];
+
+    // alternate sides, so the strip slides with the operator rather than pinning the
+    // active tab to one edge and hiding everything on the other. each side is measured
+    // after the other has taken its cells.
+    loop {
+        let before = (start, end);
+        // a tab beyond the first in the window also needs the divider before it.
+        if start > 0 && used + widths[start - 1] < budget {
+            start -= 1;
+            used += widths[start] + 1;
+        }
+        if end < len && used + widths[end] < budget {
+            used += widths[end] + 1;
+            end += 1;
+        }
+        if (start, end) == before {
             break;
         }
-        if index > 0 {
+    }
+    (start, end)
+}
+
+/// the session tab strip. it slides to keep the active tab visible and marks how many tabs
+/// are hidden on either side, the way a browser does.
+#[must_use]
+pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
+    let room = usize::from(width);
+    let cap = label_cap(room, app.tabs.len());
+    let labels: Vec<String> = (0..app.tabs.len())
+        .map(|index| tab_text(app, index, cap))
+        .collect();
+    let widths: Vec<usize> = labels.iter().map(|label| tab_cells(label)).collect();
+    // the new-tab affordance always stays put at the end of the strip.
+    let plus = 2;
+    let total: usize = widths.iter().sum::<usize>() + labels.len().saturating_sub(1) + plus;
+
+    let (start, end) = if total <= room {
+        (0, labels.len())
+    } else {
+        // hold back both markers at their widest, so neither is ever clipped.
+        let widest = marker_cells(labels.len());
+        let budget = room.saturating_sub(plus + widest * 2);
+        visible_tabs(&widths, app.active, budget)
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled(
+            format!("\u{2039}{start}"),
+            Style::default().fg(app::FAINT),
+        ));
+    }
+    for (offset, label) in labels[start..end].iter().enumerate() {
+        if offset > 0 {
             spans.push(Span::styled("\u{2502}", Style::default().fg(app::FAINT)));
-            used += 1;
         }
-        if index == app.active {
+        if start + offset == app.active {
             spans.push(Span::styled(
                 format!(" {label} "),
                 Style::default()
@@ -166,7 +249,12 @@ pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
                 Style::default().fg(app::DIM),
             ));
         }
-        used += cell;
+    }
+    if end < labels.len() {
+        spans.push(Span::styled(
+            format!("{}\u{203a}", labels.len() - end),
+            Style::default().fg(app::FAINT),
+        ));
     }
 
     spans.push(Span::styled(" \u{002b}", Style::default().fg(app::FAINT)));

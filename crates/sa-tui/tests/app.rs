@@ -1590,3 +1590,110 @@ fn a_tab_label_always_keeps_the_session_id() {
         "fix the parser (session-)"
     );
 }
+
+/// the tab strip row, as drawn.
+fn strip(app: &mut App, width: u16) -> String {
+    let backend = TestBackend::new(width, 6);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    (0..width).map(|x| buffer[(x, 0)].symbol()).collect()
+}
+
+fn many_tabs() -> App {
+    let mut app = App::new("s0000001", "m");
+    for n in 2..=30 {
+        app.add_tab(format!("s{n:07}"), "m");
+    }
+    app
+}
+
+#[test]
+fn the_tab_strip_slides_to_the_active_tab_at_the_end() {
+    let mut app = many_tabs();
+    app.switch_tab(29);
+    let row = strip(&mut app, 80);
+
+    assert!(
+        row.contains("30 (s0000030)"),
+        "active tab must be shown:\n{row}"
+    );
+    assert!(
+        row.contains('\u{2039}'),
+        "a left marker must say tabs are hidden before it:\n{row}"
+    );
+    assert!(
+        !row.contains('\u{203a}'),
+        "nothing is hidden to the right:\n{row}"
+    );
+    assert!(
+        !row.contains("1 (s0000001)"),
+        "the first tab scrolled off:\n{row}"
+    );
+}
+
+#[test]
+fn the_tab_strip_marks_hidden_tabs_on_the_right() {
+    let mut app = many_tabs();
+    app.switch_tab(0);
+    let row = strip(&mut app, 80);
+
+    assert!(
+        row.contains("1 (s0000001)"),
+        "active tab must be shown:\n{row}"
+    );
+    assert!(
+        row.contains('\u{203a}'),
+        "a right marker must say tabs are hidden after it:\n{row}"
+    );
+    assert!(
+        !row.contains('\u{2039}'),
+        "nothing is hidden to the left:\n{row}"
+    );
+}
+
+#[test]
+fn the_tab_strip_marks_hidden_tabs_on_both_sides() {
+    let mut app = many_tabs();
+    app.switch_tab(14);
+    let row = strip(&mut app, 80);
+
+    assert!(
+        row.contains("15 (s0000015)"),
+        "active tab must be shown:\n{row}"
+    );
+    assert!(row.contains('\u{2039}'), "hidden to the left:\n{row}");
+    assert!(row.contains('\u{203a}'), "hidden to the right:\n{row}");
+}
+
+#[test]
+fn the_active_tab_is_on_screen_at_every_position_and_width() {
+    let mut app = many_tabs();
+    for active in 0..30 {
+        app.switch_tab(active);
+        let needle = format!("{} (s{:07})", active + 1, active + 1);
+        for width in [40u16, 60, 80, 120] {
+            let row = strip(&mut app, width);
+            assert!(
+                row.contains(&needle),
+                "tab {} must be visible at width {width}:\n{row}",
+                active + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn the_tab_strip_never_draws_wider_than_its_room() {
+    let mut app = many_tabs();
+    for active in [0usize, 1, 14, 28, 29] {
+        app.switch_tab(active);
+        for width in [20u16, 40, 60, 80, 120, 200] {
+            let drawn = sa_tui::theme::parts::tab_bar(&app, width).width();
+            assert!(
+                drawn <= usize::from(width),
+                "the strip drew {drawn} cells into {width}"
+            );
+        }
+    }
+}
