@@ -289,6 +289,12 @@ pub fn context(dir: Option<String>) -> Result<()> {
 
 pub async fn sessions() -> Result<()> {
     let mut client = connect().await?;
+    sessions_with(&mut client).await
+}
+
+/// as [`sessions`], over a client the caller already holds, so a test can drive it against
+/// a scripted daemon instead of a real one.
+pub async fn sessions_with(client: &mut Client) -> Result<()> {
     let response = client
         .call("session.list", json!({}))
         .await
@@ -317,7 +323,12 @@ pub async fn sessions() -> Result<()> {
 
 pub async fn run_once(prompt: &str) -> Result<()> {
     let mut client = connect().await?;
-    let session = create_session(&mut client).await?;
+    run_once_with(&mut client, prompt).await
+}
+
+/// as [`run_once`], over a client the caller already holds.
+pub async fn run_once_with(client: &mut Client, prompt: &str) -> Result<()> {
+    let session = create_session(client).await?;
 
     client
         .call(
@@ -588,9 +599,14 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
 
 pub async fn export(session: Option<String>, format: &str) -> Result<()> {
     let mut client = connect().await?;
+    export_with(&mut client, session, format).await
+}
+
+/// as [`export`], over a client the caller already holds.
+pub async fn export_with(client: &mut Client, session: Option<String>, format: &str) -> Result<()> {
     let session_id = match session {
         Some(id) => id,
-        None => most_recent_session(&mut client)
+        None => most_recent_session(client)
             .await?
             .ok_or_else(|| "no sessions to export".to_owned())?,
     };
@@ -651,6 +667,14 @@ mod tests {
     fn daemon(
         replies: Vec<(&'static str, Value)>,
     ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
+        daemon_notifying(replies, Vec::new())
+    }
+
+    /// as [`daemon`], but also pushes a notification after answering the named method.
+    fn daemon_notifying(
+        replies: Vec<(&'static str, Value)>,
+        notify: Vec<(&'static str, Value)>,
+    ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
         let (ours, theirs) = UnixStream::pair().expect("socketpair");
         let handle = tokio::spawn(async move {
             let (read, mut write) = theirs.into_split();
@@ -673,6 +697,17 @@ mod tests {
                     .is_err()
                 {
                     break;
+                }
+                // some methods end a turn, so the client is waiting for this.
+                if let Some((_, params)) = notify.iter().find(|(name, _)| *name == method) {
+                    let pushed = json!({"jsonrpc": "2.0", "method": "event", "params": params});
+                    if write
+                        .write_all(format!("{pushed}\n").as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
             seen
@@ -815,5 +850,69 @@ mod tests {
         .expect("write");
 
         context(Some(dir.path().display().to_string())).expect("context");
+    }
+
+    #[tokio::test]
+    async fn listing_sessions_works_against_a_held_client() {
+        let list = json!([{"id": "one", "state": "active", "title": "t"}]);
+        let (mut client, _server) = daemon(vec![("session.list", list)]);
+        sessions_with(&mut client).await.expect("sessions");
+
+        let (mut client, _server) = daemon(vec![("session.list", json!([]))]);
+        sessions_with(&mut client)
+            .await
+            .expect("an empty list is fine");
+    }
+
+    #[tokio::test]
+    async fn running_a_prompt_drives_the_turn_to_its_end() {
+        let done = json!({
+            "session_id": "s1",
+            "kind": "turn.completed",
+            "payload": {"turn_id": "t1", "usage": {"prompt_tokens": 1, "completion_tokens": 2}},
+        });
+        let (mut client, server) = daemon_notifying(
+            vec![
+                ("session.create", json!({"session_id": "s1"})),
+                ("events.subscribe", json!({"subscription_id": 1})),
+                ("turn.start", json!({"turn_id": "t1", "seq": 1})),
+            ],
+            vec![("turn.start", done)],
+        );
+
+        run_once_with(&mut client, "say hello").await.expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let started = seen
+            .iter()
+            .find(|r| r["method"] == "turn.start")
+            .expect("turn.start");
+        assert_eq!(started["params"]["prompt"], "say hello");
+        assert_eq!(
+            started["params"]["detach"], true,
+            "a one-shot turn is detached"
+        );
+    }
+
+    #[tokio::test]
+    async fn exporting_writes_the_session_in_either_format() {
+        let replay = json!({"events": [
+            {"kind": "turn.started", "payload": {"prompt": "hello"}},
+            {"kind": "llm.completed", "payload": {"text": "hi"}},
+            {"kind": "tool.requested", "payload": {"tool": "bash"}},
+        ]});
+        for format in ["markdown", "jsonl"] {
+            let (mut client, _server) = daemon(vec![
+                ("session.list", json!([{"id": "s1"}])),
+                ("events.replay", replay.clone()),
+            ]);
+            export_with(&mut client, None, format)
+                .await
+                .expect("export");
+            export_with(&mut client, Some("s1".to_owned()), format)
+                .await
+                .expect("export by id");
+        }
     }
 }

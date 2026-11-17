@@ -27,6 +27,8 @@ const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50)
 struct Frame {
     drawn: u64,
     last: std::time::Instant,
+    /// set by input, which must never be starved by the throttle.
+    forced: bool,
 }
 
 impl Frame {
@@ -38,12 +40,19 @@ impl Frame {
             last: std::time::Instant::now()
                 .checked_sub(FRAME_INTERVAL)
                 .unwrap_or_else(std::time::Instant::now),
+            forced: false,
         }
     }
 
     /// makes the next render unconditional, so input is never starved by the throttle.
     const fn force(&mut self) {
-        self.drawn = 0;
+        self.forced = true;
+    }
+
+    /// whether a frame is due: the view changed and the interval has elapsed. taking the
+    /// clock as an argument keeps the rule testable without waiting on real time.
+    fn due(&self, now: std::time::Instant, revision: u64) -> bool {
+        self.forced || (revision != self.drawn && now.duration_since(self.last) >= FRAME_INTERVAL)
     }
 
     fn render<B: ratatui::backend::Backend>(
@@ -51,12 +60,14 @@ impl Frame {
         terminal: &mut Terminal<B>,
         app: &mut App,
     ) -> std::io::Result<()> {
+        let now = std::time::Instant::now();
         let revision = app.revision();
-        if revision == self.drawn || self.last.elapsed() < FRAME_INTERVAL {
+        if !self.due(now, revision) {
             return Ok(());
         }
         self.drawn = revision;
-        self.last = std::time::Instant::now();
+        self.last = now;
+        self.forced = false;
         draw(terminal, app)
     }
 }
@@ -99,7 +110,23 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
     terminal.clear().map_err(|e| e.to_string())?;
+    run_with(client, session, new, &mut terminal, EventStream::new()).await
+}
 
+/// the interaction itself, over a terminal and an event source the caller supplies. a test
+/// drives this with a test backend and a scripted key stream, which is the only way to reach
+/// the loop without owning a tty.
+async fn run_with<S, B>(
+    client: &mut Client,
+    session: Option<String>,
+    new: bool,
+    terminal: &mut Terminal<B>,
+    mut keys: S,
+) -> Result<(), String>
+where
+    B: ratatui::backend::Backend,
+    S: futures_util::Stream<Item = std::io::Result<Event>> + Unpin,
+{
     let here = std::env::current_dir()
         .map(|path| {
             std::fs::canonicalize(&path)
@@ -155,13 +182,12 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
         app.switch_tab(index);
     }
 
-    let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut frame = Frame::new();
     frame
-        .render(&mut terminal, &mut app)
+        .render(terminal, &mut app)
         .map_err(|e| e.to_string())?;
 
     loop {
@@ -329,7 +355,7 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
                             app.touch();
                             frame.force();
                             frame
-                                .render(&mut terminal, &mut app)
+                                .render(terminal, &mut app)
                                 .map_err(|e| e.to_string())?;
                             continue;
                         }
@@ -516,7 +542,7 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
             frame.force();
         }
         frame
-            .render(&mut terminal, &mut app)
+            .render(terminal, &mut app)
             .map_err(|e| e.to_string())?;
         let _ = std::io::stdout().flush();
     }
@@ -721,17 +747,36 @@ mod tests {
         let first = frame.drawn;
         assert_ne!(first, 0, "the first frame must draw");
 
-        app.touch();
-        frame.render(&mut terminal, &mut app).expect("draw");
-        assert_eq!(
-            frame.drawn, first,
-            "a redraw inside the interval must be skipped"
+        // the rule is decided by the revision and the clock, not by wall time, so the test
+        // cannot flake when instrumentation slows everything down.
+        let now = frame.last;
+        assert!(!frame.due(now, first), "an unchanged view is not due");
+        assert!(
+            !frame.due(now + FRAME_INTERVAL, first),
+            "elapsed time alone is not enough"
+        );
+        assert!(
+            frame.due(now + FRAME_INTERVAL, first.wrapping_add(1)),
+            "a changed view after the interval is due"
+        );
+        assert!(
+            !frame.due(now, first.wrapping_add(1)),
+            "too soon is not due"
         );
 
-        // input forces the next frame regardless of the interval.
+        // input forces the next frame regardless of the interval, which is what keeps a
+        // key press from being starved by the throttle.
         frame.force();
+        assert!(
+            frame.due(now, first),
+            "forcing must make a frame due immediately"
+        );
         frame.render(&mut terminal, &mut app).expect("draw");
-        assert_ne!(frame.drawn, first, "forcing must redraw");
+        assert!(!frame.forced, "the force is spent once it is used");
+        assert_eq!(
+            frame.drawn, first,
+            "the frame is drawn on the current revision"
+        );
     }
 }
 
@@ -955,5 +1000,121 @@ mod daemon_tests {
 
         app.tab_mut().cwd = "/work/project".to_owned();
         assert_eq!(tab_cwd(&app), "/work/project");
+    }
+    /// keys as crossterm would deliver them, so the loop can be driven without a tty.
+    fn keys(
+        events: Vec<Event>,
+    ) -> impl futures_util::Stream<Item = std::io::Result<Event>> + Unpin {
+        futures_util::stream::iter(events.into_iter().map(Ok))
+    }
+
+    fn typed(text: &str) -> Vec<Event> {
+        text.chars()
+            .map(|c| {
+                Event::Key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::NONE,
+                ))
+            })
+            .collect()
+    }
+
+    fn press(code: crossterm::event::KeyCode) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ))
+    }
+
+    /// the replies a run needs to get as far as the composer.
+    fn startup_replies() -> Vec<(&'static str, Value)> {
+        vec![
+            (
+                "model.list",
+                json!([{"id": "m", "context_limit": 1_000_000}]),
+            ),
+            ("session.list", json!([session_row("s1", "/tmp")])),
+            ("events.replay", json!({"events": []})),
+            ("events.subscribe", json!({"subscription_id": 1})),
+            ("turn.start", json!({"turn_id": "t1", "seq": 1})),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_typed_prompt_starts_a_turn() {
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed("hello");
+        stream.push(press(crossterm::event::KeyCode::Enter));
+
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let started = seen
+            .iter()
+            .find(|r| r["method"] == "turn.start")
+            .expect("a turn must have been started");
+        assert_eq!(started["params"]["prompt"], "hello");
+        assert_eq!(started["params"]["session_id"], "s1");
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_leaves_the_loop() {
+        let (mut client, _server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let quit = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(vec![quit]),
+        )
+        .await
+        .expect("run");
+    }
+
+    #[tokio::test]
+    async fn a_command_reaches_the_daemon() {
+        // "/cost" is answered from local state, but it must not reach turn.start.
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed("/cost");
+        stream.push(press(crossterm::event::KeyCode::Enter));
+
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        assert!(
+            !seen.iter().any(|r| r["method"] == "turn.start"),
+            "a slash command is not a prompt"
+        );
     }
 }
