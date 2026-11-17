@@ -545,16 +545,18 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
     let Some(id) = row["id"].as_str() else {
         return;
     };
-    if app.tabs.iter().any(|tab| tab.session == id) {
-        return;
+    let fresh = !app.tabs.iter().any(|tab| tab.session == id);
+    if fresh {
+        app.add_tab(id.to_owned(), tab_model(row, fallback_model));
     }
-    app.add_tab(id.to_owned(), tab_model(row, fallback_model));
-    let tab = app.tab_mut();
-    tab.cwd = row["cwd"].as_str().unwrap_or_default().to_owned();
-    tab.branch = app::git_branch(&tab.cwd);
-    tab.status.effort = row["effort"].as_str().unwrap_or_default().to_owned();
-    if let Some(title) = row["title"].as_str() {
-        tab.title = app::tab_label(id, title);
+    // the row is the authority for where a tab works and what it is called, whether the tab
+    // is new or was already standing empty in the strip.
+    if let Some(tab) = app.tab_for(id) {
+        tab.apply_session_row(row);
+    }
+    if !fresh {
+        // history and the event stream are attached once per tab, not on every sync.
+        return;
     }
 
     if let Ok(replay) = rpc(

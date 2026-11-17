@@ -569,6 +569,24 @@ impl Tab {
         }
     }
 
+    /// takes the tab's directory, model, effort and title from the daemon's session row.
+    /// every tab is filled from its row, so none can stand in the strip without a directory.
+    pub fn apply_session_row(&mut self, row: &Value) {
+        let cwd = row["cwd"].as_str().unwrap_or_default();
+        if cwd != self.cwd {
+            self.cwd = cwd.to_owned();
+            self.branch = git_branch(&self.cwd);
+        }
+        self.status.effort = row["effort"].as_str().unwrap_or_default().to_owned();
+        if let Some(model) = row["model"].as_str().filter(|model| !model.is_empty()) {
+            self.status.model = model.to_owned();
+        }
+        if let Some(title) = row["title"].as_str() {
+            self.title = tab_label(&self.session, title);
+        }
+        self.touch();
+    }
+
     pub fn on_event(&mut self, kind: &str, payload: &Value) {
         self.on_event_at(kind, payload, std::time::Instant::now());
     }

@@ -151,11 +151,9 @@ fn tab_text(app: &App, index: usize, cap: usize) -> String {
     fit_label(&format!("{mark}{} {}", index + 1, tab.title), cap)
 }
 
-/// how wide a label may be, so the active tab fits beside its markers and the plus.
-fn label_cap(room: usize, tabs: usize) -> usize {
-    let widest = marker_cells(tabs);
-    let spare = room.saturating_sub(2 + widest * 2 + 2);
-    TAB_LABEL_MAX.min(spare.max(8))
+/// how wide a label may be, so the active tab always fits beside its markers.
+fn label_cap(room: usize) -> usize {
+    TAB_LABEL_MAX.min(room.saturating_sub(6).max(8))
 }
 
 /// the cells one tab occupies: its chip padding and its text, before any divider.
@@ -163,101 +161,86 @@ fn tab_cells(label: &str) -> usize {
     label.chars().count() + 2
 }
 
-/// cells an overflow marker needs: `\u{2039}12` or `12\u{203a}`.
-fn marker_cells(count: usize) -> usize {
-    count.to_string().len() + 1
+/// the cells a run of tabs needs, including the divider between each and the marker on
+/// whichever end still has tabs hidden behind it.
+fn run_cells(widths: &[usize], start: usize, end: usize) -> usize {
+    let tabs: usize = widths[start..end].iter().sum::<usize>() + (end - start).saturating_sub(1);
+    tabs + usize::from(start > 0) + usize::from(end < widths.len())
 }
 
-/// the run of tabs to draw so the active one is always on screen, grown outwards from it
-/// until the width is spent. the active tab is included even when it alone overflows.
-fn visible_tabs(widths: &[usize], active: usize, budget: usize) -> (usize, usize) {
+/// the run of tabs to draw: as many as fit, positioned so the active tab is on screen and
+/// the strip is flush with whichever end it has reached. that is what stops the active tab
+/// drifting into the middle with a dead margin beside it.
+fn visible_tabs(widths: &[usize], active: usize, room: usize) -> (usize, usize) {
     let len = widths.len();
     if len == 0 {
         return (0, 0);
     }
     let active = active.min(len - 1);
-    let mut start = active;
-    let mut end = active + 1;
-    let mut used = widths[active];
 
-    // alternate sides, so the strip slides with the operator rather than pinning the
-    // active tab to one edge and hiding everything on the other. each side is measured
-    // after the other has taken its cells.
-    loop {
-        let before = (start, end);
-        // a tab beyond the first in the window also needs the divider before it.
-        if start > 0 && used + widths[start - 1] < budget {
-            start -= 1;
-            used += widths[start] + 1;
-        }
-        if end < len && used + widths[end] < budget {
-            used += widths[end] + 1;
-            end += 1;
-        }
-        if (start, end) == before {
-            break;
+    for count in (1..=len).rev() {
+        // the window must contain the active tab, and cannot run off either end.
+        let lowest = active.saturating_sub(count - 1);
+        let highest = active.min(len - count);
+        // centre the active tab, then clamp: near either end the strip sits against it
+        // rather than leaving the space it would have centred into.
+        let start = active
+            .saturating_sub((count - 1) / 2)
+            .clamp(lowest, highest);
+        if run_cells(widths, start, start + count) <= room {
+            return (start, start + count);
         }
     }
-    (start, end)
+    // a single tab that alone overflows: show it anyway, clipped.
+    (active, active + 1)
 }
 
-/// the session tab strip. it slides to keep the active tab visible and marks how many tabs
-/// are hidden on either side, the way a browser does.
+/// the session tab strip. it slides to keep the active tab visible and marks that tabs are
+/// hidden on either side, the way a browser does.
 #[must_use]
 pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
     let room = usize::from(width);
-    let cap = label_cap(room, app.tabs.len());
+    let cap = label_cap(room);
     let labels: Vec<String> = (0..app.tabs.len())
         .map(|index| tab_text(app, index, cap))
         .collect();
     let widths: Vec<usize> = labels.iter().map(|label| tab_cells(label)).collect();
-    // the new-tab affordance always stays put at the end of the strip.
-    let plus = 2;
-    let total: usize = widths.iter().sum::<usize>() + labels.len().saturating_sub(1) + plus;
-
-    let (start, end) = if total <= room {
-        (0, labels.len())
-    } else {
-        // hold back both markers at their widest, so neither is ever clipped.
-        let widest = marker_cells(labels.len());
-        let budget = room.saturating_sub(plus + widest * 2);
-        visible_tabs(&widths, app.active, budget)
-    };
+    let (start, end) = visible_tabs(&widths, app.active, room);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     if start > 0 {
-        spans.push(Span::styled(
-            format!("\u{2039}{start}"),
-            Style::default().fg(app::FAINT),
-        ));
+        spans.push(Span::styled("\u{2039}", Style::default().fg(app::FAINT)));
     }
     for (offset, label) in labels[start..end].iter().enumerate() {
         if offset > 0 {
             spans.push(Span::styled("\u{2502}", Style::default().fg(app::FAINT)));
         }
+        // the chip against a marker loses the padding the marker already provides, so the
+        // strip reads `\u{2039}12 ... 18\u{203a}` rather than `\u{2039} 12 ... 18 \u{203a}`.
+        let first = offset == 0 && start > 0;
+        let last = start + offset + 1 == end && end < labels.len();
+        let chip = match (first, last) {
+            (true, true) => label.clone(),
+            (true, false) => format!("{label} "),
+            (false, true) => format!(" {label}"),
+            (false, false) => format!(" {label} "),
+        };
         if start + offset == app.active {
             spans.push(Span::styled(
-                format!(" {label} "),
+                chip,
                 Style::default()
                     .fg(Color::Rgb(0x10, 0x14, 0x1a))
                     .bg(app::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(
-                format!(" {label} "),
-                Style::default().fg(app::DIM),
-            ));
+            spans.push(Span::styled(chip, Style::default().fg(app::DIM)));
         }
     }
     if end < labels.len() {
-        spans.push(Span::styled(
-            format!("{}\u{203a}", labels.len() - end),
-            Style::default().fg(app::FAINT),
-        ));
+        spans.push(Span::styled("\u{203a}", Style::default().fg(app::FAINT)));
     }
 
-    spans.push(Span::styled(" \u{002b}", Style::default().fg(app::FAINT)));
     Line::from(spans)
 }
 

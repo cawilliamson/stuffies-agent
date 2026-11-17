@@ -1697,3 +1697,55 @@ fn the_tab_strip_never_draws_wider_than_its_room() {
         }
     }
 }
+
+#[test]
+fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
+    let mut app = many_tabs();
+
+    // at the last tab the strip ends against the right edge, with no dead margin after it.
+    app.switch_tab(29);
+    let row = strip(&mut app, 80);
+    assert!(
+        row.trim_end().ends_with("30 (s0000030)"),
+        "the strip must end on the last tab, not leave a gap:\n[{row}]"
+    );
+
+    // and at the first tab it starts against the left edge.
+    app.switch_tab(0);
+    let row = strip(&mut app, 80);
+    assert!(
+        row.starts_with(" 1 (s0000001)"),
+        "the strip must start on the first tab:\n[{row}]"
+    );
+}
+
+#[test]
+fn the_tab_strip_has_no_new_tab_button() {
+    let mut app = many_tabs();
+    for active in [0usize, 14, 29] {
+        app.switch_tab(active);
+        let row = strip(&mut app, 80);
+        assert!(
+            !row.contains('+'),
+            "no dead affordance in the strip:\n{row}"
+        );
+    }
+}
+
+#[test]
+fn the_overflow_markers_carry_no_numbers() {
+    let mut app = many_tabs();
+    app.switch_tab(14);
+    let row = strip(&mut app, 80);
+
+    // a bare marker flush against the chip it borders, so a count can never read as
+    // another tab number.
+    assert!(
+        row.starts_with("\u{2039}14 (s0000014)"),
+        "the left marker must be bare and flush:\n{row}"
+    );
+    assert!(
+        row.trim_end().ends_with("17 (s0000017)\u{203a}"),
+        "the right marker must be bare and flush:\n{row}"
+    );
+}
