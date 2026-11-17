@@ -221,7 +221,7 @@ impl Manager {
                 let model = self.default_model();
                 (!model.is_empty()).then_some(model)
             },
-            effort: None,
+            effort: self.config.reasoning_effort.clone(),
             owner_host: self.config.host_fingerprint.clone(),
             owner_epoch: 0,
         })?;
@@ -325,7 +325,16 @@ impl Manager {
         &self,
         include_deleted: bool,
     ) -> Result<Vec<SessionSummary>, ManagerError> {
-        Ok(self.store.list_sessions(include_deleted)?)
+        let mut sessions = self.store.list_sessions(include_deleted)?;
+        if let Some(effort) = &self.config.reasoning_effort {
+            for session in &mut sessions {
+                // the effort a turn will actually use, not a blank where none was stored.
+                if session.effort.as_deref().unwrap_or_default().is_empty() {
+                    session.effort = Some(effort.clone());
+                }
+            }
+        }
+        Ok(sessions)
     }
 
     /// repoints a session at another directory. tools and context follow it from the next

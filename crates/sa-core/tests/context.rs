@@ -9,7 +9,11 @@ use sa_core::manager::{Manager, ManagerConfig};
 use sa_core::store::Store;
 use serde_json::json;
 
-fn manager(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
+fn manager_with(
+    dir: &std::path::Path,
+    models: Vec<ModelInfo>,
+    effort: Option<&str>,
+) -> Arc<Manager> {
     let store = Store::open(&dir.join("sa.db")).expect("store");
     let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(Vec::<Vec<Delta>>::new()));
     Arc::new(Manager::new(
@@ -19,7 +23,7 @@ fn manager(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
             provider,
             max_tokens: None,
             context_limit: None,
-            reasoning_effort: None,
+            reasoning_effort: effort.map(str::to_owned),
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
@@ -27,6 +31,10 @@ fn manager(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
             mcp: Arc::new(sa_core::mcp::Hub::empty()),
         }),
     ))
+}
+
+fn manager(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
+    manager_with(dir, models, None)
 }
 
 fn model(id: &str, context_limit: Option<u64>, efforts: &[&str]) -> ModelInfo {
@@ -126,4 +134,32 @@ fn only_an_advertised_effort_is_ever_sent() {
         None,
         "an endpoint that lists nothing is sent nothing"
     );
+}
+
+#[test]
+fn a_session_reports_the_effort_a_turn_will_use() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = manager_with(dir.path(), vec![model("m", None, &[])], Some("medium"));
+
+    let created = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create");
+    let row = manager
+        .store()
+        .get_session(&created.session_id)
+        .expect("get")
+        .expect("session");
+    assert_eq!(
+        row.effort.as_deref(),
+        Some("medium"),
+        "a new session records the effort its turns use"
+    );
+
+    // a session made before that was stored reports the same, so every tab shows it.
+    manager
+        .store()
+        .set_session_effort(&created.session_id, "")
+        .expect("clear");
+    let listed = manager.list_sessions(false).expect("list");
+    assert_eq!(listed[0].effort.as_deref(), Some("medium"));
 }
