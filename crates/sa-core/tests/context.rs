@@ -130,9 +130,14 @@ fn only_an_advertised_effort_is_ever_sent() {
         "a level the model never listed falls back to its first"
     );
     assert_eq!(
-        manager.reasoning_effort("silent", Some("high")),
+        manager.reasoning_effort("silent", Some("high")).as_deref(),
+        Some("high"),
+        "an explicit choice is honoured even when nothing was discovered"
+    );
+    assert_eq!(
+        manager.reasoning_effort("silent", None),
         None,
-        "an endpoint that lists nothing is sent nothing"
+        "with no choice, the server's own default applies"
     );
 }
 

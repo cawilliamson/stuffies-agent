@@ -302,12 +302,15 @@ impl Manager {
     /// otherwise the model's first advertised value. nothing at all when it advertises none.
     #[must_use]
     pub fn reasoning_effort(&self, model: &str, chosen: Option<&str>) -> Option<String> {
+        // nothing chosen means the server's own default: imposing the first advertised
+        // level would silently pick whatever the endpoint happens to list first.
+        let chosen = chosen?;
         let levels = self.effort_levels(model);
-        let first = levels.first().cloned()?;
-        match chosen {
-            Some(chosen) if levels.iter().any(|level| level == chosen) => Some(chosen.to_owned()),
-            _ => Some(first),
+        if levels.is_empty() || levels.iter().any(|level| level == chosen) {
+            return Some(chosen.to_owned());
         }
+        // a stored level the model no longer offers.
+        levels.first().cloned()
     }
 
     /// changes a session's reasoning effort, recording it in the log.

@@ -167,6 +167,18 @@ pub async fn run(
             );
     }
 
+    // a server that publishes no effort levels is asked which ones it honours, once.
+    for model in &mut discovered {
+        if model.effort_levels.is_empty() {
+            model.effort_levels = provider.probe_efforts(&model.id).await;
+            tracing::info!(
+                model = %model.id,
+                efforts = ?model.effort_levels,
+                "probed the effort levels"
+            );
+        }
+    }
+
     let models: Arc<std::sync::Mutex<Vec<sa_core::llm::ModelInfo>>> =
         Arc::new(std::sync::Mutex::new(discovered));
     if models.lock().map_or(true, |m| m.is_empty()) {

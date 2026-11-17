@@ -229,6 +229,9 @@ pub type StreamFuture<'a> =
 pub type ModelsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, LlmError>> + Send + 'a>>;
 
+/// boxed future for effort discovery.
+pub type EffortsFuture<'a> = Pin<Box<dyn Future<Output = Vec<String>> + Send + 'a>>;
+
 /// what an endpoint says about a model it serves.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
@@ -240,6 +243,12 @@ pub struct ModelInfo {
     /// empty means it said nothing, and nothing is sent.
     pub effort_levels: Vec<String>,
 }
+
+/// the effort values worth trying when an endpoint advertises none. they are candidates,
+/// not a list: only the ones a probe shows the server distinguishing are kept.
+pub const EFFORT_CANDIDATES: [&str; 5] = ["none", "minimal", "low", "medium", "high"];
+/// a value no server knows, used to see what "ignored" looks like.
+const EFFORT_SENTINEL: &str = "sa-probe-unknown-effort";
 
 /// the context window an endpoint advertises for a model, under the shapes seen in the
 /// wild: openrouter nests it, others put it at the top level.
@@ -311,6 +320,11 @@ pub trait Provider: Send + Sync {
     fn list_models(&self) -> ModelsFuture<'_> {
         Box::pin(async { Ok(Vec::new()) })
     }
+
+    /// the effort values this endpoint honours, asked of a server that publishes none.
+    fn probe_efforts<'a>(&'a self, _model: &'a str) -> EffortsFuture<'a> {
+        Box::pin(async { Vec::new() })
+    }
 }
 
 /// talks to any openai-compatible chat completions endpoint, through rig's provider.
@@ -343,6 +357,63 @@ impl OpenAiProvider {
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned());
         let api_key = std::env::var("OPENAI_API_TOKEN").map_err(|_| LlmError::NoCredentials)?;
         Self::new(endpoint, api_key)
+    }
+
+    /// asks the endpoint which effort values it honours, by sending the same probe with
+    /// each candidate and with a value no server knows. a value that behaves like the
+    /// unknown one is being ignored; one that behaves differently is real. this is the only
+    /// way to learn them from a server that publishes no list.
+    pub async fn discover_efforts(&self, model: &str) -> Vec<String> {
+        let baseline = self.probe_one(model, EFFORT_SENTINEL).await;
+        let Some(baseline) = baseline else {
+            // the probe itself failed: say nothing rather than invent a list.
+            return Vec::new();
+        };
+
+        let mut found = Vec::new();
+        for candidate in EFFORT_CANDIDATES {
+            let Some(profile) = self.probe_one(model, candidate).await else {
+                continue;
+            };
+            if profile != baseline {
+                found.push(candidate.to_owned());
+            }
+        }
+        found
+    }
+
+    /// one probe: how much reasoning the model emits for this effort value, if it answers.
+    async fn probe_one(&self, model: &str, effort: &str) -> Option<usize> {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Think it through, then answer: what is 17*23?"}],
+            "max_tokens": 96,
+            "temperature": 0,
+            "reasoning_effort": effort,
+        });
+        let response = reqwest::Client::new()
+            .post(format!("{}/chat/completions", self.endpoint))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let value: serde_json::Value = response.json().await.ok()?;
+        let message = &value["choices"][0]["message"];
+        let reasoning = ["reasoning_content", "reasoning", "reasoning_text"]
+            .iter()
+            .find_map(|key| message.get(*key).and_then(serde_json::Value::as_str))
+            .map_or(0, |text| text.chars().count());
+        // the shape of the answer is the profile: a level that changes how the model thinks
+        // changes this, and one the server ignores does not.
+        let content = message
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map_or(0, |text| text.chars().count());
+        Some(reasoning + content)
     }
 
     /// asks the endpoint what it is serving, with the fields only it knows: the context
@@ -514,6 +585,10 @@ fn rig_request(request: &ChatRequest) -> Result<rig_core::completion::Completion
 }
 
 impl Provider for OpenAiProvider {
+    fn probe_efforts<'a>(&'a self, model: &'a str) -> EffortsFuture<'a> {
+        Box::pin(async move { self.discover_efforts(model).await })
+    }
+
     fn list_models(&self) -> ModelsFuture<'_> {
         Box::pin(async move { self.list_models().await })
     }
