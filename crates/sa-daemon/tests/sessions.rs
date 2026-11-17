@@ -890,3 +890,58 @@ async fn a_session_reports_and_moves_its_working_directory() {
 
     daemon.stop().await;
 }
+
+#[tokio::test]
+async fn a_closed_session_can_be_brought_back() {
+    let daemon = Harness::start(Vec::new()).await;
+    let mut client = daemon.connect().await;
+    let cwd = daemon.root().display().to_string();
+    let session = create(&mut client, &cwd).await;
+
+    let deleted = call(
+        &mut client,
+        2,
+        "session.delete",
+        json!({"session_id": session}),
+    )
+    .await;
+    assert!(deleted["error"].is_null(), "delete failed: {deleted}");
+
+    // gone from the live list, but still there for /resume to find by directory.
+    let live = call(&mut client, 3, "session.list", json!({})).await;
+    let live = live["result"].as_array().expect("array");
+    assert!(
+        live.is_empty(),
+        "a closed session is hidden from the live list: {live:?}"
+    );
+
+    let all = call(
+        &mut client,
+        4,
+        "session.list",
+        json!({"include_deleted": true}),
+    )
+    .await;
+    let rows = all["result"].as_array().expect("array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["state"], "deleted");
+    assert_eq!(rows[0]["cwd"], cwd);
+
+    let restored = call(
+        &mut client,
+        5,
+        "session.restore",
+        json!({"session_id": session}),
+    )
+    .await;
+    assert!(restored["error"].is_null(), "restore failed: {restored}");
+
+    let live = call(&mut client, 6, "session.list", json!({})).await;
+    assert_eq!(
+        live["result"].as_array().expect("array").len(),
+        1,
+        "the session is live again"
+    );
+
+    daemon.stop().await;
+}

@@ -1749,3 +1749,110 @@ fn the_overflow_markers_carry_no_numbers() {
         "the right marker must be bare and flush:\n{row}"
     );
 }
+
+#[test]
+fn closing_a_tab_with_work_asks_before_throwing_it_away() {
+    let mut app = App::new("session-abcdef", "m");
+    app.add_tab("session-second", "m");
+    app.tab_mut().push(Role::User, "hello");
+
+    assert_eq!(app.on_key(ctrl('w')), Action::None, "it must ask first");
+    assert!(app.confirm.is_some(), "a question must be on screen");
+
+    let shown = screen(&mut app, 100, 20);
+    assert!(shown.contains("close"), "the question is drawn:\n{shown}");
+    assert!(shown.contains("y close"), "the answers are drawn:\n{shown}");
+
+    // anything that is not yes or no leaves the question up.
+    assert_eq!(app.on_key(key(KeyCode::Char('x'))), Action::None);
+    assert!(app.confirm.is_some());
+
+    assert_eq!(app.on_key(key(KeyCode::Char('y'))), Action::CloseTab);
+    assert!(app.confirm.is_none(), "the question clears on answer");
+}
+
+#[test]
+fn answering_no_keeps_the_tab_and_its_work() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().push(Role::Assistant, "some work");
+    app.on_key(ctrl('w'));
+    assert!(app.confirm.is_some());
+
+    assert_eq!(app.on_key(key(KeyCode::Char('n'))), Action::None);
+    assert!(app.confirm.is_none());
+    assert_eq!(app.tabs.len(), 1, "the tab is still there");
+    assert_eq!(app.tab().transcript.len(), 1, "and so is its work");
+
+    // escape is the same answer.
+    app.on_key(ctrl('w'));
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert!(app.confirm.is_none());
+}
+
+#[test]
+fn closing_an_untouched_tab_does_not_ask() {
+    let mut app = App::new("session-abcdef", "m");
+    app.add_tab("session-second", "m");
+    assert_eq!(app.on_key(ctrl('w')), Action::CloseTab);
+    assert!(app.confirm.is_none());
+}
+
+#[test]
+fn only_work_counts_as_content() {
+    let mut app = App::new("s", "m");
+    assert!(!app.tab().has_content(), "a fresh tab holds nothing");
+
+    app.tab_mut().push(Role::System, "title: something");
+    assert!(
+        !app.tab().has_content(),
+        "a notice the app wrote is not work"
+    );
+
+    typed(&mut app, "half a thought");
+    assert!(app.tab().has_content(), "a typed prompt is work");
+}
+
+/// the status bar row, as drawn.
+fn status_row(app: &mut App, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let start = usize::from(height - 1) * usize::from(width);
+    buffer
+        .content()
+        .iter()
+        .skip(start)
+        .take(usize::from(width))
+        .map(ratatui::buffer::Cell::symbol)
+        .collect()
+}
+
+#[test]
+fn the_meter_uses_the_window_the_model_advertises() {
+    let mut app = App::new("session-abcdef", "big-model");
+    app.limits.insert("big-model".to_owned(), 1_000_000);
+    app.tab_mut().status.context_tokens = 90_000;
+
+    let status = status_row(&mut app, 160, 24);
+    assert!(
+        status.contains("  9%"),
+        "90k of a 1m window is 9%, not the 70% a 128k guess produced:\n{status}"
+    );
+}
+
+#[test]
+fn the_meter_invents_no_percentage_without_a_window() {
+    let mut app = App::new("session-abcdef", "silent-model");
+    app.tab_mut().status.context_tokens = 90_000;
+
+    let status = status_row(&mut app, 160, 24);
+    assert!(
+        !status.contains('%'),
+        "no advertised window means no percentage:\n{status}"
+    );
+    assert!(
+        status.contains("90k tokens"),
+        "the measured figure is still shown:\n{status}"
+    );
+}

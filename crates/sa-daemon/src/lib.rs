@@ -134,7 +134,11 @@ pub async fn run(
         for attempt in 1..=3 {
             match provider.list_models().await {
                 Ok(models) if !models.is_empty() => {
-                    tracing::info!(model = %models[0], "resolved model from the endpoint");
+                    tracing::info!(
+                        model = %models[0].id,
+                        context_limit = ?models[0].context_limit,
+                        "resolved model from the endpoint"
+                    );
                     discovered = models;
                     break;
                 }
@@ -144,10 +148,14 @@ pub async fn run(
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     } else {
-        discovered = vec![cfg.model.clone()];
+        discovered = vec![sa_core::llm::ModelInfo {
+            id: cfg.model.clone(),
+            context_limit: None,
+        }];
     }
 
-    let models: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(discovered));
+    let models: Arc<std::sync::Mutex<Vec<sa_core::llm::ModelInfo>>> =
+        Arc::new(std::sync::Mutex::new(discovered));
     if models.lock().map_or(true, |m| m.is_empty()) {
         let slot = Arc::clone(&models);
         let provider = Arc::clone(&provider);
@@ -156,7 +164,11 @@ pub async fn run(
                 tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                 if let Ok(found) = provider.list_models().await {
                     if let Some(first) = found.first() {
-                        tracing::info!(model = %first, "resolved model from the endpoint");
+                        tracing::info!(
+                            model = %first.id,
+                            context_limit = ?first.context_limit,
+                            "resolved model from the endpoint"
+                        );
                         if let Ok(mut guard) = slot.lock() {
                             *guard = found;
                         }
@@ -183,10 +195,11 @@ pub async fn run(
             lock_dir: cfg.runtime_dir.join("locks"),
             turn_timeout_secs: cfg.turn_timeout_secs,
             aux_budget_secs: cfg.aux_budget_secs,
+            // an override for endpoints that do not advertise a window; otherwise the
+            // limit comes from the model itself and is unknown when it says nothing.
             context_limit: std::env::var("SA_CONTEXT_LIMIT")
                 .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(128_000),
+                .and_then(|v| v.parse().ok()),
         }),
     ));
 

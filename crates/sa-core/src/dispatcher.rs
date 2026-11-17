@@ -108,6 +108,7 @@ impl Dispatcher {
             "session.rename" => self.session_rename(&params),
             "session.cwd" => self.session_cwd(&params),
             "session.delete" => self.session_delete(&params),
+            "session.restore" => self.session_restore(&params),
             "session.usage" => self.session_usage(&params),
             "session.fork" => Self::session_fork(&params),
             "turn.start" => self.turn_start(conn, &params),
@@ -240,6 +241,14 @@ impl Dispatcher {
         Ok(json!(usage))
     }
 
+    fn session_restore(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        self.manager
+            .restore_session(&session_id)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!({}))
+    }
+
     fn session_fork(_params: &Value) -> Result<Value, RpcError> {
         Err(RpcError::new(
             code::NOT_IMPLEMENTED,
@@ -340,11 +349,17 @@ impl Dispatcher {
         let levels = crate::manager::Manager::effort_levels();
         Ok(json!(models
             .into_iter()
-            .map(|id| json!({
-                "id": id,
-                "capabilities": ["tools", "streaming"],
-                "effort_levels": levels,
-            }))
+            .map(|model| {
+                let id = model.id;
+                let context_limit = model.context_limit;
+                json!({
+                    "id": id,
+                    // absent when the endpoint did not say, so a client shows no guess.
+                    "context_limit": context_limit,
+                    "capabilities": ["tools", "streaming"],
+                    "effort_levels": levels,
+                })
+            })
             .collect::<Vec<_>>()))
     }
 

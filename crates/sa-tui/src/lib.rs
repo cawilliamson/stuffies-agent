@@ -83,6 +83,7 @@ pub fn draw<B: ratatui::backend::Backend>(
             }
             crate::theme::parts::attachment_preview(frame, app);
             crate::theme::parts::picker(frame, app);
+            crate::theme::parts::confirm_prompt(frame, app);
         })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
@@ -107,7 +108,11 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
                 .to_string()
         })
         .unwrap_or_default();
-    let fallback_model = default_model(client).await;
+    let catalog = model_catalog(client).await;
+    let fallback_model = catalog
+        .first()
+        .map(|(id, _)| id.clone())
+        .unwrap_or_default();
     let mut rows = list_sessions(client).await?;
 
     // landing tab: the one already working here, or a fresh session for this directory.
@@ -142,6 +147,10 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
         tab_model(first, &fallback_model),
     );
     app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+    app.limits = catalog
+        .into_iter()
+        .filter_map(|(id, limit)| limit.map(|limit| (id, limit)))
+        .collect();
     for row in &rows {
         open_tab(client, &mut app, row, &fallback_model).await;
     }
@@ -266,6 +275,8 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
                 }
             }
             Action::ResumePicked(id) => {
+                // a closed session comes back before it can be shown.
+                let _ = rpc(client, "session.restore", json!({"session_id": id})).await;
                 if let Some(index) = app.tabs.iter().position(|tab| tab.session == id) {
                     app.switch_tab(index);
                 } else {
@@ -458,33 +469,53 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
                             .tab_mut()
                             .push(app::Role::Error, format!("not a directory: {arg}")),
                     },
-                    "/resume" => match rpc(client, "session.list", json!({})).await {
-                        Ok(list) => {
-                            let items: Vec<app::PickerItem> = list
-                                .as_array()
-                                .map(|rows| {
-                                    rows.iter()
-                                        .filter_map(|row| {
-                                            let id = row["id"].as_str()?;
-                                            let title =
-                                                row["title"].as_str().unwrap_or("(untitled)");
-                                            let short: String = id.chars().take(8).collect();
-                                            Some(app::PickerItem {
-                                                id: id.to_owned(),
-                                                label: format!("{title} ({short})"),
+                    "/resume" => {
+                        // every live session is already a tab, so what is worth bringing
+                        // back is a session that was closed while working in this directory.
+                        let cwd = app.tab().cwd.clone();
+                        match rpc(client, "session.list", json!({"include_deleted": true})).await
+                        {
+                            Ok(list) => {
+                                let mut rows: Vec<&Value> = list
+                                    .as_array()
+                                    .map(|rows| {
+                                        rows.iter()
+                                            .filter(|row| {
+                                                row["state"] == "deleted"
+                                                    && row["cwd"].as_str() == Some(cwd.as_str())
                                             })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                rows.sort_by_key(|row| {
+                                    std::cmp::Reverse(row["updated_at"].as_i64().unwrap_or_default())
+                                });
+                                let items: Vec<app::PickerItem> = rows
+                                    .iter()
+                                    .take(RESUME_LIMIT)
+                                    .filter_map(|row| {
+                                        let id = row["id"].as_str()?;
+                                        let title =
+                                            row["title"].as_str().unwrap_or("(untitled)");
+                                        let short: String = id.chars().take(8).collect();
+                                        Some(app::PickerItem {
+                                            id: id.to_owned(),
+                                            label: format!("{title} ({short})"),
                                         })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            if items.is_empty() {
-                                app.tab_mut().push(app::Role::System, "no sessions to resume");
-                            } else {
-                                app.open_picker("resume", items);
+                                    })
+                                    .collect();
+                                if items.is_empty() {
+                                    app.tab_mut().push(
+                                        app::Role::System,
+                                        "no closed sessions in this directory",
+                                    );
+                                } else {
+                                    app.open_picker("resume", items);
+                                }
                             }
+                            Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                         }
-                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
-                    },
+                    }
                     _ => app.tab_mut().push(app::Role::System, "unknown command, /help"),
                 }
             }
@@ -502,15 +533,20 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
 }
 
 /// the model the daemon will use when a session has not chosen one.
-async fn default_model(client: &mut Client) -> String {
+async fn model_catalog(client: &mut Client) -> Vec<(String, Option<u64>)> {
     rpc(client, "model.list", json!({}))
         .await
         .ok()
         .and_then(|list| {
-            list.as_array()
-                .and_then(|models| models.first())
-                .and_then(|model| model["id"].as_str())
-                .map(str::to_owned)
+            list.as_array().map(|models| {
+                models
+                    .iter()
+                    .filter_map(|model| {
+                        let id = model["id"].as_str()?;
+                        Some((id.to_owned(), model["context_limit"].as_u64()))
+                    })
+                    .collect()
+            })
         })
         .unwrap_or_default()
 }
@@ -633,6 +669,9 @@ fn resolve_dir(current: &str, arg: &str) -> Option<String> {
     let resolved = std::fs::canonicalize(joined).ok()?;
     resolved.is_dir().then(|| resolved.display().to_string())
 }
+
+/// how many closed sessions `/resume` offers for a directory.
+const RESUME_LIMIT: usize = 100;
 
 /// how long a ui-initiated rpc may take before the front end gives up on it.
 const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);

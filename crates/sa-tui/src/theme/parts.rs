@@ -247,6 +247,10 @@ pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
 /// a compact context meter: filled cells and a percentage, coloured by pressure.
 fn context_meter(used: u64, limit: u64) -> (String, Color) {
     const CELLS: usize = 10;
+    // no advertised window: show what was measured and invent no percentage.
+    if limit == 0 {
+        return (format!(" {} tokens", compact(used)), app::DIM);
+    }
     let pct = used
         .saturating_mul(100)
         .checked_div(limit)
@@ -336,7 +340,7 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
         },
     ));
     // context pressure, not raw throughput: how much of the window is in use.
-    let (meter, ink) = context_meter(tab.status.context_tokens, tab.status.context_limit);
+    let (meter, ink) = context_meter(tab.status.context_tokens, app.context_limit(tab));
     segments.push((format!(" {meter} "), ink, Color::Rgb(0x2a, 0x2a, 0x2a)));
 
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -499,6 +503,47 @@ pub fn picker(frame: &mut Frame<'_>, app: &App) {
             Line::from(format!("{mark}{}", item.label)).style(style)
         })
         .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// draws the yes/no question over the interface. shared, so every theme gets it.
+pub fn confirm_prompt(frame: &mut Frame<'_>, app: &App) {
+    let Some(question) = &app.confirm else {
+        return;
+    };
+    let screen = frame.area();
+    let width = screen
+        .width
+        .saturating_sub(8)
+        .clamp(24, 60)
+        .min(screen.width);
+    let height = 4.min(screen.height);
+    let rect = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app::ACCENT))
+        .title(Line::from(" close tab ").style(Style::default().fg(app::ACCENT)));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            question.clone(),
+            Style::default().fg(app::INK),
+        )),
+        Line::from(Span::styled(
+            "y close \u{00b7} n keep",
+            Style::default().fg(app::FAINT),
+        )),
+    ];
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

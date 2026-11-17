@@ -311,6 +311,17 @@ impl Tab {
         self.input.value()
     }
 
+    /// whether closing this tab would throw away work: a conversation, tool output, or a
+    /// prompt typed but not sent. notices the app wrote itself do not count.
+    #[must_use]
+    pub fn has_content(&self) -> bool {
+        !self.input.value().trim().is_empty()
+            || self
+                .transcript
+                .iter()
+                .any(|entry| entry.role != Role::System)
+    }
+
     pub fn set_input(&mut self, text: &str) {
         self.input = tui_input::Input::new(text.to_owned());
         self.touch();
@@ -647,9 +658,9 @@ impl Tab {
                     self.status.context_tokens = context["tokens"]
                         .as_u64()
                         .unwrap_or(self.status.context_tokens);
-                    self.status.context_limit = context["limit"]
-                        .as_u64()
-                        .unwrap_or(self.status.context_limit);
+                    // a null limit means the endpoint never said: clear it rather than
+                    // keeping a figure from another model.
+                    self.status.context_limit = context["limit"].as_u64().unwrap_or(0);
                 }
                 self.touch();
             }
@@ -894,9 +905,14 @@ pub struct App {
     pub spinner: usize,
     /// the open picker, if any. keys route to it while it is up.
     pub picker: Option<Picker>,
+    /// the question awaiting a yes/no answer, if any. keys route to it while it is up.
+    pub confirm: Option<String>,
     /// the terminal's image protocol, resolved once at startup. none means the terminal
     /// cannot show pictures, so attachments still send but do not preview.
     pub image_picker: Option<ratatui_image::picker::Picker>,
+    /// the context window each model advertises, as the endpoint reported it. a model that
+    /// is absent here has no known window and is not given a guessed one.
+    pub limits: std::collections::HashMap<String, u64>,
 }
 
 impl App {
@@ -910,7 +926,9 @@ impl App {
             theme: crate::theme::default_index(),
             spinner: 0,
             picker: None,
+            confirm: None,
             image_picker: None,
+            limits: std::collections::HashMap::new(),
         }
     }
 
@@ -920,6 +938,15 @@ impl App {
         if let Some(tab) = self.tabs.get_mut(active) {
             tab.touch();
         }
+    }
+
+    /// the context window for the active tab's model. zero means unknown.
+    #[must_use]
+    pub fn context_limit(&self, tab: &Tab) -> u64 {
+        self.limits
+            .get(&tab.status.model)
+            .copied()
+            .unwrap_or(tab.status.context_limit)
     }
 
     #[must_use]
@@ -1045,6 +1072,33 @@ impl App {
         }
     }
 
+    /// keys belong to the confirm while it is up, so nothing else can happen under it.
+    fn on_confirm_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('y' | 'Y') => {
+                self.confirm = None;
+                self.touch();
+                Action::CloseTab
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.confirm = None;
+                self.touch();
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// closing a tab that holds work asks first; an untouched tab just goes.
+    fn request_close(&mut self) -> Action {
+        if !self.tab().has_content() {
+            return Action::CloseTab;
+        }
+        self.confirm = Some(format!("close {}?", self.tab().title));
+        self.touch();
+        Action::None
+    }
+
     /// keys belong to the picker while it is open, so the composer never sees them.
     fn on_picker_key(&mut self, key: KeyEvent) -> Action {
         let count = self.picker.as_ref().map_or(0, |p| p.items.len());
@@ -1083,6 +1137,9 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        if self.confirm.is_some() {
+            return self.on_confirm_key(key);
+        }
         if self.picker.is_some() {
             return self.on_picker_key(key);
         }
@@ -1103,7 +1160,7 @@ impl App {
                 KeyCode::Char('u') => self
                     .tab_mut()
                     .edit_request(tui_input::InputRequest::DeleteFromStart),
-                KeyCode::Char('w' | 'W') => Action::CloseTab,
+                KeyCode::Char('w' | 'W') => self.request_close(),
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
                 }

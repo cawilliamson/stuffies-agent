@@ -59,7 +59,9 @@ pub struct ManagerConfig {
     pub provider: Arc<dyn Provider>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
-    pub context_limit: u64,
+    /// an operator override. absent means the endpoint's advertised window is used, and if
+    /// that is absent too the limit is genuinely unknown rather than guessed.
+    pub context_limit: Option<u64>,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
     /// how long an auxiliary model call (title, compaction) may take before it is abandoned.
@@ -67,8 +69,8 @@ pub struct ManagerConfig {
     pub aux_budget_secs: u64,
     /// reasoning effort applied to new sessions when none is chosen.
     pub default_effort: String,
-    /// model ids the endpoint reports. shared so a background refresher can fill it in.
-    pub models: Arc<Mutex<Vec<String>>>,
+    /// what the endpoint reports it serves. shared so a background refresher can fill it in.
+    pub models: Arc<Mutex<Vec<crate::llm::ModelInfo>>>,
 }
 
 struct Subscription {
@@ -248,9 +250,9 @@ impl Manager {
         })
     }
 
-    /// the model ids the endpoint reports. may be empty until discovery succeeds.
+    /// what the endpoint reports it serves. may be empty until discovery succeeds.
     #[must_use]
-    pub fn models(&self) -> Vec<String> {
+    pub fn models(&self) -> Vec<crate::llm::ModelInfo> {
         self.config
             .models
             .lock()
@@ -261,7 +263,23 @@ impl Manager {
     /// the model turns use when a session has not selected one. empty when not yet known.
     #[must_use]
     pub fn default_model(&self) -> String {
-        self.models().first().cloned().unwrap_or_default()
+        self.models()
+            .first()
+            .map(|model| model.id.clone())
+            .unwrap_or_default()
+    }
+
+    /// the context window for a model: an explicit override wins, then what the endpoint
+    /// advertised. `None` means unknown, and nothing downstream pretends otherwise.
+    #[must_use]
+    pub fn context_limit(&self, model: &str) -> Option<u64> {
+        if let Some(limit) = self.config.context_limit {
+            return Some(limit);
+        }
+        self.models()
+            .iter()
+            .find(|known| known.id == model)
+            .and_then(|known| known.context_limit)
     }
 
     /// the reasoning effort levels this build offers.
@@ -324,6 +342,25 @@ impl Manager {
             id,
             kinds::SESSION_STATE,
             &json!({"state": "deleted", "reason": "session.delete"}),
+        )?;
+        self.announce_sessions();
+        Ok(())
+    }
+
+    /// brings a deleted session back, so an old thread can be picked up again. restoring a
+    /// session that is already live is not an error.
+    pub fn restore_session(&self, id: &str) -> Result<(), ManagerError> {
+        let Some(row) = self.store.get_session(id)? else {
+            return Err(ManagerError::Rpc(not_found(id)));
+        };
+        if row.state != SessionState::Deleted {
+            return Ok(());
+        }
+        self.store.set_session_state(id, SessionState::Active)?;
+        self.append(
+            id,
+            kinds::SESSION_STATE,
+            &json!({"state": "active", "reason": "session.restore"}),
         )?;
         self.announce_sessions();
         Ok(())
@@ -625,7 +662,7 @@ impl Manager {
         let request = TurnRequest {
             turn_id: turn_id.clone(),
             prompt,
-            model: row.model.unwrap_or_else(|| self.default_model()),
+            model: model.clone(),
             workspace: workspace.display().to_string(),
             history,
             compaction_summary,
@@ -673,10 +710,11 @@ impl Manager {
                             "prompt_tokens": outcome.usage.prompt_tokens,
                             "completion_tokens": outcome.usage.completion_tokens,
                         },
-                        // what the model's view costs now, against the window it has.
+                        // what the model's view costs now, against the window it has. the
+                        // figure is the prompt the endpoint counted, not an estimate.
                         "context": {
-                            "tokens": self.estimate_tokens(&session_id),
-                            "limit": self.config.context_limit,
+                            "tokens": self.context_used(&session_id),
+                            "limit": self.context_limit(&model),
                         },
                     }),
                 );
@@ -853,7 +891,26 @@ impl Manager {
 
     // ---- compaction --------------------------------------------------
 
-    /// estimates the token cost of the model's view of this session.
+    /// the size of the model's view as the provider last reported it. this is the prompt
+    /// the endpoint actually counted, not an estimate of the log's bytes.
+    #[must_use]
+    pub fn context_used(&self, session_id: &str) -> u64 {
+        self.store
+            .last_event_of_kind(session_id, &[kinds::LLM_COMPLETED])
+            .ok()
+            .flatten()
+            .and_then(|event| {
+                event
+                    .payload
+                    .get("usage")
+                    .and_then(|usage| usage.get("prompt_tokens"))
+                    .and_then(Value::as_u64)
+            })
+            .unwrap_or_default()
+    }
+
+    /// estimates the token cost of the log, used only where a provider figure does not
+    /// exist yet. four characters per token, no tokeniser dependency.
     #[must_use]
     pub fn estimate_tokens(&self, session_id: &str) -> u64 {
         let Ok((events, _)) = self.store.events_since(session_id, 0, 100_000) else {
@@ -885,10 +942,16 @@ impl Manager {
         session_id: &str,
         model: &str,
     ) -> Result<Option<String>, ManagerError> {
-        let limit = self.config.context_limit;
+        // without an advertised window there is nothing honest to compare against, so
+        // compaction waits rather than firing on a guess.
+        let Some(limit) = self.context_limit(model) else {
+            return Ok(None);
+        };
         let threshold = (limit as f64 * COMPACTION_TRIGGER) as u64;
-        let before = self.estimate_tokens(session_id);
-        if limit == 0 || before < threshold {
+        let before = self
+            .context_used(session_id)
+            .max(self.estimate_tokens(session_id));
+        if before < threshold {
             return Ok(None);
         }
 

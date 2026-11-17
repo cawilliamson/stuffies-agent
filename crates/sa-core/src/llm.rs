@@ -224,12 +224,45 @@ pub type StreamFuture<'a> =
 
 /// boxed future for model discovery.
 pub type ModelsFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Vec<String>, LlmError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, LlmError>> + Send + 'a>>;
+
+/// what an endpoint says about a model it serves.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    /// the model's context window, when the endpoint reports one. absent means unknown,
+    /// which is not the same as a guessed default.
+    pub context_limit: Option<u64>,
+}
+
+/// the context window an endpoint advertises for a model, under the shapes seen in the
+/// wild: openrouter nests it, others put it at the top level.
+#[must_use]
+pub fn advertised_context(model: &Value) -> Option<u64> {
+    const KEYS: [&str; 3] = ["context_length", "max_context_length", "max_input_tokens"];
+    for key in KEYS {
+        if let Some(limit) = model.get(key).and_then(Value::as_u64) {
+            return Some(limit);
+        }
+    }
+    for nested in ["top_provider", "meta"] {
+        for key in KEYS {
+            if let Some(limit) = model
+                .get(nested)
+                .and_then(|value| value.get(key))
+                .and_then(Value::as_u64)
+            {
+                return Some(limit);
+            }
+        }
+    }
+    None
+}
 
 pub trait Provider: Send + Sync {
     fn stream(&self, request: ChatRequest) -> StreamFuture<'_>;
 
-    /// the model ids the endpoint actually serves. empty when unknown.
+    /// the models the endpoint actually serves. empty when unknown.
     fn list_models(&self) -> ModelsFuture<'_> {
         Box::pin(async { Ok(Vec::new()) })
     }
@@ -265,7 +298,7 @@ impl OpenAiProvider {
 
 impl OpenAiProvider {
     /// asks the endpoint what it is serving, so the daemon never has to guess.
-    pub async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
         let url = format!("{}/models", self.endpoint);
         let response = self
             .client
@@ -291,8 +324,13 @@ impl OpenAiProvider {
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(|m| m.get("id").and_then(Value::as_str))
-                    .map(str::to_owned)
+                    .filter_map(|model| {
+                        let id = model.get("id").and_then(Value::as_str)?;
+                        Some(ModelInfo {
+                            id: id.to_owned(),
+                            context_limit: advertised_context(model),
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default())
@@ -496,7 +534,7 @@ impl Provider for MissingProvider {
 pub struct ScriptedProvider {
     script: std::sync::Mutex<std::collections::VecDeque<Vec<Delta>>>,
     seen: std::sync::Mutex<Vec<ChatRequest>>,
-    models: Vec<String>,
+    models: Vec<ModelInfo>,
 }
 
 impl ScriptedProvider {
@@ -512,7 +550,23 @@ impl ScriptedProvider {
     /// advertises the given model ids, as a real endpoint would.
     #[must_use]
     pub fn with_models(mut self, models: Vec<String>) -> Self {
-        self.models = models;
+        self.models = models
+            .into_iter()
+            .map(|id| ModelInfo {
+                id,
+                context_limit: None,
+            })
+            .collect();
+        self
+    }
+
+    /// advertises a model with the context window an endpoint would report for it.
+    #[must_use]
+    pub fn with_context(mut self, id: &str, context_limit: u64) -> Self {
+        self.models = vec![ModelInfo {
+            id: id.to_owned(),
+            context_limit: Some(context_limit),
+        }];
         self
     }
 

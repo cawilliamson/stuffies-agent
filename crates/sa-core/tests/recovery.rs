@@ -18,7 +18,7 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
             provider,
             max_tokens: None,
             reasoning_effort: None,
-            context_limit: 128_000,
+            context_limit: Some(128_000),
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
