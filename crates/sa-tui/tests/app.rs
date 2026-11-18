@@ -2296,3 +2296,28 @@ fn a_tool_call_appears_without_waiting_for_its_result() {
         "the invocation must appear while the command runs, not after it:\n{after}"
     );
 }
+
+#[test]
+fn repeated_effort_levels_are_offered_once() {
+    let mut app = App::new("session-abcdef", "m");
+    app.served.insert(
+        "m".to_owned(),
+        ServedModel {
+            context_limit: None,
+            effort_levels: vec![
+                "none".to_owned(),
+                "low".to_owned(),
+                "low".to_owned(),
+                "high".to_owned(),
+                "high".to_owned(),
+                "max".to_owned(),
+            ],
+        },
+    );
+
+    assert_eq!(
+        app.effort_levels(app.tab()),
+        ["none", "low", "high", "max"],
+        "a value repeated by the server is not offered twice"
+    );
+}

@@ -1085,13 +1085,22 @@ impl App {
     }
 
     /// the reasoning effort values the active tab's model accepts, as the endpoint lists
-    /// them. empty means it advertises none.
+    /// them. empty means it advertises none. duplicates are dropped: a server that repeats
+    /// a value is not offering it twice.
     #[must_use]
     pub fn effort_levels(&self, tab: &Tab) -> Vec<String> {
-        self.served
+        let mut levels: Vec<String> = Vec::new();
+        for level in self
+            .served
             .get(&tab.status.model)
             .map(|model| model.effort_levels.clone())
             .unwrap_or_default()
+        {
+            if !levels.contains(&level) {
+                levels.push(level);
+            }
+        }
+        levels
     }
 
     #[must_use]

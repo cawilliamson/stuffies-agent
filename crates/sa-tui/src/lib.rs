@@ -538,6 +538,11 @@ where
                         Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                     },
                     "/effort" if arg.is_empty() => {
+                        // the catalog is read at startup, before the daemon's background
+                        // probe has finished, so refresh it when there is nothing to offer.
+                        if app.effort_levels(app.tab()).is_empty() {
+                            app.served = model_catalog(client).await.into_iter().collect();
+                        }
                         // the endpoint's own values, not a list this build invented.
                         let model = app.tab().status.model.clone();
                         let current = app.tab().status.effort.clone();
