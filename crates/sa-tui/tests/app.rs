@@ -2625,12 +2625,12 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[0], "~", "the scope itself, with no heading above it");
     assert_eq!(
-        lines[1], "  - ~/a/SOUL.md (34 tokens)",
+        lines[1], "- ~/a/SOUL.md (34 tokens)",
         "files are bulleted and sorted, not in arrival order:\n{text}"
     );
-    assert_eq!(lines[2], "  - ~/b/AGENTS.md (12 tokens)", "{text}");
+    assert_eq!(lines[2], "- ~/b/AGENTS.md (12 tokens)", "{text}");
     assert_eq!(lines[3], "~/.dotfiles", "{text}");
-    assert_eq!(lines[4], "  - ~/.dotfiles/AGENTS.md (5 tokens)", "{text}");
+    assert_eq!(lines[4], "- ~/.dotfiles/AGENTS.md (5 tokens)", "{text}");
 }
 
 #[test]
@@ -2648,5 +2648,5 @@ fn the_context_listing_is_shown_when_a_session_starts() {
     );
     let shown = screen(&mut app, 100, 24);
     assert!(!shown.contains("context for"), "no heading: {shown}");
-    assert!(shown.contains("  - ~/AGENTS.md (9 tokens)"), "{shown}");
+    assert!(shown.contains("- ~/AGENTS.md (9 tokens)"), "{shown}");
 }
