@@ -2741,3 +2741,32 @@ fn a_directory_with_several_entries_is_still_expanded() {
     assert!(text.contains("AGENTS.md (1 tokens)"), "{text}");
     assert!(text.contains("RULES.md (2 tokens)"), "{text}");
 }
+
+#[test]
+fn a_file_deployed_elsewhere_names_the_directory_it_lives_in() {
+    let home = std::env::var("HOME").expect("home");
+    let deployed = format!("{home}/.config/stuffies-agent/workspaces/home-chrisaw-.dotfiles");
+    let groups = json!([
+        {"root": format!("{home}/.dotfiles"), "files": [
+            {
+                "path": format!("{deployed}/AGENTS.md"),
+                "relative": "AGENTS.md",
+                "provider": deployed,
+                "tokens": 7,
+            },
+        ]},
+    ]);
+    let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert_eq!(lines[2], "\u{f07b} ~/.dotfiles", "{text}");
+    assert_eq!(
+        lines[3],
+        "\u{2514}\u{2500} \u{f07b} ~/.config/stuffies-agent/workspaces/home-chrisaw-.dotfiles",
+        "the deployed directory is named in full, on its own line:\n{text}"
+    );
+    assert_eq!(
+        lines[4], "   \u{2514}\u{2500} \u{f15c} AGENTS.md (7 tokens)",
+        "{text}"
+    );
+}

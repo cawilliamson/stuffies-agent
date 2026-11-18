@@ -37,6 +37,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
                 label: short(&group_root),
                 tokens: None,
                 children: Vec::new(),
+                fixed: false,
             });
             cursor = Vec::new();
         } else {
@@ -53,6 +54,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
                     label: component.to_owned(),
                     tokens: None,
                     children: Vec::new(),
+                    fixed: false,
                 });
                 cursor.push(children.len() - 1);
             }
@@ -61,6 +63,8 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
 
         // each file is placed by its path below the root that provided it, so a deployed
         // file is not shown inside a directory it does not live in.
+        // each file is placed under the directory that provided it, so a deployed file is
+        // shown where it really lives rather than inside the directory it applies to.
         let mut files: Vec<(String, u64)> = group["files"]
             .as_array()
             .map(|files| {
@@ -71,7 +75,13 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
                             Some(relative) => relative.to_owned(),
                             None => short(file["path"].as_str()?),
                         };
-                        Some((relative, file["tokens"].as_u64()?))
+                        let provider = file["provider"].as_str().map(short).unwrap_or_default();
+                        let placed = if provider.is_empty() || provider == short(&group_root) {
+                            relative
+                        } else {
+                            format!("{provider}\u{0}{relative}")
+                        };
+                        Some((placed, file["tokens"].as_u64()?))
                     })
                     .collect()
             })
@@ -84,7 +94,12 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             };
             // the path below the scope becomes directories, so every folder that holds a
             // loaded file is its own branch rather than being folded into one long line.
-            let relative: &str = file.as_str();
+            // a file deployed elsewhere names the directory it really lives in, and that
+            // directory keeps its own line rather than being folded into the scope.
+            let (provider, relative) = match file.split_once('\u{0}') {
+                Some((provider, relative)) => (Some(provider), relative),
+                None => (None, file.as_str()),
+            };
             let mut parts: Vec<&str> = relative
                 .split('/')
                 .filter(|part| !part.is_empty())
@@ -93,6 +108,20 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
                 continue;
             };
             let mut path = cursor.clone();
+            if let Some(provider) = provider {
+                let children = &mut node_at(tree, &path).children;
+                let existing = children.iter().position(|node| node.label == provider);
+                let index = existing.unwrap_or_else(|| {
+                    children.push(ContextNode {
+                        label: provider.to_owned(),
+                        tokens: None,
+                        children: Vec::new(),
+                        fixed: true,
+                    });
+                    children.len() - 1
+                });
+                path.push(index);
+            }
             for part in parts {
                 let children = &mut node_at(tree, &path).children;
                 let existing = children.iter().position(|node| node.label == part);
@@ -101,6 +130,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
                         label: part.to_owned(),
                         tokens: None,
                         children: Vec::new(),
+                        fixed: false,
                     });
                     children.len() - 1
                 });
@@ -110,6 +140,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
                 label: name.to_owned(),
                 tokens: Some(tokens),
                 children: Vec::new(),
+                fixed: false,
             });
         }
     }
@@ -134,6 +165,9 @@ struct ContextNode {
     label: String,
     tokens: Option<u64>,
     children: Vec<Self>,
+    /// a node that stands for a real directory named by its full path, which must not be
+    /// folded into the directory above it.
+    fixed: bool,
 }
 
 /// walks to the entry a cursor points at, so the tree can be built without holding a
@@ -150,7 +184,11 @@ fn node_at<'a>(root: &'a mut ContextNode, cursor: &[usize]) -> &'a mut ContextNo
 /// deep path is not stretched over a dozen levels with one entry on each.
 fn collapse(node: ContextNode) -> ContextNode {
     let mut node = node;
-    while node.tokens.is_none() && node.children.len() == 1 && node.children[0].tokens.is_none() {
+    while node.tokens.is_none()
+        && node.children.len() == 1
+        && node.children[0].tokens.is_none()
+        && !node.children[0].fixed
+    {
         let only = node.children.remove(0);
         node.label = format!("{}/{}", node.label, only.label);
         node.children = only.children;

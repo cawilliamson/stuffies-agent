@@ -159,6 +159,9 @@ pub struct ContextListing {
     pub path: String,
     /// the path below the root that provided it, which is what the tree is drawn from.
     pub relative: String,
+    /// the root that provided it, so a file deployed elsewhere is not shown inside a
+    /// directory it does not live in.
+    pub provider: String,
     pub tokens: u64,
 }
 
@@ -196,6 +199,7 @@ pub fn context_listing_in(workspace: &Path, cwd: Option<&Path>, home: &Path) -> 
         for file in context_files_in(&roots) {
             files.push(ContextListing {
                 relative: relative_to(&roots, &file.path),
+                provider: provider_of(&roots, &file.path),
                 path: file.path.display().to_string(),
                 tokens: crate::tokens::estimate_rounded(&file.body),
             });
@@ -204,6 +208,7 @@ pub fn context_listing_in(workspace: &Path, cwd: Option<&Path>, home: &Path) -> 
             let body = std::fs::read_to_string(&skill.path).unwrap_or_default();
             files.push(ContextListing {
                 relative: relative_to(&roots, &skill.path),
+                provider: provider_of(&roots, &skill.path),
                 path: skill.path.display().to_string(),
                 tokens: crate::tokens::estimate_rounded(&body),
             });
@@ -236,6 +241,15 @@ fn relative_to(roots: &[PathBuf], path: &Path) -> String {
             },
             |rest| rest.display().to_string(),
         )
+}
+
+/// the root a file was found under, as a path.
+#[must_use]
+fn provider_of(roots: &[PathBuf], path: &Path) -> String {
+    roots
+        .iter()
+        .find(|root| path.starts_with(root))
+        .map_or_else(String::new, |root| root.display().to_string())
 }
 
 /// a one-line summary for a skill file, from its frontmatter or first heading.

@@ -397,6 +397,7 @@ impl Manager {
                             json!({
                                 "path": file.path,
                                 "relative": file.relative,
+                                "provider": file.provider,
                                 "tokens": file.tokens,
                             })
                         })
