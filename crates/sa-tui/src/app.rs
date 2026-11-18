@@ -323,7 +323,16 @@ impl Tab {
     }
 
     pub fn push(&mut self, role: Role, text: impl Into<String>) {
-        self.transcript.push(Entry::new(role, text));
+        self.push_entry(Entry::new(role, text));
+    }
+
+    /// appends an entry and invalidates the render cache.
+    ///
+    /// every path that changes the transcript goes through here: a push that skipped the
+    /// cache would leave the pane showing stale lines until the next streamed delta, which
+    /// is what made a running tool look like it had produced nothing.
+    fn push_entry(&mut self, entry: Entry) {
+        self.transcript.push(entry);
         if self.follow {
             self.scroll = self.max_scroll;
         }
@@ -717,8 +726,7 @@ impl Tab {
                 let args = summarise(&payload["args"]);
                 let mut entry = Entry::new(Role::Tool, args);
                 entry.tool = Some(tool.to_owned());
-                self.transcript.push(entry);
-                self.touch();
+                self.push_entry(entry);
             }
             "tool.completed" => {
                 let output = payload.get("output").and_then(Value::as_str).unwrap_or("");
@@ -728,8 +736,7 @@ impl Tab {
                     .and_then(|c| i32::try_from(c).ok());
                 let mut entry = Entry::new(Role::ToolOutput, output);
                 entry.exit_code = exit_code;
-                self.transcript.push(entry);
-                self.touch();
+                self.push_entry(entry);
             }
             "tool.failed" => {
                 let error = payload

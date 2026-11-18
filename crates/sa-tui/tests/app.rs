@@ -2277,3 +2277,22 @@ fn a_tiny_share_is_shown_to_a_tenth_so_the_meter_can_move() {
         "one space between the bar and the figure, no padding:\n{status}"
     );
 }
+
+#[test]
+fn a_tool_call_appears_without_waiting_for_its_result() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().push(Role::User, "run it");
+    // draw once so the transcript render cache is populated
+    let before = screen(&mut app, 100, 24);
+    assert!(!before.contains("sleep 5"), "nothing yet:\n{before}");
+
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "sleep 5"}}),
+    );
+    let after = screen(&mut app, 100, 24);
+    assert!(
+        after.contains("sleep 5"),
+        "the invocation must appear while the command runs, not after it:\n{after}"
+    );
+}
