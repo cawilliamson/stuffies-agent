@@ -2614,7 +2614,7 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     let groups = json!([
         {"root": home, "files": [
             {"path": format!("{home}/b/AGENTS.md"), "tokens": 12},
-            {"path": format!("{home}/a/SOUL.md"), "tokens": 34},
+            {"path": format!("{home}/a/PERSONALITY.md"), "tokens": 34},
         ]},
         {"root": format!("{home}/.dotfiles"), "files": [
             {"path": format!("{home}/.dotfiles/AGENTS.md"), "tokens": 5},
@@ -2625,28 +2625,27 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[0], "Files loaded into context:", "{text}");
     assert_eq!(lines[1], "", "a blank line before the tree");
+    assert_eq!(lines[2], "\u{f07b} ~", "the scope, as a folder");
     assert_eq!(
-        lines[2], "\u{f07b} ~",
-        "the scope is the tree's head, as a folder"
+        lines[3], "\u{251c}\u{2500} \u{f07b} a",
+        "a folder per path:\n{text}"
     );
     assert_eq!(
-        lines[3], "\u{251c}\u{2500} \u{f004} ~/a/SOUL.md (34 tokens)",
-        "files hang off their scope, sorted, not in arrival order:\n{text}"
+        lines[4], "\u{2502}  \u{2514}\u{2500} \u{f15c} PERSONALITY.md (34 tokens)",
+        "files are leaves under their folder:\n{text}"
     );
+    assert_eq!(lines[5], "\u{251c}\u{2500} \u{f07b} b", "{text}");
     assert_eq!(
-        lines[4], "\u{251c}\u{2500} \u{f0c3} ~/b/AGENTS.md (12 tokens)",
+        lines[6], "\u{2502}  \u{2514}\u{2500} \u{f15c} AGENTS.md (12 tokens)",
         "{text}"
     );
+    assert_eq!(lines[7], "\u{2514}\u{2500} \u{f07b} .dotfiles", "{text}");
     assert_eq!(
-        lines[5], "\u{2514}\u{2500} \u{f07b} .dotfiles",
-        "a deeper scope is a branch of the one above it:\n{text}"
-    );
-    assert_eq!(
-        lines[6], "   \u{2514}\u{2500} \u{f0c3} ~/.dotfiles/AGENTS.md (5 tokens)",
+        lines[8], "   \u{2514}\u{2500} \u{f15c} AGENTS.md (5 tokens)",
         "{text}"
     );
-    assert_eq!(lines[7], "", "{text}");
-    assert_eq!(lines[8], "Total context added: 51 tokens", "{text}");
+    assert_eq!(lines[9], "", "{text}");
+    assert_eq!(lines[10], "Total context added: 51 tokens", "{text}");
 }
 
 #[test]
@@ -2666,7 +2665,7 @@ fn the_context_listing_is_shown_when_a_session_starts() {
     assert!(shown.contains("Files loaded into context:"), "{shown}");
     assert!(shown.contains("Total context added: 9 tokens"), "{shown}");
     assert!(
-        shown.contains("\u{2514}\u{2500} \u{f0c3} ~/AGENTS.md (9 tokens)"),
+        shown.contains("\u{2514}\u{2500} \u{f15c} AGENTS.md (9 tokens)"),
         "{shown}"
     );
 }

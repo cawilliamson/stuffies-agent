@@ -194,7 +194,7 @@ fn auxiliary_calls_take_the_least_effort_the_model_offers() {
 fn a_new_session_records_which_context_files_its_directory_provides() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("AGENTS.md"), "be brief").expect("write");
-    std::fs::write(dir.path().join("SOUL.md"), "be dry").expect("write");
+    std::fs::write(dir.path().join("PERSONALITY.md"), "be dry").expect("write");
     let manager = manager(dir.path(), vec![model("big", Some(1_000_000), &[])]);
     let session = manager
         .create_session(dir.path().to_str().expect("utf8"), None, "test")
@@ -216,7 +216,7 @@ fn a_new_session_records_which_context_files_its_directory_provides() {
         .filter_map(|file| file["path"].as_str())
         .collect();
     assert!(
-        files.iter().any(|file| file.ends_with("SOUL.md")),
+        files.iter().any(|file| file.ends_with("PERSONALITY.md")),
         "soul must be listed: {files:?}"
     );
     assert!(

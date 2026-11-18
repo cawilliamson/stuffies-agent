@@ -57,7 +57,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
                 cursor.push(children.len() - 1);
             }
         }
-        previous_root = group_root;
+        previous_root = group_root.clone();
 
         let mut files: Vec<(String, u64)> = group["files"]
             .as_array()
@@ -76,8 +76,34 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             let Some(tree) = root.as_mut() else {
                 break;
             };
-            node_at(tree, &cursor).children.push(ContextNode {
-                label: file,
+            // the path below the scope becomes directories, so every folder that holds a
+            // loaded file is its own branch rather than being folded into one long line.
+            let relative: &str = file
+                .strip_prefix(&short(&group_root))
+                .unwrap_or(file.as_str());
+            let mut parts: Vec<&str> = relative
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .collect();
+            let Some(name) = parts.pop() else {
+                continue;
+            };
+            let mut path = cursor.clone();
+            for part in parts {
+                let children = &mut node_at(tree, &path).children;
+                let existing = children.iter().position(|node| node.label == part);
+                let index = existing.unwrap_or_else(|| {
+                    children.push(ContextNode {
+                        label: part.to_owned(),
+                        tokens: None,
+                        children: Vec::new(),
+                    });
+                    children.len() - 1
+                });
+                path.push(index);
+            }
+            node_at(tree, &path).children.push(ContextNode {
+                label: name.to_owned(),
                 tokens: Some(tokens),
                 children: Vec::new(),
             });
@@ -121,7 +147,7 @@ fn render_tree(children: &[ContextNode], prefix: &str, lines: &mut Vec<String>) 
         let last = index + 1 == children.len();
         let corner = if last { '\u{2514}' } else { '\u{251c}' };
         let icon = if entry.children.is_empty() && entry.tokens.is_some() {
-            file_icon(&entry.label)
+            FILE_ICON
         } else {
             '\u{f07b}'
         };
@@ -137,18 +163,8 @@ fn render_tree(children: &[ContextNode], prefix: &str, lines: &mut Vec<String>) 
     }
 }
 
-/// a nerd font glyph for a context file, so the list reads at a glance.
-fn file_icon(label: &str) -> char {
-    let name = label.rsplit('/').next().unwrap_or(label);
-    match name {
-        "SOUL.md" => '\u{f004}',
-        "AGENTS.md" => '\u{f0c3}',
-        "RULES.md" => '\u{f0fe}',
-        "APPEND_SYSTEM.md" => '\u{f067}',
-        "SKILL.md" => '\u{f0eb}',
-        _ => '\u{f15c}',
-    }
-}
+/// the nerd font glyph every loaded file carries.
+const FILE_ICON: char = '\u{f15c}';
 
 /// a count with its thousands separated, which is how a large figure is read at a glance.
 fn with_thousands(value: u64) -> String {

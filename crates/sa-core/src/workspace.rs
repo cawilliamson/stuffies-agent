@@ -36,7 +36,12 @@ pub fn workspace_config_dir(workspace: &Path) -> PathBuf {
 }
 
 /// the context files pi-contexts deploys, in injection order.
-pub const CONTEXT_FILES: [&str; 4] = ["SOUL.md", "AGENTS.md", "RULES.md", "APPEND_SYSTEM.md"];
+pub const CONTEXT_FILES: [&str; 4] = [
+    "PERSONALITY.md",
+    "AGENTS.md",
+    "RULES.md",
+    "APPEND_SYSTEM.md",
+];
 
 /// one context file discovered on disk.
 #[derive(Debug, Clone)]

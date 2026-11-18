@@ -23,11 +23,16 @@ fn names(files: &[sa_core::workspace::ContextFile]) -> Vec<String> {
 fn all_four_pi_context_files_are_recognised() {
     assert_eq!(
         CONTEXT_FILES,
-        ["SOUL.md", "AGENTS.md", "RULES.md", "APPEND_SYSTEM.md"]
+        [
+            "PERSONALITY.md",
+            "AGENTS.md",
+            "RULES.md",
+            "APPEND_SYSTEM.md"
+        ]
     );
 
     let dir = root(&[
-        ("SOUL.md", "persona"),
+        ("PERSONALITY.md", "persona"),
         ("AGENTS.md", "project"),
         ("RULES.md", "rules"),
         ("APPEND_SYSTEM.md", "extra"),
@@ -35,7 +40,12 @@ fn all_four_pi_context_files_are_recognised() {
     let found = context_files_in(&[dir.path().to_path_buf()]);
     assert_eq!(
         names(&found),
-        vec!["SOUL.md", "AGENTS.md", "RULES.md", "APPEND_SYSTEM.md"],
+        vec![
+            "PERSONALITY.md",
+            "AGENTS.md",
+            "RULES.md",
+            "APPEND_SYSTEM.md"
+        ],
         "injection order must match pi-contexts"
     );
 }
@@ -55,14 +65,14 @@ fn the_deployed_root_takes_precedence_over_the_workspace() {
 
 #[test]
 fn a_file_missing_from_the_first_root_falls_through() {
-    let deployed = root(&[("SOUL.md", "persona")]);
+    let deployed = root(&[("PERSONALITY.md", "persona")]);
     let workspace = root(&[("AGENTS.md", "project")]);
 
     let found = context_files_in(&[
         deployed.path().to_path_buf(),
         workspace.path().to_path_buf(),
     ]);
-    assert_eq!(names(&found), vec!["SOUL.md", "AGENTS.md"]);
+    assert_eq!(names(&found), vec!["PERSONALITY.md", "AGENTS.md"]);
 }
 
 #[test]
@@ -108,7 +118,7 @@ fn reading_context_writes_nothing_into_the_workspace() {
 fn the_listing_groups_by_root_and_sorts_files_and_skills() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    std::fs::write(root.join("SOUL.md"), "soul").expect("write");
+    std::fs::write(root.join("PERSONALITY.md"), "soul").expect("write");
     std::fs::write(root.join("AGENTS.md"), "agents").expect("write");
     std::fs::create_dir_all(root.join("skills/ponytail")).expect("dirs");
     std::fs::write(root.join("skills/ponytail/SKILL.md"), "# ponytail").expect("write");
@@ -123,7 +133,7 @@ fn the_listing_groups_by_root_and_sorts_files_and_skills() {
         .filter_map(|file| file.path.rsplit('/').next().map(str::to_owned))
         .collect();
     // plain path order, which is what "sorted" means for a list of paths.
-    assert_eq!(names, ["AGENTS.md", "SOUL.md", "SKILL.md"], "sorted");
+    assert_eq!(names, ["AGENTS.md", "PERSONALITY.md", "SKILL.md"], "sorted");
     // the count sits beside the file, and is a real estimate of what it adds.
     let agents = groups[0]
         .files
