@@ -2624,24 +2624,26 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
 
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[0], "Files loaded into context:", "{text}");
-    assert_eq!(lines[1], "", "a blank line before the first block");
-    assert_eq!(lines[2], "~", "the scope");
+    assert_eq!(lines[1], "", "a blank line before the tree");
+    assert_eq!(lines[2], "~", "the scope is the tree's head");
     assert_eq!(
-        lines[3], "\u{251c}\u{2500} ~/a/SOUL.md (34 tokens)",
-        "files branch off their scope, sorted, not in arrival order:\n{text}"
+        lines[3], "\u{251c}\u{2500} \u{f004} ~/a/SOUL.md (34 tokens)",
+        "files hang off their scope, sorted, not in arrival order:\n{text}"
     );
     assert_eq!(
-        lines[4], "\u{2514}\u{2500} ~/b/AGENTS.md (12 tokens)",
-        "the last one closes the branch:\n{text}"
-    );
-    assert_eq!(lines[5], "", "blocks are separated:\n{text}");
-    assert_eq!(lines[6], "~/.dotfiles", "the next scope:\n{text}");
-    assert_eq!(
-        lines[7], "\u{2514}\u{2500} ~/.dotfiles/AGENTS.md (5 tokens)",
+        lines[4], "\u{251c}\u{2500} \u{f0c3} ~/b/AGENTS.md (12 tokens)",
         "{text}"
     );
-    assert_eq!(lines[8], "", "{text}");
-    assert_eq!(lines[9], "Total context added: 51 tokens", "{text}");
+    assert_eq!(
+        lines[5], "\u{2514}\u{2500} \u{f07b} .dotfiles",
+        "a deeper scope is a branch of the one above it:\n{text}"
+    );
+    assert_eq!(
+        lines[6], "   \u{2514}\u{2500} \u{f0c3} ~/.dotfiles/AGENTS.md (5 tokens)",
+        "{text}"
+    );
+    assert_eq!(lines[7], "", "{text}");
+    assert_eq!(lines[8], "Total context added: 51 tokens", "{text}");
 }
 
 #[test]
@@ -2661,7 +2663,7 @@ fn the_context_listing_is_shown_when_a_session_starts() {
     assert!(shown.contains("Files loaded into context:"), "{shown}");
     assert!(shown.contains("Total context added: 9 tokens"), "{shown}");
     assert!(
-        shown.contains("\u{2514}\u{2500} ~/AGENTS.md (9 tokens)"),
+        shown.contains("\u{2514}\u{2500} \u{f0c3} ~/AGENTS.md (9 tokens)"),
         "{shown}"
     );
 }

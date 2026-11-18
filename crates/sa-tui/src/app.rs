@@ -10,8 +10,8 @@ const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// the context a session was given, in the grouped shape pi-contexts prints: the root, then
-/// the files under it, home-shortened and sorted.
+/// the context a session was given, as one tree: the directories it inherits from, and the
+/// files that hang off each of them.
 #[must_use]
 pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -24,11 +24,41 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
     if groups.is_empty() {
         return format!("context: nothing loaded for {}", short(cwd));
     }
-    let mut blocks: Vec<String> = Vec::new();
+
+    let mut root: Option<ContextNode> = None;
+    let mut cursor: Vec<usize> = Vec::new();
     let mut total = 0_u64;
-    for group in groups {
-        let root = group["root"].as_str().unwrap_or_default();
-        let mut block = vec![short(root)];
+    let mut previous_root = String::new();
+
+    for (index, group) in groups.iter().enumerate() {
+        let group_root = group["root"].as_str().unwrap_or_default().to_owned();
+        if index == 0 {
+            root = Some(ContextNode {
+                label: short(&group_root),
+                tokens: None,
+                children: Vec::new(),
+            });
+            cursor = Vec::new();
+        } else {
+            // a deeper scope hangs off the one before it, named by the part that is new.
+            let relative = group_root
+                .strip_prefix(&previous_root)
+                .map_or_else(|| group_root.clone(), str::to_owned);
+            for component in relative.split('/').filter(|part| !part.is_empty()) {
+                let Some(tree) = root.as_mut() else {
+                    break;
+                };
+                let children = &mut node_at(tree, &cursor).children;
+                children.push(ContextNode {
+                    label: component.to_owned(),
+                    tokens: None,
+                    children: Vec::new(),
+                });
+                cursor.push(children.len() - 1);
+            }
+        }
+        previous_root = group_root;
+
         let mut files: Vec<(String, u64)> = group["files"]
             .as_array()
             .map(|files| {
@@ -41,24 +71,82 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             })
             .unwrap_or_default();
         files.sort();
-        // a tree of what hangs off this directory, closing with a corner on the last one.
-        let count = files.len();
-        for (index, (file, tokens)) in files.into_iter().enumerate() {
+        for (file, tokens) in files {
             total += tokens;
-            let corner = if index + 1 == count {
-                '\u{2514}'
-            } else {
-                '\u{251c}'
+            let Some(tree) = root.as_mut() else {
+                break;
             };
-            block.push(format!("{corner}\u{2500} {file} ({tokens} tokens)"));
+            node_at(tree, &cursor).children.push(ContextNode {
+                label: file,
+                tokens: Some(tokens),
+                children: Vec::new(),
+            });
         }
-        blocks.push(block.join("\n"));
     }
-    blocks.push(format!(
+
+    let mut lines = vec!["Files loaded into context:".to_owned(), String::new()];
+    if let Some(root) = root {
+        lines.push(root.label);
+        render_tree(&root.children, "", &mut lines);
+    }
+    lines.push(String::new());
+    lines.push(format!(
         "Total context added: {} tokens",
         with_thousands(total)
     ));
-    format!("Files loaded into context:\n\n{}", blocks.join("\n\n"))
+    lines.join("\n")
+}
+
+/// one line of the context tree: a directory, or a file with what it costs.
+struct ContextNode {
+    label: String,
+    tokens: Option<u64>,
+    children: Vec<Self>,
+}
+
+/// walks to the entry a cursor points at, so the tree can be built without holding a
+/// borrow across iterations.
+fn node_at<'a>(root: &'a mut ContextNode, cursor: &[usize]) -> &'a mut ContextNode {
+    let mut node = root;
+    for index in cursor {
+        node = &mut node.children[*index];
+    }
+    node
+}
+
+/// draws a level of the tree, with the guides that show what belongs to what.
+fn render_tree(children: &[ContextNode], prefix: &str, lines: &mut Vec<String>) {
+    for (index, entry) in children.iter().enumerate() {
+        let last = index + 1 == children.len();
+        let corner = if last { '\u{2514}' } else { '\u{251c}' };
+        let icon = if entry.children.is_empty() && entry.tokens.is_some() {
+            file_icon(&entry.label)
+        } else {
+            '\u{f07b}'
+        };
+        let suffix = entry
+            .tokens
+            .map_or_else(String::new, |tokens| format!(" ({tokens} tokens)"));
+        lines.push(format!(
+            "{prefix}{corner}\u{2500} {icon} {}{suffix}",
+            entry.label
+        ));
+        let next = format!("{prefix}{}", if last { "   " } else { "\u{2502}  " });
+        render_tree(&entry.children, &next, lines);
+    }
+}
+
+/// a nerd font glyph for a context file, so the list reads at a glance.
+fn file_icon(label: &str) -> char {
+    let name = label.rsplit('/').next().unwrap_or(label);
+    match name {
+        "SOUL.md" => '\u{f004}',
+        "AGENTS.md" => '\u{f0c3}',
+        "RULES.md" => '\u{f0fe}',
+        "APPEND_SYSTEM.md" => '\u{f067}',
+        "SKILL.md" => '\u{f0eb}',
+        _ => '\u{f15c}',
+    }
 }
 
 /// a count with its thousands separated, which is how a large figure is read at a glance.
