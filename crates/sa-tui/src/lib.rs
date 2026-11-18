@@ -245,7 +245,14 @@ where
 
         let incoming = tokio::select! {
             event = keys.next() => match event {
-                Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => Incoming::Key(key),
+                // a release carries no character, but the modifier keys are tracked by
+                // their own press and release, so those must reach the app.
+                Some(Ok(Event::Key(key)))
+                    if key.kind == KeyEventKind::Press
+                        || matches!(key.code, crossterm::event::KeyCode::Modifier(_)) =>
+                {
+                    Incoming::Key(key)
+                }
                 // a resize must force a redraw, or the frames keep their old width.
                 Some(Ok(Event::Resize(_, _))) => Incoming::Resize,
                 Some(Ok(_)) => continue,
@@ -1402,6 +1409,100 @@ mod daemon_tests {
             seen.iter()
                 .any(|r| r["method"] == "session.cwd" && r["params"]["cwd"] == "/tmp"),
             "/cd must change the directory like /cwd: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shift_enter_never_sends_the_message() {
+        // the terminal reports the shift key itself, then sends a bare carriage return.
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed("first line");
+        stream.push(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new_with_kind(
+                crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftShift),
+                crossterm::event::KeyModifiers::SHIFT,
+                crossterm::event::KeyEventKind::Press,
+            ),
+        ));
+        stream.push(press(crossterm::event::KeyCode::Enter));
+        stream.extend(typed("second line"));
+        // shift goes up, so the next enter is a send.
+        stream.push(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new_with_kind(
+                crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftShift),
+                crossterm::event::KeyModifiers::SHIFT,
+                crossterm::event::KeyEventKind::Release,
+            ),
+        ));
+        stream.push(press(crossterm::event::KeyCode::Enter));
+
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let started: Vec<&Value> = seen
+            .iter()
+            .filter(|request| request["method"] == "turn.start")
+            .collect();
+        assert_eq!(
+            started.len(),
+            1,
+            "one turn only, started by the plain enter: {seen:?}"
+        );
+        assert_eq!(
+            started[0]["params"]["prompt"], "first line\nsecond line",
+            "the shift+enter made a new line inside the prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reported_shift_enter_never_sends_the_message() {
+        // a terminal that puts the modifier in the key event: the same outcome.
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed("first line");
+        stream.push(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::SHIFT,
+            ),
+        ));
+        stream.extend(typed("second line"));
+        stream.push(press(crossterm::event::KeyCode::Enter));
+
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let started: Vec<&Value> = seen
+            .iter()
+            .filter(|request| request["method"] == "turn.start")
+            .collect();
+        assert_eq!(started.len(), 1, "one turn only: {seen:?}");
+        assert_eq!(
+            started[0]["params"]["prompt"], "first line\nsecond line",
+            "shift+enter made a new line inside the prompt"
         );
     }
 

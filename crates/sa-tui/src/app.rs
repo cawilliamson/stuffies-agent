@@ -1380,6 +1380,9 @@ pub struct App {
     /// cannot put shift+enter in a key event still reports the shift key itself, and a bare
     /// enter arriving while it is held is a shift+enter.
     pub shift_held: bool,
+    /// the same for control: a terminal that sends a bare carriage return for ctrl+enter
+    /// still reports the control key, and enter while it is down is not a send.
+    pub ctrl_held: bool,
     /// what the endpoint says about each model it serves. a model absent here has no
     /// known window or effort list, and is not given guessed ones.
     pub served: std::collections::HashMap<String, ServedModel>,
@@ -1399,6 +1402,7 @@ impl App {
             image_picker: None,
             recent_keys: std::collections::VecDeque::new(),
             shift_held: false,
+            ctrl_held: false,
             served: std::collections::HashMap::new(),
         }
     }
@@ -1665,11 +1669,15 @@ impl App {
         // the terminal reports the shift key on its own, so its state is known even when it
         // cannot put the modifier in the enter event.
         if let KeyCode::Modifier(modifier) = key.code {
-            if matches!(
-                modifier,
-                ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift
-            ) {
-                self.shift_held = key.kind != KeyEventKind::Release;
+            let down = key.kind != KeyEventKind::Release;
+            match modifier {
+                ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => {
+                    self.shift_held = down;
+                }
+                ModifierKeyCode::LeftControl | ModifierKeyCode::RightControl => {
+                    self.ctrl_held = down;
+                }
+                _ => {}
             }
             return Action::None;
         }
@@ -1682,9 +1690,21 @@ impl App {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // a newline without sending. alt is the alias for terminals that cannot tell
         // shift+enter from enter, and so is a bare enter while shift is held.
+        let enter = matches!(key.code, KeyCode::Enter | KeyCode::Char('\r'));
+        // a terminal that loses a release must not leave a modifier stuck down, or enter
+        // would stop sending for the rest of the session.
+        if !enter {
+            if !shift {
+                self.shift_held = false;
+            }
+            if !ctrl {
+                self.ctrl_held = false;
+            }
+        }
         let newline = shift
             || key.modifiers.contains(KeyModifiers::ALT)
-            || (self.shift_held && matches!(key.code, KeyCode::Enter | KeyCode::Char('\r')));
+            || (self.shift_held && enter)
+            || (self.ctrl_held && enter);
 
         if ctrl {
             return match key.code {
