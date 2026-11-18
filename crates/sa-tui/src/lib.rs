@@ -146,6 +146,13 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
         )
     )
     .is_ok();
+    // the same bytes pi writes: push the flags, then ask the terminal to report them. some
+    // terminals only honour the push once they have been asked.
+    {
+        use std::io::Write as _;
+        let _ = std::io::stdout().write_all(b"\x1b[?u");
+        let _ = std::io::stdout().flush();
+    }
     let _restore = Restore { enhanced };
 
     let backend = CrosstermBackend::new(std::io::stdout());
