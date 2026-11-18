@@ -59,13 +59,19 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
         }
         previous_root = group_root.clone();
 
+        // each file is placed by its path below the root that provided it, so a deployed
+        // file is not shown inside a directory it does not live in.
         let mut files: Vec<(String, u64)> = group["files"]
             .as_array()
             .map(|files| {
                 files
                     .iter()
                     .filter_map(|file| {
-                        Some((short(file["path"].as_str()?), file["tokens"].as_u64()?))
+                        let relative = match file["relative"].as_str() {
+                            Some(relative) => relative.to_owned(),
+                            None => short(file["path"].as_str()?),
+                        };
+                        Some((relative, file["tokens"].as_u64()?))
                     })
                     .collect()
             })
@@ -78,14 +84,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             };
             // the path below the scope becomes directories, so every folder that holds a
             // loaded file is its own branch rather than being folded into one long line.
-            // the path below the scope it belongs to; a deployed file sits outside that
-            // directory, so it is placed by its path from home instead of by a bogus name.
-            let shown = short(&group_root);
-            let relative: &str = file.strip_prefix(&shown).unwrap_or_else(|| {
-                file.strip_prefix('~')
-                    .or_else(|| file.strip_prefix(home.as_str()))
-                    .unwrap_or(file.as_str())
-            });
+            let relative: &str = file.as_str();
             let mut parts: Vec<&str> = relative
                 .split('/')
                 .filter(|part| !part.is_empty())

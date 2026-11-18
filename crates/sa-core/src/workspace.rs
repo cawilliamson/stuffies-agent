@@ -157,6 +157,8 @@ pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
 #[derive(Debug, Clone)]
 pub struct ContextListing {
     pub path: String,
+    /// the path below the root that provided it, which is what the tree is drawn from.
+    pub relative: String,
     pub tokens: u64,
 }
 
@@ -193,6 +195,7 @@ pub fn context_listing_in(workspace: &Path, cwd: Option<&Path>, home: &Path) -> 
         let mut files: Vec<ContextListing> = Vec::new();
         for file in context_files_in(&roots) {
             files.push(ContextListing {
+                relative: relative_to(&roots, &file.path),
                 path: file.path.display().to_string(),
                 tokens: crate::tokens::estimate_rounded(&file.body),
             });
@@ -200,6 +203,7 @@ pub fn context_listing_in(workspace: &Path, cwd: Option<&Path>, home: &Path) -> 
         for skill in skills_in(&roots) {
             let body = std::fs::read_to_string(&skill.path).unwrap_or_default();
             files.push(ContextListing {
+                relative: relative_to(&roots, &skill.path),
                 path: skill.path.display().to_string(),
                 tokens: crate::tokens::estimate_rounded(&body),
             });
@@ -216,6 +220,22 @@ pub fn context_listing_in(workspace: &Path, cwd: Option<&Path>, home: &Path) -> 
     }
     groups.sort_by(|left, right| left.root.cmp(&right.root));
     groups
+}
+
+/// the path of a file below the root that provided it. a file outside every root keeps its
+/// own name, so it is never given a directory it does not live in.
+#[must_use]
+fn relative_to(roots: &[PathBuf], path: &Path) -> String {
+    roots
+        .iter()
+        .find_map(|root| path.strip_prefix(root).ok())
+        .map_or_else(
+            || {
+                path.file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+            },
+            |rest| rest.display().to_string(),
+        )
 }
 
 /// a one-line summary for a skill file, from its frontmatter or first heading.

@@ -2613,11 +2613,11 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     let home = std::env::var("HOME").expect("home");
     let groups = json!([
         {"root": home, "files": [
-            {"path": format!("{home}/b/AGENTS.md"), "tokens": 12},
-            {"path": format!("{home}/a/PERSONALITY.md"), "tokens": 34},
+            {"path": format!("{home}/b/AGENTS.md"), "relative": "b/AGENTS.md", "tokens": 12},
+            {"path": format!("{home}/a/PERSONALITY.md"), "relative": "a/PERSONALITY.md", "tokens": 34},
         ]},
         {"root": format!("{home}/.dotfiles"), "files": [
-            {"path": format!("{home}/.dotfiles/AGENTS.md"), "tokens": 5},
+            {"path": format!("{home}/.dotfiles/AGENTS.md"), "relative": "AGENTS.md", "tokens": 5},
         ]},
     ]);
     let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
@@ -2657,7 +2657,7 @@ fn the_context_listing_is_shown_when_a_session_starts() {
         &json!({
             "cwd": home,
             "groups": [{"root": home, "files": [
-                {"path": format!("{home}/AGENTS.md"), "tokens": 9},
+                {"path": format!("{home}/AGENTS.md"), "relative": "AGENTS.md", "tokens": 9},
             ]}],
         }),
     );
@@ -2698,8 +2698,8 @@ fn a_chain_of_single_directories_is_folded_into_one_line() {
     let deep = format!("{home}/.config/stuffies-agent/workspaces/home-chrisaw");
     let groups = json!([
         {"root": home, "files": [
-            {"path": format!("{deep}/AGENTS.md"), "tokens": 10},
-            {"path": format!("{deep}/skills/ponytail/SKILL.md"), "tokens": 20},
+            {"path": format!("{deep}/AGENTS.md"), "relative": "config/stuffies-agent/workspaces/home-chrisaw/AGENTS.md", "tokens": 10},
+            {"path": format!("{deep}/skills/ponytail/SKILL.md"), "relative": "config/stuffies-agent/workspaces/home-chrisaw/skills/ponytail/SKILL.md", "tokens": 20},
         ]},
     ]);
     let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
@@ -2707,7 +2707,7 @@ fn a_chain_of_single_directories_is_folded_into_one_line() {
 
     assert_eq!(lines[2], "\u{f07b} ~", "{text}");
     assert_eq!(
-        lines[3], "\u{2514}\u{2500} \u{f07b} .config/stuffies-agent/workspaces/home-chrisaw",
+        lines[3], "\u{2514}\u{2500} \u{f07b} config/stuffies-agent/workspaces/home-chrisaw",
         "one directory per line, not one per level:\n{text}"
     );
     assert_eq!(
@@ -2729,8 +2729,8 @@ fn a_directory_with_several_entries_is_still_expanded() {
     let home = std::env::var("HOME").expect("home");
     let groups = json!([
         {"root": home, "files": [
-            {"path": format!("{home}/a/AGENTS.md"), "tokens": 1},
-            {"path": format!("{home}/a/RULES.md"), "tokens": 2},
+            {"path": format!("{home}/a/AGENTS.md"), "relative": "a/AGENTS.md", "tokens": 1},
+            {"path": format!("{home}/a/RULES.md"), "relative": "a/RULES.md", "tokens": 2},
         ]},
     ]);
     let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));

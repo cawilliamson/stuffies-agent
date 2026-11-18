@@ -393,7 +393,13 @@ impl Manager {
                     let files: Vec<serde_json::Value> = group
                         .files
                         .iter()
-                        .map(|file| json!({"path": file.path, "tokens": file.tokens}))
+                        .map(|file| {
+                            json!({
+                                "path": file.path,
+                                "relative": file.relative,
+                                "tokens": file.tokens,
+                            })
+                        })
                         .collect();
                     json!({"root": group.root, "files": files})
                 })
