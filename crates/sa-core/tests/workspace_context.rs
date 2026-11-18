@@ -193,3 +193,23 @@ fn a_parent_context_file_applies_to_everything_beneath_it() {
         "a repository's own file is loaded when it is already there: {workspace_group:?}"
     );
 }
+
+#[test]
+fn a_deployed_file_is_reported_by_the_path_it_was_found_at() {
+    // pi-contexts deploys by symlinking into the store. the store path says nothing about
+    // where the file came from, so the path shown must be the one that was searched.
+    let target = tempfile::tempdir().expect("target");
+    let root = tempfile::tempdir().expect("root");
+    let real = target.path().join("real.md");
+    std::fs::write(&real, "deployed rules").expect("write");
+    let link = root.path().join("AGENTS.md");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+    let found = context_files_in(&[root.path().to_path_buf()]);
+    assert_eq!(found.len(), 1, "the file is found through the link");
+    assert_eq!(
+        found[0].path, link,
+        "the logical path, not the store target"
+    );
+    assert_eq!(found[0].body, "deployed rules");
+}

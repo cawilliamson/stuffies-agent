@@ -126,6 +126,8 @@ pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
     for name in CONTEXT_FILES {
         for root in roots {
             let path = root.join(name);
+            // the logical path is what the operator is shown: a deployed file is a symlink
+            // into the store, and the store path says nothing about where it came from.
             let Ok(canonical) = std::fs::canonicalize(&path) else {
                 continue;
             };
@@ -137,7 +139,7 @@ pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
             }
             out.push(ContextFile {
                 name: name.to_owned(),
-                path: canonical,
+                path,
                 body,
             });
             break;
@@ -260,6 +262,8 @@ pub fn skills_in(roots: &[PathBuf]) -> Vec<SkillRef> {
             let Ok(canonical) = std::fs::canonicalize(&file) else {
                 continue;
             };
+            // dedup follows the real file, so one skill linked twice is listed once; the
+            // path recorded is the logical one the operator recognises.
             if !seen.insert(canonical.clone()) {
                 continue;
             }
@@ -268,7 +272,7 @@ pub fn skills_in(roots: &[PathBuf]) -> Vec<SkillRef> {
             };
             out.push(SkillRef {
                 name: entry.file_name().to_string_lossy().into_owned(),
-                path: canonical,
+                path: file,
                 summary: skill_summary(&body),
             });
         }
