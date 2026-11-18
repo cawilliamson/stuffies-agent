@@ -87,6 +87,14 @@ async fn ping() -> Result<(), String> {
         .map_err(|e| format!("ping failed: {e}"))?;
     let json = serde_json::to_string_pretty(&ping).map_err(|e| e.to_string())?;
     println!("{json}");
+    // stdout stays pure json so it can be piped; the build comparison is for a person.
+    eprintln!("client build: {}", sa_proto::BUILD_REV);
+    eprintln!("daemon build: {}", ping.build_rev);
+    if ping.build_rev == sa_proto::BUILD_REV {
+        eprintln!("builds match");
+    } else {
+        eprintln!("builds differ: restart the daemon to pick up this client's code");
+    }
     Ok(())
 }
 

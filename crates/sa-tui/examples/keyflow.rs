@@ -1,7 +1,7 @@
 //! feeds real terminal keys through the app's key handler and records what it decided.
 //! no drawing, no daemon: this is the input path on its own.
 #![allow(clippy::expect_used)]
-use crossterm::event::{self, KeyEvent, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+use crossterm::event::{self, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use std::io::Write as _;
 use std::time::Duration;
 

@@ -131,6 +131,9 @@ pub struct HelloParams {
 pub struct HelloResult {
     pub protocol: u32,
     pub version: String,
+    /// the commit the daemon was built from.
+    #[serde(default)]
+    pub build_rev: String,
 }
 
 /// `ping` result. `uptime_seconds` is monotonic daemon uptime, not wall clock.
@@ -139,6 +142,9 @@ pub struct PingResult {
     pub version: String,
     pub uptime_seconds: u64,
     pub sessions: u64,
+    /// the commit the daemon was built from.
+    #[serde(default)]
+    pub build_rev: String,
 }
 
 #[cfg(test)]

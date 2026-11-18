@@ -8,6 +8,13 @@ pub mod rpc;
 pub mod session;
 pub mod tokens;
 
+/// the commit this build came from, stamped by `build.rs`. a client and a daemon built
+/// from different commits are not the same program, and say so.
+pub const BUILD_REV: &str = env!("SA_BUILD_REV");
+
+/// the version string a binary reports, with the commit it was built from.
+pub const BUILD_NAME: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SA_BUILD_REV"), ")");
+
 /// maximum length of a single newline-delimited frame, excluding the newline.
 ///
 /// a longer line is a protocol error, never a truncated read (spec 3.1).

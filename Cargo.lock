@@ -3190,6 +3190,7 @@ dependencies = [
  "sa-client",
  "sa-core",
  "sa-daemon",
+ "sa-proto",
  "sa-tui",
  "serde_json",
  "tempfile",

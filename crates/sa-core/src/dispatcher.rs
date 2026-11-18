@@ -154,6 +154,7 @@ impl Dispatcher {
         Ok(json!(HelloResult {
             protocol: PROTOCOL_VERSION,
             version: DAEMON_VERSION.to_owned(),
+            build_rev: sa_proto::BUILD_REV.to_owned(),
         }))
     }
 
@@ -162,6 +163,7 @@ impl Dispatcher {
     fn ping(&self) -> Result<Value, RpcError> {
         Ok(json!(PingResult {
             version: DAEMON_VERSION.to_owned(),
+            build_rev: sa_proto::BUILD_REV.to_owned(),
             uptime_seconds: self.uptime_seconds(),
             sessions: self
                 .manager

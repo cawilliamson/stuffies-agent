@@ -72,7 +72,23 @@ impl Client {
                 serde_json::to_value(params).map_err(|e| ClientError::Protocol(e.to_string()))?,
             )
             .await?;
-        serde_json::from_value(value).map_err(|e| ClientError::Protocol(e.to_string()))
+        let result: HelloResult =
+            serde_json::from_value(value).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        // a daemon built from different code is a different program. saying so here turns a
+        // mystery into a one-line answer.
+        if !result.build_rev.is_empty()
+            && result.build_rev != "unknown"
+            && result.build_rev != sa_proto::BUILD_REV
+        {
+            return Err(ClientError::Protocol(format!(
+                "build mismatch: daemon is {} (v{}), client is {} (v{}); restart the daemon",
+                result.build_rev,
+                result.version,
+                sa_proto::BUILD_REV,
+                DAEMON_VERSION
+            )));
+        }
+        Ok(result)
     }
 
     /// sends a request and waits for its response, queueing notifications that arrive in
@@ -199,5 +215,65 @@ mod tests {
             .await
             .expect("queued notification");
         assert_eq!(queued["method"], "event");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod build_tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+
+    /// answers the handshake with a daemon built from a different commit.
+    async fn handshake_against(build_rev: &str) -> Result<HelloResult, ClientError> {
+        let (ours, theirs) = UnixStream::pair().expect("socketpair");
+        let rev = build_rev.to_owned();
+        tokio::spawn(async move {
+            let mut server = Framed::new(theirs, LinesCodec::new_with_max_length(MAX_LINE_LEN));
+            let request: Value =
+                serde_json::from_str(&server.next().await.expect("frame").expect("line"))
+                    .expect("json");
+            let id = request.get("id").cloned().expect("id");
+            let reply = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"protocol": PROTOCOL_VERSION, "version": "0.1.0", "build_rev": rev},
+            });
+            server.send(reply.to_string()).await.expect("respond");
+        });
+
+        let mut client = Client::from_stream(ours);
+        client.handshake("test").await
+    }
+
+    #[tokio::test]
+    async fn a_daemon_built_from_another_commit_is_refused() {
+        let error = handshake_against("deadbeefcafe")
+            .await
+            .expect_err("a different build must not be accepted");
+        let text = error.to_string();
+        assert!(text.contains("build mismatch"), "{text}");
+        assert!(text.contains("deadbeefcafe"), "names the daemon: {text}");
+        assert!(
+            text.contains(sa_proto::BUILD_REV),
+            "names the client: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_daemon_from_the_same_commit_is_accepted() {
+        let result = handshake_against(sa_proto::BUILD_REV)
+            .await
+            .expect("the same build must be accepted");
+        assert_eq!(result.build_rev, sa_proto::BUILD_REV);
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_does_not_say_its_build_is_accepted() {
+        // an older daemon sends no revision at all; refusing it would break every upgrade.
+        let result = handshake_against("")
+            .await
+            .expect("an unstated build is not a mismatch");
+        assert_eq!(result.build_rev, "", "an unstated build stays empty");
     }
 }

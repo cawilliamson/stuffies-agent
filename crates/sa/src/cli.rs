@@ -5,7 +5,13 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "sa", version, about = "daemon-first coding agent")]
+#[command(
+    name = "sa",
+    // the commit is part of the version: a client and a daemon from different code are
+    // different programs, and this is how that is seen at a glance.
+    version = sa_proto::BUILD_NAME,
+    about = "daemon-first coding agent"
+)]
 pub struct Cli {
     /// omit to attach to the most recent session.
     #[command(subcommand)]
