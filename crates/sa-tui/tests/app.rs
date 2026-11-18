@@ -2770,3 +2770,43 @@ fn a_file_deployed_elsewhere_names_the_directory_it_lives_in() {
         "{text}"
     );
 }
+
+#[test]
+fn a_markdown_table_is_drawn_as_a_table() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(
+        Role::Assistant,
+        "before\n| name | tokens |\n| --- | ---: |\n| AGENTS.md | 1074 |\n| SOUL.md | 240 |\nafter",
+    );
+    let shown = screen(&mut app, 100, 30);
+
+    assert!(shown.contains("before"), "{shown}");
+    assert!(
+        shown.contains("after"),
+        "text after the table survives:\n{shown}"
+    );
+    assert!(
+        !shown.contains("| --- |"),
+        "the separator is not shown raw:\n{shown}"
+    );
+    assert!(
+        shown.contains('\u{250c}'),
+        "a top border is drawn:\n{shown}"
+    );
+    assert!(
+        shown.contains('\u{2518}'),
+        "a bottom border is drawn:\n{shown}"
+    );
+    assert!(shown.contains("AGENTS.md"), "{shown}");
+    assert!(shown.contains("1074"), "{shown}");
+}
+
+#[test]
+fn pipes_in_ordinary_text_are_left_alone() {
+    let mut app = App::new("s", "m");
+    app.tab_mut()
+        .push(Role::Assistant, "run a | b to pipe, not a table");
+    let shown = screen(&mut app, 100, 20);
+    assert!(shown.contains("run a | b to pipe, not a table"), "{shown}");
+    assert!(!shown.contains('\u{250c}'), "{shown}");
+}

@@ -1981,7 +1981,21 @@ fn body(
     markdown: bool,
 ) {
     let room = width.saturating_sub(4);
-    for raw in text.lines() {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        // a markdown table is drawn as a table, not as its own pipe-separated source.
+        if markdown {
+            if let Some((table, consumed)) = table_at(&lines[index..]) {
+                for line in render_table(&table, room) {
+                    out.push(frame_line(&line, room, edge, ink, false));
+                }
+                index += consumed;
+                continue;
+            }
+        }
+        let raw = lines[index];
+        index += 1;
         let mut line = raw.to_owned();
         if line.chars().count() > room {
             line = line
@@ -1990,27 +2004,144 @@ fn body(
                 .collect::<String>();
             line.push('\u{2026}');
         }
-        // markers are not drawn, so measure the visible text.
-        let shown = if markdown {
-            plain(&line).chars().count()
-        } else {
-            line.chars().count()
-        };
-        let pad = room.saturating_sub(shown);
-
-        let base = Style::default().fg(ink);
-        let mut spans = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
-        if markdown {
-            spans.extend(styled(&line, base));
-        } else {
-            spans.push(Span::styled(line, base));
-        }
-        spans.push(Span::styled(
-            format!("{} \u{2502}", " ".repeat(pad)),
-            Style::default().fg(edge),
-        ));
-        out.push(Line::from(spans));
+        out.push(frame_line(&line, room, edge, ink, markdown));
     }
+}
+
+/// one line inside a message frame, padded out to the frame's width.
+fn frame_line(line: &str, room: usize, edge: Color, ink: Color, markdown: bool) -> Line<'static> {
+    let shown = if markdown {
+        plain(line).chars().count()
+    } else {
+        line.chars().count()
+    };
+    let pad = room.saturating_sub(shown);
+    let base = Style::default().fg(ink);
+    let mut spans = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
+    if markdown {
+        spans.extend(styled(line, base));
+    } else {
+        spans.push(Span::styled(line.to_owned(), base));
+    }
+    spans.push(Span::styled(
+        format!("{} \u{2502}", " ".repeat(pad)),
+        Style::default().fg(edge),
+    ));
+    Line::from(spans)
+}
+
+/// the cells of a table row, with the pipes that delimit them removed.
+fn cells(row: &str) -> Vec<String> {
+    row.trim()
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().to_owned())
+        .collect()
+}
+
+/// whether a row is the `|---|---|` line that makes the row above it a header.
+fn is_separator(row: &str) -> bool {
+    let cells = cells(row);
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let body = cell.trim_start_matches(':').trim_end_matches(':');
+            !body.is_empty() && body.chars().all(|character| character == '-')
+        })
+}
+
+/// a markdown table starting at the head of `lines`, and how many lines it consumed.
+fn table_at(lines: &[&str]) -> Option<(Vec<Vec<String>>, usize)> {
+    let header = lines.first()?;
+    if !header.contains('|') {
+        return None;
+    }
+    let separator = lines.get(1)?;
+    if !is_separator(separator) {
+        return None;
+    }
+    let width = cells(header).len();
+    if width == 0 || cells(separator).len() != width {
+        return None;
+    }
+
+    let mut rows = vec![cells(header)];
+    let mut consumed = 2;
+    for row in lines.iter().skip(2) {
+        if !row.contains('|') || row.trim().is_empty() {
+            break;
+        }
+        let mut cells = cells(row);
+        cells.resize(width, String::new());
+        rows.push(cells);
+        consumed += 1;
+    }
+    Some((rows, consumed))
+}
+
+/// draws a table that fits `room` columns: the header, a rule, then the rows.
+fn render_table(rows: &[Vec<String>], room: usize) -> Vec<String> {
+    let columns = rows.first().map_or(0, Vec::len);
+    if columns == 0 {
+        return Vec::new();
+    }
+    let mut widths: Vec<usize> = (0..columns)
+        .map(|column| {
+            rows.iter()
+                .map(|row| {
+                    row.get(column)
+                        .map_or(0, |cell| plain(cell).chars().count())
+                })
+                .max()
+                .unwrap_or(1)
+                .clamp(3, 40)
+        })
+        .collect();
+    // the borders cost three cells per column; give the space back to the widest column
+    // until the table fits the frame.
+    let overhead = columns * 3 + 1;
+    while widths.iter().sum::<usize>() + overhead > room {
+        let Some((widest, _)) = widths.iter().enumerate().max_by_key(|(_, width)| **width) else {
+            break;
+        };
+        if widths[widest] <= 3 {
+            break;
+        }
+        widths[widest] -= 1;
+    }
+
+    let rule = |left: char, middle: char, right: char| {
+        let mut line = String::from(left);
+        for (column, width) in widths.iter().enumerate() {
+            line.push_str(&"\u{2500}".repeat(width + 2));
+            line.push(if column + 1 == columns { right } else { middle });
+        }
+        line
+    };
+    let row = |cells: &[String]| {
+        let mut line = String::from("\u{2502}");
+        for (column, width) in widths.iter().enumerate() {
+            let cell = cells.get(column).map_or("", String::as_str);
+            let text: String = plain(cell).chars().take(*width).collect();
+            let pad = width.saturating_sub(text.chars().count());
+            line.push(' ');
+            line.push_str(&text);
+            line.push_str(&" ".repeat(pad));
+            line.push_str(" \u{2502}");
+        }
+        line
+    };
+
+    let mut out = vec![rule('\u{250c}', '\u{252c}', '\u{2510}')];
+    if let Some(header) = rows.first() {
+        out.push(row(header));
+        out.push(rule('\u{251c}', '\u{253c}', '\u{2524}'));
+    }
+    for row_cells in rows.iter().skip(1) {
+        out.push(row(row_cells));
+    }
+    out.push(rule('\u{2514}', '\u{2534}', '\u{2518}'));
+    out
 }
 
 /// pushes a picture section: the file name, then the pixels, both inside the frame.
