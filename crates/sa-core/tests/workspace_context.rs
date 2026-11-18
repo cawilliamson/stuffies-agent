@@ -132,3 +132,64 @@ fn the_listing_groups_by_root_and_sorts_files_and_skills() {
         .expect("agents");
     assert!(agents.tokens > 0, "a file with a body costs tokens");
 }
+
+#[test]
+fn context_applies_from_every_parent_directory_down_to_the_workspace() {
+    let home = tempfile::tempdir().expect("home");
+    let project = home.path().join("Projects");
+    let workspace = project.join("stuffies-agent");
+    std::fs::create_dir_all(&workspace).expect("dirs");
+
+    let scopes = sa_core::workspace::context_scopes_in(&workspace, home.path());
+    assert_eq!(
+        scopes,
+        [
+            std::fs::canonicalize(home.path()).expect("canonical"),
+            std::fs::canonicalize(&project).expect("canonical"),
+            std::fs::canonicalize(&workspace).expect("canonical"),
+        ],
+        "home, then the project directory, then the workspace"
+    );
+}
+
+#[test]
+fn a_parent_context_file_applies_to_everything_beneath_it() {
+    let home = tempfile::tempdir().expect("home");
+    let workspace = home.path().join("Projects/stuffies-agent");
+    std::fs::create_dir_all(&workspace).expect("dirs");
+    std::fs::write(home.path().join("AGENTS.md"), "home rules").expect("write");
+    std::fs::write(workspace.join("AGENTS.md"), "repo rules").expect("write");
+
+    let groups = sa_core::workspace::context_listing_in(&workspace, None, home.path());
+    assert_eq!(groups.len(), 2, "home and the workspace: {groups:?}");
+
+    let home_group = groups
+        .iter()
+        .find(|group| {
+            group.root
+                == std::fs::canonicalize(home.path())
+                    .expect("canonical")
+                    .display()
+                    .to_string()
+        })
+        .expect("the home scope");
+    assert!(
+        home_group
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("AGENTS.md")),
+        "the parent's rules apply here too: {home_group:?}"
+    );
+
+    let workspace_group = groups
+        .iter()
+        .find(|group| group.root.ends_with("stuffies-agent"))
+        .expect("the workspace scope");
+    assert!(
+        workspace_group
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("AGENTS.md")),
+        "a repository's own file is loaded when it is already there: {workspace_group:?}"
+    );
+}

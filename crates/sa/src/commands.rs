@@ -250,7 +250,7 @@ pub fn context(dir: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir().ok();
     let roots = sa_core::workspace::context_roots(&workspace, cwd.as_deref());
 
-    println!("roots, highest precedence first:");
+    println!("roots, outermost scope first (each scope reads its deployed config, then the directory itself):");
     for root in &roots {
         println!("  {}", root.display());
     }
@@ -259,7 +259,7 @@ pub fn context(dir: Option<String>) -> Result<()> {
     if files.is_empty() {
         println!("\nno context files found");
     } else {
-        println!("\ncontext files, in injection order:");
+        println!("\ncontext files, outermost scope first:");
         for file in &files {
             println!(
                 "  {:<18} {} ({} bytes)",

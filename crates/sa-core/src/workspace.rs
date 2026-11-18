@@ -46,54 +46,82 @@ pub struct ContextFile {
     pub body: String,
 }
 
-/// one file in a context listing, with what it adds to the prompt.
-#[derive(Debug, Clone)]
-pub struct ContextListing {
-    pub path: String,
-    pub tokens: u64,
+/// the directories context applies to, outermost first.
+///
+/// every ancestor from home down to the workspace itself: a file in a parent directory
+/// applies to everything beneath it, the way pi-contexts layers a home context over a
+/// project one.
+#[must_use]
+pub fn context_scopes(workspace: &Path) -> Vec<PathBuf> {
+    context_scopes_in(workspace, &home())
 }
 
-/// a root that provides context, and the files under it, sorted.
-#[derive(Debug, Clone)]
-pub struct ContextGroup {
-    pub root: String,
-    pub files: Vec<ContextListing>,
+/// the same, against an explicit home. keeps tests free of process-global environment.
+#[must_use]
+pub fn context_scopes_in(workspace: &Path, home: &Path) -> Vec<PathBuf> {
+    let workspace = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let mut chain: Vec<PathBuf> = workspace.ancestors().map(Path::to_path_buf).collect();
+    chain.reverse();
+    // a file above home belongs to the machine, not to this operator, so the chain starts
+    // at home when the workspace is inside it.
+    chain
+        .iter()
+        .position(|step| *step == home)
+        .map_or_else(|| vec![workspace], |at| chain.split_off(at))
 }
 
-/// a skill directory discovered on disk.
-#[derive(Debug, Clone)]
-pub struct SkillRef {
-    pub name: String,
-    pub path: PathBuf,
-    pub summary: String,
+/// the roots one scope is read from, highest precedence first: the deployed config for that
+/// directory, then the directory itself, where a repository may already carry its own.
+#[must_use]
+pub fn scope_roots(scope: &Path) -> Vec<PathBuf> {
+    vec![workspace_config_dir(scope), scope.to_path_buf()]
 }
 
-/// the roots context is read from, highest precedence first.
+/// the roots context is read from, highest precedence first, for every scope in order.
 ///
 /// nothing here is ever written to: the deployed config dir belongs to the operator, and
 /// the workspace and daemon directories are read-only as far as `sa` is concerned.
 #[must_use]
 pub fn context_roots(workspace: &Path, cwd: Option<&Path>) -> Vec<PathBuf> {
-    let mut roots = vec![workspace_config_dir(workspace), workspace.to_path_buf()];
-    if let Some(cwd) = cwd {
-        if cwd != workspace {
-            roots.push(cwd.to_path_buf());
-        }
-    }
-    roots
+    scopes_with(workspace, cwd)
+        .iter()
+        .flat_map(|scope| scope_roots(scope))
+        .collect()
 }
 
-/// every context file that applies to a workspace, in injection order.
+/// the scopes that apply, with the client's own directory appended when it is elsewhere.
+#[must_use]
+fn scopes_with(workspace: &Path, cwd: Option<&Path>) -> Vec<PathBuf> {
+    scopes_with_in(workspace, cwd, &home())
+}
+
+fn scopes_with_in(workspace: &Path, cwd: Option<&Path>, home: &Path) -> Vec<PathBuf> {
+    let mut scopes = context_scopes_in(workspace, home);
+    if let Some(cwd) = cwd {
+        if cwd != workspace {
+            scopes.extend(context_scopes_in(cwd, home));
+        }
+    }
+    scopes.dedup();
+    scopes
+}
+
+/// every context file that applies to a workspace, outermost scope first, so a parent's
+/// context is followed by the child's rather than replaced by it.
 #[must_use]
 pub fn context_files(workspace: &Path, cwd: Option<&Path>) -> Vec<ContextFile> {
-    context_files_in(&context_roots(workspace, cwd))
+    scopes_with(workspace, cwd)
+        .iter()
+        .flat_map(|scope| context_files_in(&scope_roots(scope)))
+        .collect()
 }
 
 /// the same, against explicit roots. keeps tests free of process-global environment.
 #[must_use]
 pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
-    // precedence, not layering: the first root that provides a file wins, so one
-    // AGENTS.md is injected rather than every copy on disk.
+    // within one scope this is precedence: the first root that provides a file wins, so a
+    // deployed copy is used instead of the repository's rather than both.
     let mut out = Vec::new();
     for name in CONTEXT_FILES {
         for root in roots {
@@ -118,43 +146,69 @@ pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
     out
 }
 
-/// the context a directory provides, grouped by the root it came from and sorted, in the
-/// shape the operator is shown at the start of a session.
+/// one file in a context listing, with what it adds to the prompt.
+#[derive(Debug, Clone)]
+pub struct ContextListing {
+    pub path: String,
+    pub tokens: u64,
+}
+
+/// a root that provides context, and the files under it, sorted.
+#[derive(Debug, Clone)]
+pub struct ContextGroup {
+    pub root: String,
+    pub files: Vec<ContextListing>,
+}
+
+/// a skill directory discovered on disk.
+#[derive(Debug, Clone)]
+pub struct SkillRef {
+    pub name: String,
+    pub path: PathBuf,
+    pub summary: String,
+}
+
+/// the context a directory provides, grouped by the directory it applies to.
+///
+/// this is the shape the operator is shown at the start of a session. every scope
+/// contributes, so a parent's context is listed alongside the workspace's.
 #[must_use]
 pub fn context_listing(workspace: &Path, cwd: Option<&Path>) -> Vec<ContextGroup> {
-    let roots = context_roots(workspace, cwd);
-    let mut groups: std::collections::BTreeMap<String, Vec<ContextListing>> =
-        std::collections::BTreeMap::new();
+    context_listing_in(workspace, cwd, &home())
+}
 
-    let mut record = |path: &Path, body: &str| {
-        let Some(root) = roots.iter().find(|root| path.starts_with(root)) else {
-            return;
-        };
-        groups
-            .entry(root.display().to_string())
-            .or_default()
-            .push(ContextListing {
-                path: path.display().to_string(),
-                tokens: crate::tokens::estimate_rounded(body),
+/// the same, against an explicit home. keeps tests free of process-global environment.
+#[must_use]
+pub fn context_listing_in(workspace: &Path, cwd: Option<&Path>, home: &Path) -> Vec<ContextGroup> {
+    let mut groups = Vec::new();
+    for scope in scopes_with_in(workspace, cwd, home) {
+        let roots = scope_roots(&scope);
+        let mut files: Vec<ContextListing> = Vec::new();
+        for file in context_files_in(&roots) {
+            files.push(ContextListing {
+                path: file.path.display().to_string(),
+                tokens: crate::tokens::estimate_rounded(&file.body),
             });
-    };
-
-    for file in context_files_in(&roots) {
-        record(&file.path, &file.body);
+        }
+        for skill in skills_in(&roots) {
+            let body = std::fs::read_to_string(&skill.path).unwrap_or_default();
+            files.push(ContextListing {
+                path: skill.path.display().to_string(),
+                tokens: crate::tokens::estimate_rounded(&body),
+            });
+        }
+        if files.is_empty() {
+            continue;
+        }
+        files.sort_by(|left, right| left.path.cmp(&right.path));
+        files.dedup_by(|left, right| left.path == right.path);
+        groups.push(ContextGroup {
+            root: scope.display().to_string(),
+            files,
+        });
     }
-    for skill in skills_in(&roots) {
-        let body = std::fs::read_to_string(&skill.path).unwrap_or_default();
-        record(&skill.path, &body);
-    }
-
+    groups.sort_by(|left, right| left.root.cmp(&right.root));
     groups
-        .into_iter()
-        .map(|(root, mut files)| {
-            files.sort_by(|left, right| left.path.cmp(&right.path));
-            files.dedup_by(|left, right| left.path == right.path);
-            ContextGroup { root, files }
-        })
-        .collect()
 }
 
 /// a one-line summary for a skill file, from its frontmatter or first heading.
@@ -177,7 +231,16 @@ fn skill_summary(body: &str) -> String {
 /// skill directories that apply to a workspace, in the same precedence order.
 #[must_use]
 pub fn skills(workspace: &Path, cwd: Option<&Path>) -> Vec<SkillRef> {
-    skills_in(&context_roots(workspace, cwd))
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for scope in scopes_with(workspace, cwd) {
+        for skill in skills_in(&scope_roots(&scope)) {
+            if seen.insert(skill.name.clone()) {
+                out.push(skill);
+            }
+        }
+    }
+    out
 }
 
 /// the same, against explicit roots.
