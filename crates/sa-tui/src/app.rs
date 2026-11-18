@@ -86,7 +86,8 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
 
     let mut lines = vec!["Files loaded into context:".to_owned(), String::new()];
     if let Some(root) = root {
-        lines.push(root.label);
+        // the directory the tree hangs off, drawn as the folder it is.
+        lines.push(format!("\u{f07b} {}", root.label));
         render_tree(&root.children, "", &mut lines);
     }
     lines.push(String::new());

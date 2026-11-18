@@ -2625,7 +2625,10 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[0], "Files loaded into context:", "{text}");
     assert_eq!(lines[1], "", "a blank line before the tree");
-    assert_eq!(lines[2], "~", "the scope is the tree's head");
+    assert_eq!(
+        lines[2], "\u{f07b} ~",
+        "the scope is the tree's head, as a folder"
+    );
     assert_eq!(
         lines[3], "\u{251c}\u{2500} \u{f004} ~/a/SOUL.md (34 tokens)",
         "files hang off their scope, sorted, not in arrival order:\n{text}"
