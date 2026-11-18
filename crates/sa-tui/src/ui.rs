@@ -386,7 +386,7 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
 
     // the in-progress header rides the composer's top border, where the operator is
     // already looking, and vanishes with the turn.
-    if tab.status.turn_running {
+    if tab.status.turn_running && !tab.tool_running {
         if let Some(word) = &tab.working {
             block = block.title(
                 Line::from(format!(" {word}\u{2026} ")).style(Style::default().fg(app::ACCENT)),

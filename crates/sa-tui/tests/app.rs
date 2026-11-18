@@ -2321,3 +2321,45 @@ fn repeated_effort_levels_are_offered_once() {
         "a value repeated by the server is not offered twice"
     );
 }
+
+#[test]
+fn escape_reverts_the_view_at_once() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some("pondering".to_owned());
+    app.tab_mut().tool_running = true;
+
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Cancel);
+    assert!(!app.tab().status.turn_running, "the spinner stops at once");
+    assert!(app.tab().working.is_none(), "the header clears at once");
+    assert!(!app.tab().tool_running, "a running tool is not still shown");
+}
+
+#[test]
+fn the_working_label_hides_while_a_tool_runs() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some("pondering".to_owned());
+
+    let thinking = screen(&mut app, 100, 24);
+    assert!(thinking.contains("pondering"), "{thinking}");
+
+    // the model is not thinking, it is waiting for a command.
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "ls"}}),
+    );
+    let waiting = screen(&mut app, 100, 24);
+    assert!(
+        !waiting.contains("pondering"),
+        "the label hides:\n{waiting}"
+    );
+
+    app.tab_mut()
+        .on_event("tool.completed", &json!({"output": "ok", "exit_code": 0}));
+    let after = screen(&mut app, 100, 24);
+    assert!(
+        after.contains("pondering"),
+        "and comes back after it:\n{after}"
+    );
+}

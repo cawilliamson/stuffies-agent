@@ -229,6 +229,9 @@ pub struct Tab {
     /// the word in the in-progress header. cleared when the turn ends, which is what
     /// makes the header disappear.
     pub working: Option<String>,
+    /// a tool is executing right now. the model is not thinking, it is waiting, so the
+    /// in-progress header is hidden.
+    pub tool_running: bool,
     /// images queued for the next prompt.
     pub attachments: Vec<Attachment>,
     pub scroll: u16,
@@ -298,6 +301,7 @@ impl Tab {
                 ..Status::default()
             },
             working: None,
+            tool_running: false,
             attachments: Vec::new(),
             scroll_touched: None,
             scroll: 0,
@@ -726,6 +730,7 @@ impl Tab {
                 let args = summarise(&payload["args"]);
                 let mut entry = Entry::new(Role::Tool, args);
                 entry.tool = Some(tool.to_owned());
+                self.tool_running = true;
                 self.push_entry(entry);
             }
             "tool.completed" => {
@@ -736,9 +741,11 @@ impl Tab {
                     .and_then(|c| i32::try_from(c).ok());
                 let mut entry = Entry::new(Role::ToolOutput, output);
                 entry.exit_code = exit_code;
+                self.tool_running = false;
                 self.push_entry(entry);
             }
             "tool.failed" => {
+                self.tool_running = false;
                 let error = payload
                     .get("error")
                     .and_then(Value::as_str)
@@ -747,6 +754,7 @@ impl Tab {
             }
             "turn.completed" => {
                 self.status.turn_running = false;
+                self.tool_running = false;
                 self.working = None;
                 let reported = payload["usage"]["completion_tokens"].as_u64();
                 if live {
@@ -773,6 +781,7 @@ impl Tab {
             }
             "turn.interrupted" => {
                 self.status.turn_running = false;
+                self.tool_running = false;
                 self.working = None;
                 if live {
                     self.finish_message(now, None);
@@ -1399,7 +1408,14 @@ impl App {
                 tab.scrolled();
                 Action::None
             }
-            KeyCode::Esc => Action::Cancel,
+            KeyCode::Esc => {
+                let tab = self.tab_mut();
+                tab.status.turn_running = false;
+                tab.tool_running = false;
+                tab.working = None;
+                tab.touch();
+                Action::Cancel
+            }
             _ => {
                 self.tab_mut().edit(key);
                 self.refresh_attachments();

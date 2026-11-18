@@ -275,7 +275,13 @@ impl Agent {
                 )?;
 
                 let started = std::time::Instant::now();
-                match self.tools.execute(call.clone()).await {
+                // a cancelled turn drops the tool future, and a process tool is killed on
+                // drop, so escape stops a running command rather than waiting it out.
+                let Some(executed) = self.until_cancelled(self.tools.execute(call.clone())).await
+                else {
+                    return Err(AgentError::Cancelled);
+                };
+                match executed {
                     Ok(outcome) => {
                         let (output, truncated) = cap_tool_output(outcome.output);
                         self.sink.append(

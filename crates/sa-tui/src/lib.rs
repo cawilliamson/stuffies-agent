@@ -397,12 +397,10 @@ where
                 }
             }
             Action::Cancel => {
-                let tab = app.tab();
-                if tab.status.turn_running {
-                    let sid = tab.session.clone();
-                    let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
-                    app.tab_mut().push(app::Role::System, "interrupting");
-                }
+                // always sent: the view reverts on the key press, so a running turn is not
+                // visible from the flag any more.
+                let sid = app.tab().session.clone();
+                let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
             }
             Action::Submit(prompt) => {
                 let sid = app.tab().session.clone();
@@ -503,7 +501,11 @@ where
                         let text = if seen.is_empty() {
                             "no keys seen yet".to_owned()
                         } else {
-                            format!("keys the terminal delivered: {seen}")
+                            format!(
+                                "keys the terminal delivered: {seen} \u{00b7} shift+enter \
+                                 shows as SHIFT only when the terminal can report it; a bare \
+                                 enter means it cannot, and ctrl+j inserts a newline"
+                            )
                         };
                         app.tab_mut().push(app::Role::System, text);
                     }

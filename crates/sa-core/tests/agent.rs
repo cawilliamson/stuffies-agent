@@ -473,3 +473,81 @@ async fn a_steering_message_reaches_the_next_model_round_trip() {
             .collect::<Vec<_>>()
     );
 }
+
+/// a tool that never finishes on its own, like a long command.
+struct HangingTool;
+
+impl ToolExecutor for HangingTool {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![ToolSpec {
+            name: "read".to_owned(),
+            description: "read a file".to_owned(),
+            parameters: json!({"type": "object"}),
+        }]
+    }
+
+    fn execute(&self, _call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
+        Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            Ok(ToolOutcome {
+                output: "never".to_owned(),
+                exit_code: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn escape_abandons_a_running_tool_instead_of_waiting_for_it() {
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            Delta::ToolCall(ToolCall {
+                id: "c1".to_owned(),
+                name: "read".to_owned(),
+                arguments: "{}".to_owned(),
+            }),
+            Delta::Done {
+                stop_reason: "tool_calls".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ],
+        vec![
+            Delta::Text("done".to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ],
+    ]);
+    let sink = Arc::new(CancellingSink {
+        cancelled: std::sync::atomic::AtomicBool::new(false),
+    });
+    let agent = Agent::new(
+        Arc::new(provider) as Arc<dyn Provider>,
+        Arc::new(HangingTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let flag = Arc::clone(&sink);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        flag.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    let started = std::time::Instant::now();
+    let outcome =
+        tokio::time::timeout(std::time::Duration::from_secs(5), agent.run_turn(request())).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(outcome, Ok(Err(AgentError::Cancelled))),
+        "expected the turn to be cancelled, got {outcome:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "a hanging tool must be abandoned, not awaited: took {elapsed:?}"
+    );
+}
