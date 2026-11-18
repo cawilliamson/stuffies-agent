@@ -610,7 +610,7 @@ where
                     "/cancel" => {
                         let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
                     }
-                    "/cwd" | "/cd" if arg.is_empty() => {
+                    "/cwd" | "/cd" | "/pwd" if arg.is_empty() => {
                         let cwd = app.tab().cwd.clone();
                         app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
                     }
@@ -1326,7 +1326,7 @@ mod daemon_tests {
     fn help_lists_every_command() {
         for command in [
             "/cancel", "/cd", "/cost", "/cwd", "/effort", "/exit", "/help", "/keys", "/mcp",
-            "/model", "/new", "/resume",
+            "/model", "/new", "/pwd", "/resume",
         ] {
             assert!(
                 app::HELP_COMMANDS.contains(command),
@@ -1350,6 +1350,32 @@ mod daemon_tests {
         assert_eq!(turn_still_running(&finished), Some(false));
 
         assert_eq!(turn_still_running(&[]), None, "no turn at all");
+    }
+
+    #[tokio::test]
+    async fn pwd_answers_locally_and_starts_no_turn() {
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed("/pwd");
+        stream.push(press(crossterm::event::KeyCode::Enter));
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        assert!(
+            !seen.iter().any(|r| r["method"] == "turn.start"),
+            "/pwd prints, it does not prompt"
+        );
     }
 
     #[tokio::test]

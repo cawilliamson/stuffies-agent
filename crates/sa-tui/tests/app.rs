@@ -2665,3 +2665,25 @@ fn the_context_listing_is_shown_when_a_session_starts() {
         "{shown}"
     );
 }
+
+#[test]
+fn cd_offers_the_same_completion_as_cwd() {
+    let dir = std::env::temp_dir().join("sa-tui-cd-completion");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Projects")).expect("dirs");
+
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &format!("/cd {}/Pro", dir.display()));
+    assert_eq!(
+        app.tab().cwd_suggestions(),
+        [format!("{}/Projects/", dir.display())],
+        "the list appears for /cd as well"
+    );
+
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(
+        app.tab().input_text(),
+        format!("/cd {}/Projects/", dir.display()),
+        "and it completes without rewriting the command to /cwd"
+    );
+}

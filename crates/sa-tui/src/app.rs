@@ -78,6 +78,7 @@ fn with_thousands(value: u64) -> String {
 pub const HELP_COMMANDS: &str = "\
 /help — this list
 /cwd <dir> (alias /cd) — change the working directory; tab completes directories
+/pwd — print the working directory
 /effort [level] — show or set the reasoning effort; tab completes the levels
 /model <name> — switch the model for this tab
 /mcp — list the mcp servers and their tools
@@ -502,7 +503,13 @@ impl Tab {
         let Some(completed) = complete_dir_token(arg) else {
             return false;
         };
-        let new_text = format!("/cwd {completed}");
+        // the completion keeps whichever spelling the operator is using.
+        let command = if text.starts_with("/cd ") {
+            "/cd"
+        } else {
+            "/cwd"
+        };
+        let new_text = format!("{command} {completed}");
         self.set_input(&new_text);
         self.cursor_to_end();
         true
@@ -2129,6 +2136,7 @@ fn load_attachment(
 /// the argument of `/cwd`, when the composer holds that command.
 fn cwd_arg(text: &str) -> Option<&str> {
     text.strip_prefix("/cwd ")
+        .or_else(|| text.strip_prefix("/cd "))
 }
 
 /// completes `token` against the filesystem, keeping the form the operator typed so
