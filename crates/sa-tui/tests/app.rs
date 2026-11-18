@@ -2254,3 +2254,22 @@ fn messages_are_separated_by_a_blank_row() {
         "the gap belongs between frames"
     );
 }
+
+#[test]
+fn the_meter_shows_the_count_because_a_share_alone_never_moves() {
+    let mut app = App::new("session-abcdef", "big-model");
+    app.served.insert(
+        "big-model".to_owned(),
+        ServedModel {
+            context_limit: Some(1_048_576),
+            effort_levels: Vec::new(),
+        },
+    );
+    app.tab_mut().status.context_tokens = 918;
+
+    let status = status_row(&mut app, 160, 24);
+    assert!(
+        status.contains("918"),
+        "a short chat on a million-token window is 0%, so the count must show:\n{status}"
+    );
+}

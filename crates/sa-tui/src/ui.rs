@@ -259,11 +259,14 @@ fn context_meter(used: u64, limit: u64) -> (String, Color) {
     } else {
         app::OK
     };
+    // the count as well as the share: against a million-token window a real conversation
+    // sits at 0% for a long time, and a figure that never moves reads as broken.
     (
         format!(
-            "{}{} {pct:>3}%",
+            "{}{} {pct:>3}% {}",
             "\u{2588}".repeat(filled),
-            "\u{2591}".repeat(CELLS - filled)
+            "\u{2591}".repeat(CELLS - filled),
+            compact(used)
         ),
         ink,
     )
