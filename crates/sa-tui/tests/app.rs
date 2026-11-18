@@ -923,11 +923,11 @@ fn a_busy_tab_shows_a_spinner() {
     app.tab_mut().status.turn_running = true;
     app.spinner = 3;
     let screen = screen(&mut app, 100, 20);
-    // a braille frame sits beside the tab label.
+    // a star sits beside the tab label.
     assert!(
         screen
             .chars()
-            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            .any(|c| ('\u{2736}'..='\u{273a}').contains(&c)),
         "expected a busy marker on the tab:\n{screen}"
     );
 }
@@ -940,7 +940,7 @@ fn an_idle_tab_has_no_spinner() {
     assert!(
         !screen
             .chars()
-            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            .any(|c| ('\u{2736}'..='\u{273a}').contains(&c)),
         "no spinner when idle:\n{screen}"
     );
 }

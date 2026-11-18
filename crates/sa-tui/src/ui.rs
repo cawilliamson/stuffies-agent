@@ -102,11 +102,10 @@ pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-/// the busy marker on a tab: a braille cycle, which reads as work in progress without a
-/// solid glyph blinking on and off.
-const BUSY_DOT: [&str; 10] = [
-    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-    "\u{2807}", "\u{280f}",
+/// the busy marker on a tab: a star turning through its points, the way macos draws work
+/// in progress, rather than a solid glyph blinking on and off.
+const BUSY_FRAMES: [&str; 6] = [
+    "\u{2736}", "\u{2738}", "\u{2739}", "\u{273a}", "\u{2739}", "\u{2738}",
 ];
 
 /// shortens a tab label while keeping its trailing `(session)` marker intact, then cuts it
@@ -140,7 +139,7 @@ const TAB_LABEL_MAX: usize = 28;
 fn tab_text(app: &App, index: usize, cap: usize) -> String {
     let tab = &app.tabs[index];
     let mark = if tab.status.turn_running {
-        format!("{} ", BUSY_DOT[app.spinner % BUSY_DOT.len()])
+        format!("{} ", BUSY_FRAMES[app.spinner % BUSY_FRAMES.len()])
     } else {
         String::new()
     };
