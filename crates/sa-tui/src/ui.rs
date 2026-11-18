@@ -190,6 +190,44 @@ fn visible_tabs(widths: &[usize], active: usize, room: usize) -> (usize, usize) 
     (active, active + 1)
 }
 
+/// lists the directories that would complete the `/cwd` argument being typed.
+fn cwd_suggestions(frame: &mut Frame<'_>, above: Rect, app: &App) {
+    let items = app.tab().cwd_suggestions();
+    if items.is_empty() {
+        return;
+    }
+    let widest = items
+        .iter()
+        .map(|item| item.chars().count())
+        .max()
+        .unwrap_or_default();
+    let width = u16::try_from(widest + 4)
+        .unwrap_or(above.width)
+        .clamp(16, above.width);
+    let height = u16::try_from(items.len()).unwrap_or(1) + 2;
+    let rect = Rect {
+        x: above.x,
+        y: above.y.saturating_sub(height),
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(RULE))
+        .title(Line::from(" cwd ").style(Style::default().fg(app::DIM)));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let lines: Vec<Line<'static>> = items
+        .into_iter()
+        .map(|item| Line::from(Span::styled(item, Style::default().fg(app::INK))))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// the session tab strip. it slides to keep the active tab visible and marks that tabs are
 /// hidden on either side, the way a browser does.
 #[must_use]
@@ -592,6 +630,8 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
     transcript(frame, inner, app);
 
     let cursor = composer(frame, rows[2], app);
+    // the `/cwd` choices sit directly above the composer, where the operator is looking.
+    cwd_suggestions(frame, rows[2], app);
     frame.render_widget(Paragraph::new(status_bar(app, rows[3].width)), rows[3]);
     cursor
 }

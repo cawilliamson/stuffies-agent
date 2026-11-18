@@ -2386,3 +2386,54 @@ fn the_composer_grows_when_a_newline_is_added() {
         "the composer must grow to show the new line:\n{grown}"
     );
 }
+
+#[test]
+fn typing_a_cwd_argument_lists_every_directory_that_matches() {
+    let dir = std::env::temp_dir().join("sa-tui-cwd-list");
+    let _ = std::fs::remove_dir_all(&dir);
+    for name in ["android_device_phh_treble", "api", "beta"] {
+        std::fs::create_dir_all(dir.join(name)).expect("dirs");
+    }
+
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &format!("/cwd {}/a", dir.display()));
+
+    let listed = app.tab().cwd_suggestions();
+    assert_eq!(
+        listed,
+        [
+            format!("{}/android_device_phh_treble/", dir.display()),
+            format!("{}/api/", dir.display()),
+        ],
+        "every a* directory, in the form typed"
+    );
+
+    // and they are shown while typing, not only on tab.
+    let shown = screen(&mut app, 120, 24);
+    assert!(shown.contains("android_device_phh_treble"), "{shown}");
+    assert!(shown.contains("api"), "{shown}");
+    assert!(
+        !shown.contains("beta"),
+        "only matches are offered:\n{shown}"
+    );
+}
+
+#[test]
+fn a_cwd_prefix_that_matches_one_directory_still_completes_on_tab() {
+    let dir = std::env::temp_dir().join("sa-tui-cwd-single");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Projects")).expect("dirs");
+
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &format!("/cwd {}/Pro", dir.display()));
+    assert_eq!(
+        app.tab().cwd_suggestions(),
+        [format!("{}/Projects/", dir.display())]
+    );
+
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(
+        app.tab().input_text(),
+        format!("/cwd {}/Projects/", dir.display())
+    );
+}

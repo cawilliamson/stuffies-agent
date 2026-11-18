@@ -501,8 +501,8 @@ impl Tab {
         (lines, line, column)
     }
 
-    /// the completion offered for `/cwd`, drawn dimmed after the cursor. only at the end of
-    /// the line, where the operator is actually typing.
+    /// the completion offered for `/cwd`, drawn dimmed after the cursor. only when the
+    /// answer is unambiguous: otherwise [`Self::cwd_suggestions`] lists the choices.
     #[must_use]
     pub fn suggestion(&self) -> Option<String> {
         let text = self.input_text();
@@ -510,9 +510,28 @@ impl Tab {
             return None;
         }
         let arg = cwd_arg(&text)?;
-        let completed = complete_dir_token(arg)?;
-        let rest = completed.strip_prefix(arg)?.to_owned();
+        let matches = dir_matches(arg);
+        if matches.len() != 1 {
+            return None;
+        }
+        let rest = matches.first()?.strip_prefix(arg)?.to_owned();
         (!rest.is_empty()).then_some(rest)
+    }
+
+    /// the directories that could complete the `/cwd` argument being typed, in the form the
+    /// operator is using. this is the list shown while typing.
+    #[must_use]
+    pub fn cwd_suggestions(&self) -> Vec<String> {
+        let text = self.input_text();
+        if self.cursor_offset() != text.chars().count() {
+            return Vec::new();
+        }
+        let Some(arg) = cwd_arg(&text) else {
+            return Vec::new();
+        };
+        let mut matches = dir_matches(arg);
+        matches.truncate(CWD_SUGGESTION_LIMIT);
+        matches
     }
 
     /// whether the composer holds the `/cwd` command, whose argument is always a directory.
@@ -1981,6 +2000,36 @@ fn complete_token(token: &str, dirs_only: bool) -> Option<String> {
                 .then(|| format!("{shown_dir}{shared}"))
         }
     }
+}
+
+/// how many `/cwd` suggestions are listed at once.
+const CWD_SUGGESTION_LIMIT: usize = 8;
+
+/// every directory that matches the token being typed, in the form it was typed: `~/Proj`
+/// offers `~/Projects/`, not an absolute path.
+#[must_use]
+fn dir_matches(token: &str) -> Vec<String> {
+    let (shown_dir, prefix) = token
+        .rfind('/')
+        .map_or(("", token), |index| (&token[..=index], &token[index + 1..]));
+    let lookup = if shown_dir.is_empty() {
+        std::path::PathBuf::from(".")
+    } else {
+        std::path::PathBuf::from(expand_home(shown_dir))
+    };
+    let mut matches: Vec<String> = std::fs::read_dir(&lookup)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(prefix)
+                .then(|| format!("{shown_dir}{name}/"))
+        })
+        .collect();
+    matches.sort();
+    matches
 }
 
 /// the completion for a directory argument, which never offers a file.
