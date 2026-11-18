@@ -102,9 +102,12 @@ pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-/// the busy marker on a tab: a dot that brightens and dims, rather than a spinning
-/// character that draws the eye away from the text.
-const BUSY_DOT: [&str; 2] = ["\u{25cf}", "\u{25cb}"];
+/// the busy marker on a tab: a braille cycle, which reads as work in progress without a
+/// solid glyph blinking on and off.
+const BUSY_DOT: [&str; 10] = [
+    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2807}", "\u{280f}",
+];
 
 /// shortens a tab label while keeping its trailing `(session)` marker intact, then cuts it
 /// hard so the result never exceeds the budget.
@@ -188,13 +191,25 @@ fn visible_tabs(widths: &[usize], active: usize, room: usize) -> (usize, usize) 
     (active, active + 1)
 }
 
+/// the cells the working label occupies on the composer's top edge. the activity run starts
+/// after it rather than sweeping through the word.
+fn working_label_cells(tab: &app::Tab) -> u16 {
+    if tab.tool_running {
+        return 0;
+    }
+    tab.working.as_ref().map_or(0, |word| {
+        u16::try_from(word.chars().count() + 3).unwrap_or(0)
+    })
+}
+
 /// an indeterminate run sliding along the composer's top edge. it says that work is
 /// happening without pretending to know how much is left.
-fn activity_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.height == 0 || area.width < 10 {
+fn activity_bar(frame: &mut Frame<'_>, area: Rect, app: &App, skip: u16) {
+    let reserved = usize::from(skip);
+    if area.height == 0 || usize::from(area.width) < reserved + 10 {
         return;
     }
-    let track = usize::from(area.width).saturating_sub(2);
+    let track = usize::from(area.width).saturating_sub(2 + reserved);
     let run = (track / 4).clamp(4, 16);
     let travel = track + run;
     let offset = i64::try_from((app.spinner * 3) % travel).unwrap_or_default();
@@ -206,7 +221,7 @@ fn activity_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         if position < 0 || position >= track_length {
             continue;
         }
-        let x = area.x + 1 + u16::try_from(position).unwrap_or_default();
+        let x = area.x + 1 + skip + u16::try_from(position).unwrap_or_default();
         if let Some(cell) = buffer.cell_mut((x, area.y)) {
             cell.set_char('\u{2500}')
                 .set_style(Style::default().fg(app::ACCENT));
@@ -657,7 +672,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
     // work in progress reads as a moving bar along the composer's edge, the way a browser
     // shows an indeterminate load, rather than as a character spinning in place.
     if app.tab().status.turn_running {
-        activity_bar(frame, rows[2], app);
+        activity_bar(frame, rows[2], app, working_label_cells(app.tab()));
     }
     // the choices for the argument being typed sit directly above the composer, where the
     // operator is looking.

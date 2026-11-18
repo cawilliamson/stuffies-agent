@@ -808,34 +808,54 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
         tab.hydrated = true;
     }
 
-    if let Ok(replay) = rpc(
-        client,
-        "events.replay",
-        json!({"session_id": id, "from_seq": 0, "limit": 5000}),
-    )
-    .await
-    {
-        if let Some(events) = replay["events"].as_array() {
-            for event in events {
-                let kind = event["kind"].as_str().unwrap_or_default();
-                if let Some(tab) = app.tab_for(id) {
-                    // history, not generation: it must not touch the rate meter.
-                    tab.on_replay(kind, &event["payload"]);
-                }
+    // the whole history, not its first page: a long session runs past any single replay
+    // limit, and the turn state has to come from the last event written, not from
+    // wherever the window happened to stop reading.
+    let mut from_seq = 0;
+    let mut running = None;
+    loop {
+        let Ok(replay) = rpc(
+            client,
+            "events.replay",
+            json!({"session_id": id, "from_seq": from_seq, "limit": REPLAY_PAGE}),
+        )
+        .await
+        else {
+            break;
+        };
+        let Some(events) = replay["events"].as_array() else {
+            break;
+        };
+        for event in events {
+            let kind = event["kind"].as_str().unwrap_or_default();
+            match kind {
+                "turn.started" => running = Some(true),
+                "turn.completed" | "turn.interrupted" => running = Some(false),
+                _ => {}
             }
-            // work that was still going when this window went away is still going now, so
-            // the tab keeps showing that it is busy.
-            if let Some(running) = turn_still_running(events) {
-                if let Some(tab) = app.tab_for(id) {
-                    tab.status.turn_running = running;
-                    if running {
-                        tab.working.get_or_insert_with(|| "working".to_owned());
-                    } else {
-                        tab.working = None;
-                    }
-                    tab.touch();
-                }
+            if let Some(tab) = app.tab_for(id) {
+                // history, not generation: it must not touch the rate meter.
+                tab.on_replay(kind, &event["payload"]);
             }
+        }
+        let more = replay["more"].as_bool().unwrap_or(false);
+        let next = replay["next_seq"].as_u64().unwrap_or(from_seq);
+        if !more || next <= from_seq {
+            break;
+        }
+        from_seq = next;
+    }
+    // work that was still going when this window went away is still going now, so the tab
+    // keeps showing that it is busy.
+    if let Some(running) = running {
+        if let Some(tab) = app.tab_for(id) {
+            tab.status.turn_running = running;
+            if running {
+                tab.working.get_or_insert_with(|| "working".to_owned());
+            } else {
+                tab.working = None;
+            }
+            tab.touch();
         }
     }
     let _ = rpc(
@@ -846,17 +866,8 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
     .await;
 }
 
-/// whether the history ends with a turn still in flight. `none` when it holds no turn at all.
-fn turn_still_running(events: &[Value]) -> Option<bool> {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match event["kind"].as_str()? {
-            "turn.started" => Some(true),
-            "turn.completed" | "turn.interrupted" => Some(false),
-            _ => None,
-        })
-}
+/// how many events one replay page asks for.
+const REPLAY_PAGE: usize = 5000;
 
 /// brings the strip in line with the daemon: a session created anywhere becomes a tab, a
 /// deleted one loses its tab, and the window never ends up with no tabs at all.
@@ -996,22 +1007,44 @@ mod daemon_tests {
     fn daemon(
         replies: Vec<(&'static str, Value)>,
     ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
+        serve(replies, false)
+    }
+
+    /// a daemon that answers in the order it was given, so a method called twice can be
+    /// answered differently the second time.
+    fn daemon_ordered(
+        replies: Vec<(&'static str, Value)>,
+    ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
+        serve(replies, true)
+    }
+
+    fn serve(
+        replies: Vec<(&'static str, Value)>,
+        ordered: bool,
+    ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
         let (ours, theirs) = UnixStream::pair().expect("socketpair");
         let handle = tokio::spawn(async move {
             let (read, mut write) = theirs.into_split();
             let mut lines = BufReader::new(read).lines();
             let mut seen = Vec::new();
+            let mut served = 0usize;
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(request) = serde_json::from_str::<Value>(&line) else {
                     break;
                 };
                 seen.push(request.clone());
                 let method = request["method"].as_str().unwrap_or_default();
-                let result = replies
-                    .iter()
-                    .find(|(name, _)| *name == method)
-                    .map_or_else(|| json!({}), |(_, value)| value.clone());
-                let reply = json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
+                let result = if ordered {
+                    let reply = replies.get(served).map(|(_, value)| value.clone());
+                    served += 1;
+                    reply
+                } else {
+                    replies
+                        .iter()
+                        .find(|(name, _)| *name == method)
+                        .map(|(_, value)| value.clone())
+                };
+                let reply = json!({"jsonrpc": "2.0", "id": request["id"], "result": result.unwrap_or_else(|| json!({}))});
                 if write
                     .write_all(format!("{reply}\n").as_bytes())
                     .await
@@ -1356,21 +1389,52 @@ mod daemon_tests {
         }
     }
 
-    #[test]
-    fn a_turn_in_flight_is_recognised_in_a_replayed_history() {
-        let running = vec![
-            json!({"kind": "turn.started"}),
-            json!({"kind": "llm.delta"}),
-        ];
-        assert_eq!(turn_still_running(&running), Some(true));
+    #[tokio::test]
+    async fn a_long_history_is_paged_until_its_last_event() {
+        // the regression: the first replay page ended on a turn.started, so a session with
+        // more events than one page spun forever on a turn that had already finished.
+        let (mut client, server) = daemon_ordered(vec![
+            (
+                "events.replay",
+                json!({
+                    "events": [{"kind": "turn.started", "payload": {"prompt": "hi"}}],
+                    "more": true,
+                    "next_seq": 5000,
+                }),
+            ),
+            (
+                "events.replay",
+                json!({
+                    "events": [{"kind": "turn.completed", "payload": {"usage": {}}}],
+                    "more": false,
+                    "next_seq": 5001,
+                }),
+            ),
+            ("events.subscribe", json!({"subscription_id": 1})),
+        ]);
 
-        let finished = vec![
-            json!({"kind": "turn.started"}),
-            json!({"kind": "turn.completed"}),
-        ];
-        assert_eq!(turn_still_running(&finished), Some(false));
+        let mut app = App::new("s1", "m");
+        open_tab(
+            &mut client,
+            &mut app,
+            &session_row("s1", "/tmp"),
+            "fallback",
+        )
+        .await;
 
-        assert_eq!(turn_still_running(&[]), None, "no turn at all");
+        assert!(
+            !app.tab().status.turn_running,
+            "the turn finished on the last page, so the tab must not spin"
+        );
+        assert!(app.tab().working.is_none());
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let replays = seen
+            .iter()
+            .filter(|r| r["method"] == "events.replay")
+            .count();
+        assert_eq!(replays, 2, "the second page must be fetched");
     }
 
     #[tokio::test]

@@ -923,9 +923,11 @@ fn a_busy_tab_shows_a_spinner() {
     app.tab_mut().status.turn_running = true;
     app.spinner = 3;
     let screen = screen(&mut app, 100, 20);
-    // a busy dot sits beside the tab label.
+    // a braille frame sits beside the tab label.
     assert!(
-        screen.contains('\u{25cf}') || screen.contains('\u{25cb}'),
+        screen
+            .chars()
+            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
         "expected a busy marker on the tab:\n{screen}"
     );
 }
