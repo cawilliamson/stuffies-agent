@@ -1987,8 +1987,8 @@ fn the_meter_uses_the_window_the_model_advertises() {
 
     let status = status_row(&mut app, 160, 24);
     assert!(
-        status.contains("  9%"),
-        "90k of a 1m window is 9%, not the 70% a 128k guess produced:\n{status}"
+        status.contains("\u{2591} 9%"),
+        "90k of a 1m window is 9%, one space after the bar:\n{status}"
     );
 }
 
@@ -2256,7 +2256,7 @@ fn messages_are_separated_by_a_blank_row() {
 }
 
 #[test]
-fn the_meter_shows_the_count_because_a_share_alone_never_moves() {
+fn a_tiny_share_is_shown_to_a_tenth_so_the_meter_can_move() {
     let mut app = App::new("session-abcdef", "big-model");
     app.served.insert(
         "big-model".to_owned(),
@@ -2269,7 +2269,11 @@ fn the_meter_shows_the_count_because_a_share_alone_never_moves() {
 
     let status = status_row(&mut app, 160, 24);
     assert!(
-        status.contains("918"),
-        "a short chat on a million-token window is 0%, so the count must show:\n{status}"
+        status.contains("0.1%"),
+        "918 of a million is 0.1%, not a bare 0%:\n{status}"
+    );
+    assert!(
+        status.contains("\u{2591} 0.1%"),
+        "one space between the bar and the figure, no padding:\n{status}"
     );
 }

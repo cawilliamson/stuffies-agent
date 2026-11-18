@@ -259,14 +259,19 @@ fn context_meter(used: u64, limit: u64) -> (String, Color) {
     } else {
         app::OK
     };
-    // the count as well as the share: against a million-token window a real conversation
-    // sits at 0% for a long time, and a figure that never moves reads as broken.
+    // one space between the bar and the figure, no padding. below one percent the share is
+    // shown to a tenth, because a real conversation on a million-token window sits at a
+    // whole zero for a long time and a figure that never moves reads as broken.
+    let share = if pct >= 1 {
+        format!("{pct}%")
+    } else {
+        format!("{:.1}%", used as f64 * 100.0 / limit as f64)
+    };
     (
         format!(
-            "{}{} {pct:>3}% {}",
+            "{}{} {share}",
             "\u{2588}".repeat(filled),
-            "\u{2591}".repeat(CELLS - filled),
-            compact(used)
+            "\u{2591}".repeat(CELLS - filled)
         ),
         ink,
     )
