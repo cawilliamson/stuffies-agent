@@ -195,6 +195,8 @@ pub mod kinds {
     pub const SESSION_RENAMED: &str = "session.renamed";
     pub const SESSION_STATE: &str = "session.state";
     pub const SESSION_CWD: &str = "session.cwd";
+    /// the context files the session's working directory provides.
+    pub const CONTEXT_LOADED: &str = "context.loaded";
     pub const TURN_STARTED: &str = "turn.started";
     pub const TURN_COMPLETED: &str = "turn.completed";
     /// the context the model is holding, reported as each round-trip completes.

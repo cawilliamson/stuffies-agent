@@ -46,6 +46,13 @@ pub struct ContextFile {
     pub body: String,
 }
 
+/// a root that provides context, and the files under it, sorted.
+#[derive(Debug, Clone)]
+pub struct ContextGroup {
+    pub root: String,
+    pub files: Vec<String>,
+}
+
 /// a skill directory discovered on disk.
 #[derive(Debug, Clone)]
 pub struct SkillRef {
@@ -102,6 +109,45 @@ pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
         }
     }
     out
+}
+
+/// the context a directory provides, grouped by the root it came from and sorted, in the
+/// shape the operator is shown at the start of a session.
+#[must_use]
+pub fn context_listing(workspace: &Path, cwd: Option<&Path>) -> Vec<ContextGroup> {
+    let roots = context_roots(workspace, cwd);
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+
+    let mut record = |path: &Path| {
+        let Some(root) = roots
+            .iter()
+            .find(|root| path.starts_with(root))
+            .or_else(|| roots.iter().find(|root| path.starts_with(root.as_path())))
+        else {
+            return;
+        };
+        groups
+            .entry(root.display().to_string())
+            .or_default()
+            .push(path.display().to_string());
+    };
+
+    for file in context_files_in(&roots) {
+        record(&file.path);
+    }
+    for skill in skills_in(&roots) {
+        record(&skill.path);
+    }
+
+    groups
+        .into_iter()
+        .map(|(root, mut files)| {
+            files.sort();
+            files.dedup();
+            ContextGroup { root, files }
+        })
+        .collect()
 }
 
 /// a one-line summary for a skill file, from its frontmatter or first heading.

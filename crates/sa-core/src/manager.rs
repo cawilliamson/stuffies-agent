@@ -244,6 +244,10 @@ impl Manager {
             }),
         )?;
 
+        // what the model will be given for this directory, recorded so the operator can
+        // see it rather than guess.
+        let _ = self.announce_context(&id, &row.cwd);
+
         self.announce_sessions();
         Ok(CreateSessionResult {
             session_id: id,
@@ -374,7 +378,25 @@ impl Manager {
         let path = canonical.display().to_string();
         self.store.set_session_cwd(id, &path)?;
         self.append(id, kinds::SESSION_CWD, &json!({"cwd": path}))?;
+        // the directory changed, so what applies to it changed too.
+        let _ = self.announce_context(id, &path);
         Ok(path)
+    }
+
+    /// records which context files a working directory provides. this is the list the model
+    /// is given, so it is read from the same place the turn reads it.
+    fn announce_context(&self, session_id: &str, cwd: &str) -> Result<(), ManagerError> {
+        let groups: Vec<serde_json::Value> =
+            crate::workspace::context_listing(std::path::Path::new(cwd), None)
+                .into_iter()
+                .map(|group| json!({"root": group.root, "files": group.files}))
+                .collect();
+        self.append(
+            session_id,
+            kinds::CONTEXT_LOADED,
+            &json!({"cwd": cwd, "groups": groups}),
+        )?;
+        Ok(())
     }
 
     pub fn rename_session(&self, id: &str, title: &str) -> Result<(), ManagerError> {

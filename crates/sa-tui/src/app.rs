@@ -11,6 +11,36 @@ const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(240
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 const CHARS_PER_TOKEN: f32 = 4.0;
 
+/// the context a session was given, in the grouped shape pi-contexts prints: the root, then
+/// the files under it, home-shortened and sorted.
+#[must_use]
+pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let short = |path: &str| -> String {
+        match path.strip_prefix(&home) {
+            Some(rest) if !home.is_empty() => format!("~{rest}"),
+            _ => path.to_owned(),
+        }
+    };
+    if groups.is_empty() {
+        return format!("context: nothing loaded for {}", short(cwd));
+    }
+    let mut lines = vec![format!("context for {}", short(cwd))];
+    for group in groups {
+        let root = group["root"].as_str().unwrap_or_default();
+        lines.push(short(root));
+        let mut files: Vec<String> = group["files"]
+            .as_array()
+            .map(|files| files.iter().filter_map(Value::as_str).map(short).collect())
+            .unwrap_or_default();
+        files.sort();
+        for file in files {
+            lines.push(format!("  {file}"));
+        }
+    }
+    lines.join("\n")
+}
+
 /// every command the composer understands, with what it does.
 pub const HELP_COMMANDS: &str = "\
 /help — this list
@@ -887,6 +917,11 @@ impl Tab {
                     self.status.context_limit = context["limit"].as_u64().unwrap_or(0);
                 }
                 self.touch();
+            }
+            "context.loaded" => {
+                let cwd = payload["cwd"].as_str().unwrap_or_default();
+                let groups = payload["groups"].as_array().cloned().unwrap_or_default();
+                self.push(Role::System, context_summary(cwd, &groups));
             }
             "turn.context" => {
                 if let Some(tokens) = payload["tokens"].as_u64() {

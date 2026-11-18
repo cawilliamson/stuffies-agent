@@ -2607,3 +2607,45 @@ fn a_busy_tab_animates_the_composer_edge() {
         "the loading run must be drawn on the composer edge"
     );
 }
+
+#[test]
+fn the_context_listing_is_grouped_by_root_and_sorted() {
+    let home = std::env::var("HOME").expect("home");
+    let groups = json!([
+        {"root": home, "files": [
+            format!("{home}/b/AGENTS.md"),
+            format!("{home}/a/SOUL.md"),
+        ]},
+        {"root": format!("{home}/.dotfiles"), "files": [
+            format!("{home}/.dotfiles/AGENTS.md"),
+        ]},
+    ]);
+    let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
+
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "context for ~", "{text}");
+    assert_eq!(lines[1], "~", "{text}");
+    assert_eq!(
+        lines[2], "  ~/a/SOUL.md",
+        "files are sorted, not in arrival order:\n{text}"
+    );
+    assert_eq!(lines[3], "  ~/b/AGENTS.md", "{text}");
+    assert_eq!(lines[4], "~/.dotfiles", "{text}");
+    assert_eq!(lines[5], "  ~/.dotfiles/AGENTS.md", "{text}");
+}
+
+#[test]
+fn the_context_listing_is_shown_when_a_session_starts() {
+    let home = std::env::var("HOME").expect("home");
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().on_replay(
+        "context.loaded",
+        &json!({
+            "cwd": home,
+            "groups": [{"root": home, "files": [format!("{home}/AGENTS.md")]}],
+        }),
+    );
+    let shown = screen(&mut app, 100, 24);
+    assert!(shown.contains("context for ~"), "{shown}");
+    assert!(shown.contains("~/AGENTS.md"), "{shown}");
+}

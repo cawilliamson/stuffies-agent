@@ -189,3 +189,84 @@ fn auxiliary_calls_take_the_least_effort_the_model_offers() {
         "with nothing known, the server's own default applies"
     );
 }
+
+#[test]
+fn a_new_session_records_which_context_files_its_directory_provides() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("AGENTS.md"), "be brief").expect("write");
+    std::fs::write(dir.path().join("SOUL.md"), "be dry").expect("write");
+    let manager = manager(dir.path(), vec![model("big", Some(1_000_000), &[])]);
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+
+    let (events, _) = manager
+        .store()
+        .events_since(&session, 0, 1000)
+        .expect("events");
+    let loaded = events
+        .iter()
+        .find(|event| event.kind == sa_proto::session::kinds::CONTEXT_LOADED)
+        .expect("the session must say what it loaded");
+    let groups = loaded.payload["groups"].as_array().expect("groups");
+    let files: Vec<&str> = groups
+        .iter()
+        .flat_map(|group| group["files"].as_array().expect("files"))
+        .filter_map(|file| file.as_str())
+        .collect();
+    assert!(
+        files.iter().any(|file| file.ends_with("SOUL.md")),
+        "soul must be listed: {files:?}"
+    );
+    assert!(
+        files.iter().any(|file| file.ends_with("AGENTS.md")),
+        "agents must be listed: {files:?}"
+    );
+    assert_eq!(
+        loaded.payload["cwd"].as_str(),
+        Some(dir.path().to_str().expect("utf8")),
+        "the list belongs to the directory it came from"
+    );
+}
+
+#[test]
+fn changing_directory_records_the_context_for_the_new_one() {
+    let first = tempfile::tempdir().expect("tempdir");
+    let second = tempfile::tempdir().expect("tempdir");
+    std::fs::write(first.path().join("AGENTS.md"), "first").expect("write");
+    std::fs::write(second.path().join("RULES.md"), "second").expect("write");
+    let manager = manager(first.path(), vec![model("big", Some(1_000_000), &[])]);
+    let session = manager
+        .create_session(first.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+
+    manager
+        .set_cwd(&session, second.path().to_str().expect("utf8"))
+        .expect("cwd");
+
+    let (events, _) = manager
+        .store()
+        .events_since(&session, 0, 1000)
+        .expect("events");
+    let last = events
+        .iter()
+        .rfind(|event| event.kind == sa_proto::session::kinds::CONTEXT_LOADED)
+        .expect("a second listing");
+    let files: Vec<&str> = last.payload["groups"]
+        .as_array()
+        .expect("groups")
+        .iter()
+        .flat_map(|group| group["files"].as_array().expect("files"))
+        .filter_map(|file| file.as_str())
+        .collect();
+    assert!(
+        files.iter().any(|file| file.ends_with("RULES.md")),
+        "the new directory's files: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|file| file.ends_with("AGENTS.md")),
+        "the old directory's files must not carry over: {files:?}"
+    );
+}

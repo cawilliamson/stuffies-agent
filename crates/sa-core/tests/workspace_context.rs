@@ -103,3 +103,25 @@ fn reading_context_writes_nothing_into_the_workspace() {
     after.sort();
     assert_eq!(before, after, "context loading must not create anything");
 }
+
+#[test]
+fn the_listing_groups_by_root_and_sorts_files_and_skills() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("SOUL.md"), "soul").expect("write");
+    std::fs::write(root.join("AGENTS.md"), "agents").expect("write");
+    std::fs::create_dir_all(root.join("skills/ponytail")).expect("dirs");
+    std::fs::write(root.join("skills/ponytail/SKILL.md"), "# ponytail").expect("write");
+
+    let groups = sa_core::workspace::context_listing(root, None);
+    assert_eq!(groups.len(), 1, "one root provided everything: {groups:?}");
+    assert_eq!(groups[0].root, root.display().to_string());
+
+    let names: Vec<String> = groups[0]
+        .files
+        .iter()
+        .filter_map(|file| file.rsplit('/').next().map(str::to_owned))
+        .collect();
+    // plain path order, which is what "sorted" means for a list of paths.
+    assert_eq!(names, ["AGENTS.md", "SOUL.md", "SKILL.md"], "sorted");
+}
