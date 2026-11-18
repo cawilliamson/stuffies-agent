@@ -3273,6 +3273,7 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "sa-client",
+ "sa-proto",
  "serde_json",
  "tokio",
 ]

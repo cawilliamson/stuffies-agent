@@ -120,8 +120,15 @@ fn the_listing_groups_by_root_and_sorts_files_and_skills() {
     let names: Vec<String> = groups[0]
         .files
         .iter()
-        .filter_map(|file| file.rsplit('/').next().map(str::to_owned))
+        .filter_map(|file| file.path.rsplit('/').next().map(str::to_owned))
         .collect();
     // plain path order, which is what "sorted" means for a list of paths.
     assert_eq!(names, ["AGENTS.md", "SOUL.md", "SKILL.md"], "sorted");
+    // the count sits beside the file, and is a real estimate of what it adds.
+    let agents = groups[0]
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("AGENTS.md"))
+        .expect("agents");
+    assert!(agents.tokens > 0, "a file with a body costs tokens");
 }

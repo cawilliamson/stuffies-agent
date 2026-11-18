@@ -213,7 +213,7 @@ fn a_new_session_records_which_context_files_its_directory_provides() {
     let files: Vec<&str> = groups
         .iter()
         .flat_map(|group| group["files"].as_array().expect("files"))
-        .filter_map(|file| file.as_str())
+        .filter_map(|file| file["path"].as_str())
         .collect();
     assert!(
         files.iter().any(|file| file.ends_with("SOUL.md")),
@@ -259,7 +259,7 @@ fn changing_directory_records_the_context_for_the_new_one() {
         .expect("groups")
         .iter()
         .flat_map(|group| group["files"].as_array().expect("files"))
-        .filter_map(|file| file.as_str())
+        .filter_map(|file| file["path"].as_str())
         .collect();
     assert!(
         files.iter().any(|file| file.ends_with("RULES.md")),

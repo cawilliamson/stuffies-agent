@@ -2613,11 +2613,11 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     let home = std::env::var("HOME").expect("home");
     let groups = json!([
         {"root": home, "files": [
-            format!("{home}/b/AGENTS.md"),
-            format!("{home}/a/SOUL.md"),
+            {"path": format!("{home}/b/AGENTS.md"), "tokens": 12},
+            {"path": format!("{home}/a/SOUL.md"), "tokens": 34},
         ]},
         {"root": format!("{home}/.dotfiles"), "files": [
-            format!("{home}/.dotfiles/AGENTS.md"),
+            {"path": format!("{home}/.dotfiles/AGENTS.md"), "tokens": 5},
         ]},
     ]);
     let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
@@ -2626,12 +2626,12 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     assert_eq!(lines[0], "context for ~", "{text}");
     assert_eq!(lines[1], "~", "{text}");
     assert_eq!(
-        lines[2], "  ~/a/SOUL.md",
+        lines[2], "  ~/a/SOUL.md (34 tokens)",
         "files are sorted, not in arrival order:\n{text}"
     );
-    assert_eq!(lines[3], "  ~/b/AGENTS.md", "{text}");
+    assert_eq!(lines[3], "  ~/b/AGENTS.md (12 tokens)", "{text}");
     assert_eq!(lines[4], "~/.dotfiles", "{text}");
-    assert_eq!(lines[5], "  ~/.dotfiles/AGENTS.md", "{text}");
+    assert_eq!(lines[5], "  ~/.dotfiles/AGENTS.md (5 tokens)", "{text}");
 }
 
 #[test]
@@ -2642,10 +2642,12 @@ fn the_context_listing_is_shown_when_a_session_starts() {
         "context.loaded",
         &json!({
             "cwd": home,
-            "groups": [{"root": home, "files": [format!("{home}/AGENTS.md")]}],
+            "groups": [{"root": home, "files": [
+                {"path": format!("{home}/AGENTS.md"), "tokens": 9},
+            ]}],
         }),
     );
     let shown = screen(&mut app, 100, 24);
     assert!(shown.contains("context for ~"), "{shown}");
-    assert!(shown.contains("~/AGENTS.md"), "{shown}");
+    assert!(shown.contains("~/AGENTS.md (9 tokens)"), "{shown}");
 }

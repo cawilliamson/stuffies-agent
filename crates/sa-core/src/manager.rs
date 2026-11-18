@@ -389,7 +389,14 @@ impl Manager {
         let groups: Vec<serde_json::Value> =
             crate::workspace::context_listing(std::path::Path::new(cwd), None)
                 .into_iter()
-                .map(|group| json!({"root": group.root, "files": group.files}))
+                .map(|group| {
+                    let files: Vec<serde_json::Value> = group
+                        .files
+                        .iter()
+                        .map(|file| json!({"path": file.path, "tokens": file.tokens}))
+                        .collect();
+                    json!({"root": group.root, "files": files})
+                })
                 .collect();
         self.append(
             session_id,

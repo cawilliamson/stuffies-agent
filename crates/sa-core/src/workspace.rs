@@ -46,11 +46,18 @@ pub struct ContextFile {
     pub body: String,
 }
 
+/// one file in a context listing, with what it adds to the prompt.
+#[derive(Debug, Clone)]
+pub struct ContextListing {
+    pub path: String,
+    pub tokens: u64,
+}
+
 /// a root that provides context, and the files under it, sorted.
 #[derive(Debug, Clone)]
 pub struct ContextGroup {
     pub root: String,
-    pub files: Vec<String>,
+    pub files: Vec<ContextListing>,
 }
 
 /// a skill directory discovered on disk.
@@ -116,35 +123,35 @@ pub fn context_files_in(roots: &[PathBuf]) -> Vec<ContextFile> {
 #[must_use]
 pub fn context_listing(workspace: &Path, cwd: Option<&Path>) -> Vec<ContextGroup> {
     let roots = context_roots(workspace, cwd);
-    let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+    let mut groups: std::collections::BTreeMap<String, Vec<ContextListing>> =
         std::collections::BTreeMap::new();
 
-    let mut record = |path: &Path| {
-        let Some(root) = roots
-            .iter()
-            .find(|root| path.starts_with(root))
-            .or_else(|| roots.iter().find(|root| path.starts_with(root.as_path())))
-        else {
+    let mut record = |path: &Path, body: &str| {
+        let Some(root) = roots.iter().find(|root| path.starts_with(root)) else {
             return;
         };
         groups
             .entry(root.display().to_string())
             .or_default()
-            .push(path.display().to_string());
+            .push(ContextListing {
+                path: path.display().to_string(),
+                tokens: crate::tokens::estimate_rounded(body),
+            });
     };
 
     for file in context_files_in(&roots) {
-        record(&file.path);
+        record(&file.path, &file.body);
     }
     for skill in skills_in(&roots) {
-        record(&skill.path);
+        let body = std::fs::read_to_string(&skill.path).unwrap_or_default();
+        record(&skill.path, &body);
     }
 
     groups
         .into_iter()
         .map(|(root, mut files)| {
-            files.sort();
-            files.dedup();
+            files.sort_by(|left, right| left.path.cmp(&right.path));
+            files.dedup_by(|left, right| left.path == right.path);
             ContextGroup { root, files }
         })
         .collect()

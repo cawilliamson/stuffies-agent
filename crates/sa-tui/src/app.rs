@@ -9,7 +9,6 @@ use serde_json::Value;
 const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
-const CHARS_PER_TOKEN: f32 = 4.0;
 
 /// the context a session was given, in the grouped shape pi-contexts prints: the root, then
 /// the files under it, home-shortened and sorted.
@@ -29,13 +28,20 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
     for group in groups {
         let root = group["root"].as_str().unwrap_or_default();
         lines.push(short(root));
-        let mut files: Vec<String> = group["files"]
+        let mut files: Vec<(String, u64)> = group["files"]
             .as_array()
-            .map(|files| files.iter().filter_map(Value::as_str).map(short).collect())
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|file| {
+                        Some((short(file["path"].as_str()?), file["tokens"].as_u64()?))
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         files.sort();
-        for file in files {
-            lines.push(format!("  {file}"));
+        for (file, tokens) in files {
+            lines.push(format!("  {file} ({tokens} tokens)"));
         }
     }
     lines.join("\n")
@@ -55,29 +61,6 @@ pub const HELP_COMMANDS: &str = "\
 /resume — reopen a session that was closed
 /exit — quit";
 
-/// the tokens a delta is worth, estimated from the text: full-width scripts are about one
-/// token per character, everything else about four characters to the token. this is the
-/// estimate pi-open-tui uses, and it is what makes the meter move at a believable rate.
-fn estimate_tokens(text: &str) -> f32 {
-    let mut wide = 0.0;
-    let mut narrow = 0.0;
-    for character in text.chars() {
-        if is_full_width(character) {
-            wide += 1.0;
-        } else {
-            narrow += 1.0;
-        }
-    }
-    wide + narrow / CHARS_PER_TOKEN
-}
-
-/// whether a character is from a script that tokenises near one token per character.
-fn is_full_width(character: char) -> bool {
-    matches!(
-        u32::from(character),
-        0x3040..=0x30ff | 0x3400..=0x9fff | 0xac00..=0xd7af | 0xf900..=0xfaff | 0xff00..=0xffef
-    )
-}
 /// a gap between text deltas longer than this is a stall, not generation: the clock stops
 /// for it, so thinking and tool time never dilute the figure.
 const STALL_GAP: std::time::Duration = std::time::Duration::from_secs(2);
@@ -670,7 +653,7 @@ impl Tab {
     /// the only events that advance the count or the clock: silence, tools and replays are
     /// not generation.
     fn note_delta(&mut self, text: &str, now: std::time::Instant) {
-        let tokens = estimate_tokens(text);
+        let tokens = sa_proto::tokens::estimate(text);
         if tokens <= 0.0 {
             return;
         }

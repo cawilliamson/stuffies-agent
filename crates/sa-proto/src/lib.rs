@@ -6,6 +6,7 @@
 pub mod error;
 pub mod rpc;
 pub mod session;
+pub mod tokens;
 
 /// maximum length of a single newline-delimited frame, excluding the newline.
 ///

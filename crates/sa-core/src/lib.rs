@@ -9,5 +9,6 @@ pub mod manager;
 pub mod mcp;
 pub mod peer;
 pub mod store;
+pub use sa_proto::tokens;
 pub mod tools;
 pub mod workspace;
