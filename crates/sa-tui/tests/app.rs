@@ -2363,3 +2363,26 @@ fn the_working_label_hides_while_a_tool_runs() {
         "and comes back after it:\n{after}"
     );
 }
+
+#[test]
+fn the_composer_grows_when_a_newline_is_added() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "one line");
+
+    let single = screen(&mut app, 80, 24);
+    assert!(single.contains("one line"), "{single}");
+    assert!(!single.contains("second"), "not typed yet:\n{single}");
+
+    app.on_key(shift_enter());
+    typed(&mut app, "second");
+    let (lines, _, _) = app.tab().input_lines();
+    assert_eq!(lines.len(), 2, "the newline is in the composer");
+
+    // the box grows to show both lines: the second is only visible if it does.
+    let grown = screen(&mut app, 80, 24);
+    assert!(grown.contains("one line"), "{grown}");
+    assert!(
+        grown.contains("second"),
+        "the composer must grow to show the new line:\n{grown}"
+    );
+}
