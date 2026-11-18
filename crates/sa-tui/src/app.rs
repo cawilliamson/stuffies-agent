@@ -1,14 +1,39 @@
 //! the tui state machine, independent of any terminal so it can be tested.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+/// the trailing window the live rate is measured over, so it tracks current speed.
+const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 const CHARS_PER_TOKEN: f32 = 4.0;
+
+/// the tokens a delta is worth, estimated from the text: full-width scripts are about one
+/// token per character, everything else about four characters to the token. this is the
+/// estimate pi-open-tui uses, and it is what makes the meter move at a believable rate.
+fn estimate_tokens(text: &str) -> f32 {
+    let mut wide = 0.0;
+    let mut narrow = 0.0;
+    for character in text.chars() {
+        if is_full_width(character) {
+            wide += 1.0;
+        } else {
+            narrow += 1.0;
+        }
+    }
+    wide + narrow / CHARS_PER_TOKEN
+}
+
+/// whether a character is from a script that tokenises near one token per character.
+fn is_full_width(character: char) -> bool {
+    matches!(
+        u32::from(character),
+        0x3040..=0x30ff | 0x3400..=0x9fff | 0xac00..=0xd7af | 0xf900..=0xfaff | 0xff00..=0xffef
+    )
+}
 /// a gap between text deltas longer than this is a stall, not generation: the clock stops
 /// for it, so thinking and tool time never dilute the figure.
 const STALL_GAP: std::time::Duration = std::time::Duration::from_secs(2);
@@ -241,9 +266,9 @@ pub struct Tab {
     pub follow: bool,
     pub tok_per_sec: f32,
     pub flash_highlight: bool,
-    samples: std::collections::VecDeque<(std::time::Instant, usize)>,
+    samples: std::collections::VecDeque<(std::time::Instant, f32)>,
     /// text characters seen in this turn. reasoning and tool output are not counted.
-    stream_chars: usize,
+    stream_tokens: f32,
     /// time actually spent streaming text, with every stall capped out of it.
     stream_elapsed: std::time::Duration,
     /// when the previous text delta arrived, so the next one can measure the gap.
@@ -310,7 +335,7 @@ impl Tab {
             tok_per_sec: 0.0,
             flash_highlight: false,
             samples: std::collections::VecDeque::new(),
-            stream_chars: 0,
+            stream_tokens: 0.0,
             stream_elapsed: std::time::Duration::ZERO,
             last_delta: None,
             streaming: false,
@@ -559,8 +584,8 @@ impl Tab {
     /// the only events that advance the count or the clock: silence, tools and replays are
     /// not generation.
     fn note_delta(&mut self, text: &str, now: std::time::Instant) {
-        let chars = text.chars().count();
-        if chars == 0 {
+        let tokens = estimate_tokens(text);
+        if tokens <= 0.0 {
             return;
         }
         if let Some(last) = self.last_delta {
@@ -569,8 +594,18 @@ impl Tab {
         }
         self.last_delta = Some(now);
         self.streaming = true;
-        self.stream_chars += chars;
-        self.samples.push_back((now, chars));
+        self.stream_tokens += tokens;
+        // cumulative samples, so the window's rate is the difference across it. one sample
+        // before the window is kept as the baseline, exactly as pi-open-tui does.
+        self.samples.push_back((now, self.stream_tokens));
+        while self.samples.len() > 2
+            && self
+                .samples
+                .get(1)
+                .is_some_and(|(at, _)| now.saturating_duration_since(*at) >= RATE_WINDOW)
+        {
+            self.samples.pop_front();
+        }
     }
 
     /// closes a streaming run, counting the trailing interval but capping it like any other
@@ -586,14 +621,14 @@ impl Tab {
 
     fn finish_message(&mut self, now: std::time::Instant, reported_tokens: Option<u64>) {
         self.end_stream(now);
-        let chars = self.stream_chars;
+        let estimated = self.stream_tokens;
         let elapsed = self.stream_elapsed;
         self.samples.clear();
         self.streaming = false;
-        self.stream_chars = 0;
+        self.stream_tokens = 0.0;
         self.stream_elapsed = std::time::Duration::ZERO;
 
-        if chars == 0 || elapsed.is_zero() {
+        if estimated <= 0.0 || elapsed.is_zero() {
             self.flash = None;
             self.flash_highlight = false;
             self.tok_per_sec = 0.0;
@@ -602,7 +637,7 @@ impl Tab {
         }
         // the provider counts every token it emitted, reasoning included, and the clock
         // measures all of that time, so its figure is exact when it gives one.
-        let tokens = reported_tokens.map_or(chars as f32 / CHARS_PER_TOKEN, |tokens| tokens as f32);
+        let tokens = reported_tokens.map_or(estimated, |tokens| tokens as f32);
         let average = tokens / elapsed.as_secs_f32().max(MIN_SPAN.as_secs_f32());
         self.flash = Some((average, now));
         self.tok_per_sec = average;
@@ -647,32 +682,36 @@ impl Tab {
             }
         } else {
             self.flash_highlight = false;
-            if self.streaming {
-                while let Some((at, _)) = self.samples.front() {
-                    if now.duration_since(*at) > RATE_WINDOW {
-                        self.samples.pop_front();
-                    } else {
-                        break;
-                    }
+            if !self.streaming {
+                // between messages: a tool or a quiet moment is not generation, so the last
+                // measured rate stands rather than decaying to zero.
+                if self.tok_per_sec <= 0.0 {
+                    self.tok_per_sec = self.frozen.unwrap_or(0.0);
                 }
+                return;
             }
-            if !self.streaming || self.samples.is_empty() {
-                // nothing is arriving: a delay is not generation, so the figure holds
-                // rather than decaying to zero.
-                if self.tok_per_sec > 0.0 {
-                    return;
-                }
+            let (Some(&(last_at, last_tokens)), Some(&(first_at, first_tokens))) =
+                (self.samples.back(), self.samples.front())
+            else {
+                self.tok_per_sec = self.frozen.unwrap_or(0.0);
+                return;
+            };
+            if self.samples.len() < 2 {
                 self.tok_per_sec = self.frozen.unwrap_or(0.0);
                 return;
             }
-            let chars: usize = self.samples.iter().map(|(_, n)| n).sum();
-            let span = self
-                .samples
-                .front()
-                .map_or(0.0, |(at, _)| now.duration_since(*at).as_secs_f32())
-                .max(MIN_SPAN.as_secs_f32())
-                .min(RATE_WINDOW.as_secs_f32());
-            self.tok_per_sec = (chars as f32 / CHARS_PER_TOKEN) / span;
+            if now.saturating_duration_since(last_at) >= RATE_WINDOW {
+                // nothing has arrived for a whole window: the rate is zero, not a stale
+                // figure that keeps flattering the meter.
+                self.tok_per_sec = 0.0;
+            } else {
+                let span = now
+                    .saturating_duration_since(first_at)
+                    .as_secs_f32()
+                    .max(MIN_SPAN.as_secs_f32())
+                    .min(RATE_WINDOW.as_secs_f32());
+                self.tok_per_sec = (last_tokens - first_tokens) / span;
+            }
         }
 
         // only dirty the frame when the displayed figure actually changes.
@@ -831,7 +870,7 @@ impl Tab {
                 // a figure that belongs to what is happening now.
                 if live {
                     self.status.turn_running = true;
-                    self.stream_chars = 0;
+                    self.stream_tokens = 0.0;
                     self.stream_elapsed = std::time::Duration::ZERO;
                     self.last_delta = None;
                     self.streaming = false;
@@ -1062,6 +1101,10 @@ pub struct App {
     /// cannot report shift+enter sends a plain enter, and this is how that is told apart
     /// from a key we mishandle.
     pub recent_keys: std::collections::VecDeque<String>,
+    /// whether the shift key is physically down, as reported by the terminal. a terminal that
+    /// cannot put shift+enter in a key event still reports the shift key itself, and a bare
+    /// enter arriving while it is held is a shift+enter.
+    pub shift_held: bool,
     /// what the endpoint says about each model it serves. a model absent here has no
     /// known window or effort list, and is not given guessed ones.
     pub served: std::collections::HashMap<String, ServedModel>,
@@ -1080,6 +1123,7 @@ impl App {
             confirm: None,
             image_picker: None,
             recent_keys: std::collections::VecDeque::new(),
+            shift_held: false,
             served: std::collections::HashMap::new(),
         }
     }
@@ -1343,11 +1387,29 @@ impl App {
             return self.on_picker_key(key);
         }
 
+        // the terminal reports the shift key on its own, so its state is known even when it
+        // cannot put the modifier in the enter event.
+        if let KeyCode::Modifier(modifier) = key.code {
+            if matches!(
+                modifier,
+                ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift
+            ) {
+                self.shift_held = key.kind != KeyEventKind::Release;
+            }
+            return Action::None;
+        }
+        // a release carries no new intent, and acting on one would type every key twice.
+        if key.kind == KeyEventKind::Release {
+            return Action::None;
+        }
+
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // a newline without sending. alt is the alias for terminals that cannot tell
-        // shift+enter from enter.
-        let newline = shift || key.modifiers.contains(KeyModifiers::ALT);
+        // shift+enter from enter, and so is a bare enter while shift is held.
+        let newline = shift
+            || key.modifiers.contains(KeyModifiers::ALT)
+            || (self.shift_held && matches!(key.code, KeyCode::Enter | KeyCode::Char('\r')));
 
         if ctrl {
             return match key.code {

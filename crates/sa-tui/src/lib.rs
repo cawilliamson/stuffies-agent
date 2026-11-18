@@ -498,13 +498,15 @@ where
                             .cloned()
                             .collect::<Vec<_>>()
                             .join(" · ");
+                        let held = if app.shift_held { "down" } else { "up" };
                         let text = if seen.is_empty() {
                             "no keys seen yet".to_owned()
                         } else {
                             format!(
-                                "keys the terminal delivered: {seen} \u{00b7} shift+enter \
-                                 shows as SHIFT only when the terminal can report it; a bare \
-                                 enter means it cannot, and ctrl+j inserts a newline"
+                                "keys the terminal delivered: {seen} \u{00b7} shift is {held} \
+                                 \u{00b7} shift+enter shows as SHIFT when the terminal can \
+                                 report it, and a bare enter while shift is down still makes \
+                                 a new line; ctrl+j always does"
                             )
                         };
                         app.tab_mut().push(app::Role::System, text);

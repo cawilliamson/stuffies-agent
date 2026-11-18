@@ -1,7 +1,7 @@
 //! the tabbed tui: key handling, tab lifecycle, transcript framing and rate accounting.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use sa_tui::app::{transcript_lines, Action, App, PickerItem, PickerKind, Role, ServedModel};
@@ -795,7 +795,13 @@ fn the_rate_freezes_while_a_tool_runs() {
         .on_event_at("turn.started", &json!({"prompt": "go"}), t0);
     app.tab_mut()
         .on_event_at("llm.delta", &json!({"text": "x".repeat(400)}), t0);
-    app.tab_mut().tick_at(t0 + Duration::from_millis(100));
+    // a rate needs two samples: one delta alone has no span to measure over.
+    app.tab_mut().on_event_at(
+        "llm.delta",
+        &json!({"text": "x".repeat(400)}),
+        t0 + Duration::from_millis(200),
+    );
+    app.tab_mut().tick_at(t0 + Duration::from_millis(300));
     let live = app.tab().tok_per_sec;
     assert!(live > 0.0, "a live rate first");
 
@@ -2435,5 +2441,103 @@ fn a_cwd_prefix_that_matches_one_directory_still_completes_on_tab() {
     assert_eq!(
         app.tab().input_text(),
         format!("/cwd {}/Projects/", dir.display())
+    );
+}
+
+/// a terminal that sends a bare enter for shift+enter still reports the shift key itself.
+#[test]
+fn a_bare_enter_while_shift_is_held_makes_a_new_line() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "one");
+
+    let shift = |kind| {
+        KeyEvent::new_with_kind(
+            KeyCode::Modifier(ModifierKeyCode::LeftShift),
+            KeyModifiers::SHIFT,
+            kind,
+        )
+    };
+
+    // shift goes down, then the terminal sends a plain enter.
+    app.on_key(shift(KeyEventKind::Press));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::None,
+        "enter while shift is held must not send"
+    );
+    typed(&mut app, "two");
+    assert_eq!(app.tab().input_text(), "one\ntwo");
+
+    // shift goes up: enter sends again.
+    app.on_key(shift(KeyEventKind::Release));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit("one\ntwo".to_owned())
+    );
+}
+
+/// with the event types reported, a release must not type the key a second time.
+#[test]
+fn key_releases_are_ignored() {
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "ab");
+    let release = KeyEvent::new_with_kind(
+        KeyCode::Char('c'),
+        KeyModifiers::NONE,
+        KeyEventKind::Release,
+    );
+    assert_eq!(app.on_key(release), Action::None);
+    assert_eq!(app.tab().input_text(), "ab", "a release types nothing");
+}
+
+#[test]
+fn a_stall_drops_the_rate_to_zero_instead_of_holding_it() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event_at("turn.started", &json!({"prompt": "go"}), t0);
+    for step in 0..2 {
+        app.tab_mut().on_event_at(
+            "llm.delta",
+            &json!({"text": "x".repeat(400)}),
+            t0 + Duration::from_millis(step * 200),
+        );
+    }
+    app.tab_mut().tick_at(t0 + Duration::from_millis(300));
+    assert!(app.tab().tok_per_sec > 0.0, "a rate while text arrives");
+
+    // a full window with nothing: the model is not generating, so the meter says so.
+    app.tab_mut().tick_at(t0 + Duration::from_secs(5));
+    assert_eq!(
+        app.tab().tok_per_sec,
+        0.0,
+        "a stall is zero, not the last figure held forever"
+    );
+}
+
+#[test]
+fn the_rate_estimate_counts_full_width_text_as_one_token_a_character() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new("s", "m");
+    let t0 = Instant::now();
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event_at("turn.started", &json!({"prompt": "go"}), t0);
+    // one wide character is the baseline; 99 more arrive over the next second. counted as
+    // four characters to the token that would read 25, so this is what tells them apart.
+    app.tab_mut()
+        .on_event_at("llm.delta", &json!({"text": "漢"}), t0);
+    app.tab_mut().on_event_at(
+        "llm.delta",
+        &json!({"text": "漢".repeat(99)}),
+        t0 + Duration::from_millis(1000),
+    );
+    app.tab_mut().tick_at(t0 + Duration::from_millis(1000));
+    let rate = app.tab().tok_per_sec;
+    assert!(
+        (80.0..=110.0).contains(&rate),
+        "99 wide tokens in a second, got {rate}"
     );
 }

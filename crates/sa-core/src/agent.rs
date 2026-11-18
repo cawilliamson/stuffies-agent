@@ -17,9 +17,6 @@ use serde_json::{json, Value};
 use crate::llm::{ChatMessage, ChatRequest, Delta, Provider, ToolCall, ToolSpec};
 use crate::store::StoreError;
 
-/// the maximum number of model round-trips in one turn. bounds a runaway loop.
-pub const MAX_ITERATIONS: usize = 45;
-
 /// how often an in-flight turn checks for cancellation. short enough that escape feels
 /// instant, long enough not to spin.
 const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(25);
@@ -34,8 +31,6 @@ pub enum AgentError {
     Store(#[from] StoreError),
     #[error("cancelled")]
     Cancelled,
-    #[error("iteration limit {MAX_ITERATIONS} reached without a final answer")]
-    IterationLimit,
 }
 
 /// where the agent writes its events.
@@ -161,7 +156,9 @@ impl Agent {
             cost_micros: None,
         };
 
-        for _ in 0..MAX_ITERATIONS {
+        // a turn runs until the model answers or the operator interrupts it: no iteration
+        // cap, so a long job is never cut short.
+        loop {
             if self.sink.is_cancelled() {
                 return Err(AgentError::Cancelled);
             }
@@ -312,8 +309,6 @@ impl Agent {
                 }
             }
         }
-
-        Err(AgentError::IterationLimit)
     }
 
     fn build_transcript(&self, request: &TurnRequest) -> Vec<ChatMessage> {

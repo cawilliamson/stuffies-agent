@@ -551,3 +551,46 @@ async fn escape_abandons_a_running_tool_instead_of_waiting_for_it() {
         "a hanging tool must be abandoned, not awaited: took {elapsed:?}"
     );
 }
+
+#[tokio::test]
+async fn a_turn_runs_past_any_fixed_number_of_rounds() {
+    // 60 tool rounds then an answer: more rounds than any cap we used to impose.
+    let rounds = 60;
+    let mut script: Vec<Vec<Delta>> = Vec::new();
+    for index in 0..rounds {
+        script.push(vec![
+            Delta::ToolCall(ToolCall {
+                id: format!("c{index}"),
+                name: "read".to_owned(),
+                arguments: "{}".to_owned(),
+            }),
+            Delta::Done {
+                stop_reason: "tool_calls".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ]);
+    }
+    script.push(vec![
+        Delta::Text("finally".to_owned()),
+        Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        },
+    ]);
+
+    let provider = ScriptedProvider::new(script);
+    let sink = Arc::new(RecordingSink::default());
+    let agent = Agent::new(
+        Arc::new(provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let turn = agent
+        .run_turn(request())
+        .await
+        .expect("the turn must finish");
+    assert_eq!(turn.text, "finally");
+}
