@@ -25,17 +25,9 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
         return format!("context: nothing loaded for {}", short(cwd));
     }
     let mut lines: Vec<String> = Vec::new();
-    // the scopes nest, so the listing is drawn as a tree: one `|` per level, and a `-` for
-    // whatever hangs off it.
-    let base = groups
-        .first()
-        .and_then(|group| group["root"].as_str())
-        .map_or(0, |root| root.split('/').count());
     for group in groups {
         let root = group["root"].as_str().unwrap_or_default();
-        let depth = root.split('/').count().saturating_sub(base);
-        let branch = tree_prefix(depth);
-        lines.push(format!("{branch} {}", short(root)));
+        lines.push(short(root));
         let mut files: Vec<(String, u64)> = group["files"]
             .as_array()
             .map(|files| {
@@ -48,20 +40,18 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             })
             .unwrap_or_default();
         files.sort();
-        for (file, tokens) in files {
-            lines.push(format!("{branch}- {file} ({tokens} tokens)"));
+        // a tree of what hangs off this directory, closing with a corner on the last one.
+        let count = files.len();
+        for (index, (file, tokens)) in files.into_iter().enumerate() {
+            let corner = if index + 1 == count {
+                '\u{2514}'
+            } else {
+                '\u{251c}'
+            };
+            lines.push(format!("{corner}\u{2500} {file} ({tokens} tokens)"));
         }
     }
     lines.join("\n")
-}
-
-/// the tree branch for a scope at `depth`: `|`, then `-|` for each level beneath it.
-fn tree_prefix(depth: usize) -> String {
-    let mut prefix = String::from("|");
-    for _ in 0..depth {
-        prefix.push_str("-|");
-    }
-    prefix
 }
 
 /// every command the composer understands, with what it does.
