@@ -24,7 +24,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
     if groups.is_empty() {
         return format!("context: nothing loaded for {}", short(cwd));
     }
-    let mut lines = vec![format!("context for {}", short(cwd))];
+    let mut lines: Vec<String> = Vec::new();
     for group in groups {
         let root = group["root"].as_str().unwrap_or_default();
         lines.push(short(root));
@@ -41,7 +41,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             .unwrap_or_default();
         files.sort();
         for (file, tokens) in files {
-            lines.push(format!("  {file} ({tokens} tokens)"));
+            lines.push(format!("  - {file} ({tokens} tokens)"));
         }
     }
     lines.join("\n")
