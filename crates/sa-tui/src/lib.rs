@@ -147,7 +147,8 @@ pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Res
     )
     .is_ok();
     // the same bytes pi writes: push the flags, then ask the terminal to report them. some
-    // terminals only honour the push once they have been asked.
+    // terminals only honour the push once they have been asked. the reply is a key report
+    // rather than a key, so crossterm drops it; what matters is what arrives afterwards.
     {
         use std::io::Write as _;
         let _ = std::io::stdout().write_all(b"\x1b[?u");
@@ -512,6 +513,12 @@ where
                             .collect::<Vec<_>>()
                             .join(" · ");
                         let held = if app.shift_held { "down" } else { "up" };
+                        let modifiers = if app.modifiers_seen == 0 {
+                            "the terminal has sent no modifier key events, so it cannot report \
+                             shift+enter: use ctrl+j for a new line"
+                        } else {
+                            "the terminal reports modifier keys, so shift+enter is readable"
+                        };
                         let text = if seen.is_empty() {
                             "no keys seen yet".to_owned()
                         } else {
@@ -519,7 +526,7 @@ where
                                 "keys the terminal delivered: {seen} \u{00b7} shift is {held} \
                                  \u{00b7} shift+enter shows as SHIFT when the terminal can \
                                  report it, and a bare enter while shift is down still makes \
-                                 a new line; ctrl+j always does"
+                                 a new line; ctrl+j always does \u{00b7} {modifiers}"
                             )
                         };
                         app.tab_mut().push(app::Role::System, text);

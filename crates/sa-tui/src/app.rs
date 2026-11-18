@@ -5,6 +5,10 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+/// the keyboard flags the terminal says it has enabled. `-1` means it never answered, `0`
+/// means it ignored the request, and anything with the disambiguate bit set means modified
+/// keys are reported. this is the difference between a key we mishandle and a key the
+/// terminal cannot send.
 /// the trailing window the live rate is measured over, so it tracks current speed.
 const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(2400);
@@ -1383,6 +1387,10 @@ pub struct App {
     /// the same for control: a terminal that sends a bare carriage return for ctrl+enter
     /// still reports the control key, and enter while it is down is not a send.
     pub ctrl_held: bool,
+    /// how many modifier key events the terminal has sent. zero means it cannot report
+    /// shift on its own, so a bare enter is all it will ever send and shift+enter is
+    /// indistinguishable from enter.
+    pub modifiers_seen: u64,
     /// what the endpoint says about each model it serves. a model absent here has no
     /// known window or effort list, and is not given guessed ones.
     pub served: std::collections::HashMap<String, ServedModel>,
@@ -1403,6 +1411,7 @@ impl App {
             recent_keys: std::collections::VecDeque::new(),
             shift_held: false,
             ctrl_held: false,
+            modifiers_seen: 0,
             served: std::collections::HashMap::new(),
         }
     }
@@ -1670,6 +1679,7 @@ impl App {
         // cannot put the modifier in the enter event.
         if let KeyCode::Modifier(modifier) = key.code {
             let down = key.kind != KeyEventKind::Release;
+            self.modifiers_seen += 1;
             match modifier {
                 ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => {
                     self.shift_held = down;
