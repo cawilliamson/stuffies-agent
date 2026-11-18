@@ -78,9 +78,14 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             };
             // the path below the scope becomes directories, so every folder that holds a
             // loaded file is its own branch rather than being folded into one long line.
-            let relative: &str = file
-                .strip_prefix(&short(&group_root))
-                .unwrap_or(file.as_str());
+            // the path below the scope it belongs to; a deployed file sits outside that
+            // directory, so it is placed by its path from home instead of by a bogus name.
+            let shown = short(&group_root);
+            let relative: &str = file.strip_prefix(&shown).unwrap_or_else(|| {
+                file.strip_prefix('~')
+                    .or_else(|| file.strip_prefix(home.as_str()))
+                    .unwrap_or(file.as_str())
+            });
             let mut parts: Vec<&str> = relative
                 .split('/')
                 .filter(|part| !part.is_empty())
@@ -114,7 +119,8 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
     if let Some(root) = root {
         // the directory the tree hangs off, drawn as the folder it is.
         lines.push(format!("\u{f07b} {}", root.label));
-        render_tree(&root.children, "", &mut lines);
+        let children: Vec<ContextNode> = root.children.into_iter().map(collapse).collect();
+        render_tree(&children, "", &mut lines);
     }
     lines.push(String::new());
     lines.push(format!(
@@ -138,6 +144,19 @@ fn node_at<'a>(root: &'a mut ContextNode, cursor: &[usize]) -> &'a mut ContextNo
     for index in cursor {
         node = &mut node.children[*index];
     }
+    node
+}
+
+/// folds a directory that holds nothing but one other directory into a single line, so a
+/// deep path is not stretched over a dozen levels with one entry on each.
+fn collapse(node: ContextNode) -> ContextNode {
+    let mut node = node;
+    while node.tokens.is_none() && node.children.len() == 1 && node.children[0].tokens.is_none() {
+        let only = node.children.remove(0);
+        node.label = format!("{}/{}", node.label, only.label);
+        node.children = only.children;
+    }
+    node.children = node.children.into_iter().map(collapse).collect();
     node
 }
 

@@ -2691,3 +2691,53 @@ fn cd_offers_the_same_completion_as_cwd() {
         "and it completes without rewriting the command to /cwd"
     );
 }
+
+#[test]
+fn a_chain_of_single_directories_is_folded_into_one_line() {
+    let home = std::env::var("HOME").expect("home");
+    let deep = format!("{home}/.config/stuffies-agent/workspaces/home-chrisaw");
+    let groups = json!([
+        {"root": home, "files": [
+            {"path": format!("{deep}/AGENTS.md"), "tokens": 10},
+            {"path": format!("{deep}/skills/ponytail/SKILL.md"), "tokens": 20},
+        ]},
+    ]);
+    let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert_eq!(lines[2], "\u{f07b} ~", "{text}");
+    assert_eq!(
+        lines[3], "\u{2514}\u{2500} \u{f07b} .config/stuffies-agent/workspaces/home-chrisaw",
+        "one directory per line, not one per level:\n{text}"
+    );
+    assert_eq!(
+        lines[4], "   \u{251c}\u{2500} \u{f15c} AGENTS.md (10 tokens)",
+        "{text}"
+    );
+    assert_eq!(
+        lines[5], "   \u{2514}\u{2500} \u{f07b} skills/ponytail",
+        "{text}"
+    );
+    assert_eq!(
+        lines[6], "      \u{2514}\u{2500} \u{f15c} SKILL.md (20 tokens)",
+        "{text}"
+    );
+}
+
+#[test]
+fn a_directory_with_several_entries_is_still_expanded() {
+    let home = std::env::var("HOME").expect("home");
+    let groups = json!([
+        {"root": home, "files": [
+            {"path": format!("{home}/a/AGENTS.md"), "tokens": 1},
+            {"path": format!("{home}/a/RULES.md"), "tokens": 2},
+        ]},
+    ]);
+    let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
+    assert!(
+        text.contains("a\n"),
+        "the folder stays on its own line:\n{text}"
+    );
+    assert!(text.contains("AGENTS.md (1 tokens)"), "{text}");
+    assert!(text.contains("RULES.md (2 tokens)"), "{text}");
+}
