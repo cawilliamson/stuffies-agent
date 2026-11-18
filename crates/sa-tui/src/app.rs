@@ -11,6 +11,20 @@ const FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(240
 const FLASH_PHASE: std::time::Duration = std::time::Duration::from_millis(400);
 const CHARS_PER_TOKEN: f32 = 4.0;
 
+/// every command the composer understands, with what it does.
+pub const HELP_COMMANDS: &str = "\
+/help — this list
+/cwd <dir> (alias /cd) — change the working directory; tab completes directories
+/effort [level] — show or set the reasoning effort; tab completes the levels
+/model <name> — switch the model for this tab
+/mcp — list the mcp servers and their tools
+/keys — what the terminal delivers, for diagnosing keys
+/cost — tokens used in this tab
+/cancel — interrupt the turn that is running
+/new — open a tab
+/resume — reopen a session that was closed
+/exit — quit";
+
 /// the tokens a delta is worth, estimated from the text: full-width scripts are about one
 /// token per character, everything else about four characters to the token. this is the
 /// estimate pi-open-tui uses, and it is what makes the meter move at a believable rate.
@@ -543,6 +557,24 @@ impl Tab {
         (!rest.is_empty()).then_some(rest)
     }
 
+    /// the effort levels that could complete the `/effort` argument being typed. the levels
+    /// are the endpoint's, so they are passed in rather than looked up here.
+    #[must_use]
+    pub fn effort_suggestions(&self, levels: &[String]) -> Vec<String> {
+        let text = self.input_text();
+        if self.cursor_offset() != text.chars().count() {
+            return Vec::new();
+        }
+        let Some(arg) = effort_arg(&text) else {
+            return Vec::new();
+        };
+        levels
+            .iter()
+            .filter(|level| level.starts_with(arg))
+            .cloned()
+            .collect()
+    }
+
     /// the directories that could complete the `/cwd` argument being typed, in the form the
     /// operator is using. this is the list shown while typing.
     #[must_use]
@@ -563,6 +595,30 @@ impl Tab {
     #[must_use]
     pub fn is_cwd_command(&self) -> bool {
         cwd_arg(&self.input_text()).is_some()
+    }
+
+    /// whether the composer is typing the argument of `/effort`.
+    #[must_use]
+    pub fn is_effort_command(&self) -> bool {
+        effort_arg(&self.input_text()).is_some()
+    }
+
+    /// completes `/effort` to the only level it can mean, or to their shared prefix.
+    pub fn complete_effort(&mut self, levels: &[String]) -> bool {
+        let text = self.input_text();
+        let Some(arg) = effort_arg(&text) else {
+            return false;
+        };
+        let matches: Vec<&String> = levels
+            .iter()
+            .filter(|level| level.starts_with(arg))
+            .collect();
+        let Some(completion) = shared_completion(&matches) else {
+            return false;
+        };
+        self.set_input(&format!("/effort {completion}"));
+        self.cursor_to_end();
+        true
     }
 
     fn submit(&mut self) -> Action {
@@ -831,6 +887,12 @@ impl Tab {
                     self.status.context_limit = context["limit"].as_u64().unwrap_or(0);
                 }
                 self.touch();
+            }
+            "turn.context" => {
+                if let Some(tokens) = payload["tokens"].as_u64() {
+                    self.status.context_tokens = tokens;
+                    self.touch();
+                }
             }
             "turn.steered" => {
                 if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
@@ -1446,9 +1508,12 @@ impl App {
             KeyCode::Tab => {
                 // `/cwd` names a directory, so it completes to directories only rather than
                 // falling back to file completion.
+                let levels = self.effort_levels(self.tab());
                 let tab = self.tab_mut();
                 if tab.is_cwd_command() {
                     tab.complete_cwd();
+                } else if tab.is_effort_command() {
+                    tab.complete_effort(&levels);
                 } else if tab.complete_path() {
                     self.refresh_attachments();
                 }
@@ -2062,6 +2127,28 @@ fn complete_token(token: &str, dirs_only: bool) -> Option<String> {
                 .then(|| format!("{shown_dir}{shared}"))
         }
     }
+}
+
+/// the argument of a `/effort` line, only while it is being typed at the end of the line.
+#[must_use]
+fn effort_arg(text: &str) -> Option<&str> {
+    text.strip_prefix("/effort ").map(str::trim_start)
+}
+
+/// the longest prefix every match shares, which is what a tab press can safely add.
+#[must_use]
+fn shared_completion(matches: &[&String]) -> Option<String> {
+    let first = matches.first()?;
+    let mut shared = (*first).clone();
+    for other in matches.iter().skip(1) {
+        while !other.starts_with(&shared) {
+            shared.pop();
+            if shared.is_empty() {
+                return None;
+            }
+        }
+    }
+    Some(shared)
 }
 
 /// how many `/cwd` suggestions are listed at once.

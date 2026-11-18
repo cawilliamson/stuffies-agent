@@ -102,11 +102,9 @@ pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-/// animation frames for the activity spinner.
-const SPINNER: [&str; 10] = [
-    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-    "\u{2807}", "\u{280f}",
-];
+/// the busy marker on a tab: a dot that brightens and dims, rather than a spinning
+/// character that draws the eye away from the text.
+const BUSY_DOT: [&str; 2] = ["\u{25cf}", "\u{25cb}"];
 
 /// shortens a tab label while keeping its trailing `(session)` marker intact, then cuts it
 /// hard so the result never exceeds the budget.
@@ -139,7 +137,7 @@ const TAB_LABEL_MAX: usize = 28;
 fn tab_text(app: &App, index: usize, cap: usize) -> String {
     let tab = &app.tabs[index];
     let mark = if tab.status.turn_running {
-        format!("{} ", SPINNER[app.spinner % SPINNER.len()])
+        format!("{} ", BUSY_DOT[app.spinner % BUSY_DOT.len()])
     } else {
         String::new()
     };
@@ -190,9 +188,34 @@ fn visible_tabs(widths: &[usize], active: usize, room: usize) -> (usize, usize) 
     (active, active + 1)
 }
 
-/// lists the directories that would complete the `/cwd` argument being typed.
-fn cwd_suggestions(frame: &mut Frame<'_>, above: Rect, app: &App) {
-    let items = app.tab().cwd_suggestions();
+/// an indeterminate run sliding along the composer's top edge. it says that work is
+/// happening without pretending to know how much is left.
+fn activity_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if area.height == 0 || area.width < 10 {
+        return;
+    }
+    let track = usize::from(area.width).saturating_sub(2);
+    let run = (track / 4).clamp(4, 16);
+    let travel = track + run;
+    let offset = i64::try_from((app.spinner * 3) % travel).unwrap_or_default();
+    let run_length = i64::try_from(run).unwrap_or_default();
+    let track_length = i64::try_from(track).unwrap_or_default();
+    let buffer = frame.buffer_mut();
+    for step in 0..run {
+        let position = offset - run_length + i64::try_from(step).unwrap_or_default();
+        if position < 0 || position >= track_length {
+            continue;
+        }
+        let x = area.x + 1 + u16::try_from(position).unwrap_or_default();
+        if let Some(cell) = buffer.cell_mut((x, area.y)) {
+            cell.set_char('\u{2500}')
+                .set_style(Style::default().fg(app::ACCENT));
+        }
+    }
+}
+
+/// lists the choices that would complete the argument being typed.
+fn suggestion_list(frame: &mut Frame<'_>, above: Rect, title: &str, items: Vec<String>) {
     if items.is_empty() {
         return;
     }
@@ -217,7 +240,7 @@ fn cwd_suggestions(frame: &mut Frame<'_>, above: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(RULE))
-        .title(Line::from(" cwd ").style(Style::default().fg(app::DIM)));
+        .title(Line::from(format!(" {title} ")).style(Style::default().fg(app::DIM)));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -416,14 +439,15 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
     let hscroll = cursor_column.saturating_sub(field.saturating_sub(1));
     let vscroll = cursor_line.saturating_sub(inner_height.saturating_sub(1));
 
-    let mut block = Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(RULE))
         .padding(Padding::new(1, 1, 0, 0));
+    let mut block = block;
 
-    // the in-progress header rides the composer's top border, where the operator is
-    // already looking, and vanishes with the turn.
+    // what the model is doing, on the edge the operator is already looking at. the moving
+    // bar below says it is alive; this says what it is.
     if tab.status.turn_running && !tab.tool_running {
         if let Some(word) = &tab.working {
             block = block.title(
@@ -630,8 +654,21 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
     transcript(frame, inner, app);
 
     let cursor = composer(frame, rows[2], app);
-    // the `/cwd` choices sit directly above the composer, where the operator is looking.
-    cwd_suggestions(frame, rows[2], app);
+    // work in progress reads as a moving bar along the composer's edge, the way a browser
+    // shows an indeterminate load, rather than as a character spinning in place.
+    if app.tab().status.turn_running {
+        activity_bar(frame, rows[2], app);
+    }
+    // the choices for the argument being typed sit directly above the composer, where the
+    // operator is looking.
+    suggestion_list(frame, rows[2], "cwd", app.tab().cwd_suggestions());
+    let levels = app.effort_levels(app.tab());
+    suggestion_list(
+        frame,
+        rows[2],
+        "effort",
+        app.tab().effort_suggestions(&levels),
+    );
     frame.render_widget(Paragraph::new(status_bar(app, rows[3].width)), rows[3]);
     cursor
 }

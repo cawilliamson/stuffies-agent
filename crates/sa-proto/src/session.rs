@@ -197,6 +197,8 @@ pub mod kinds {
     pub const SESSION_CWD: &str = "session.cwd";
     pub const TURN_STARTED: &str = "turn.started";
     pub const TURN_COMPLETED: &str = "turn.completed";
+    /// the context the model is holding, reported as each round-trip completes.
+    pub const TURN_CONTEXT: &str = "turn.context";
     pub const TURN_INTERRUPTED: &str = "turn.interrupted";
     pub const TURN_STEERED: &str = "turn.steered";
     pub const LLM_DELTA: &str = "llm.delta";

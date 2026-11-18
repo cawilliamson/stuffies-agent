@@ -213,6 +213,17 @@ impl Agent {
                     } => {
                         usage.prompt_tokens += prompt_tokens;
                         usage.completion_tokens += completion_tokens;
+                        // the meter follows the conversation as it grows, rather than
+                        // sitting at its last figure until the whole turn ends.
+                        if prompt_tokens > 0 {
+                            self.sink.append(
+                                kinds::TURN_CONTEXT,
+                                &json!({
+                                    "turn_id": request.turn_id,
+                                    "tokens": prompt_tokens,
+                                }),
+                            )?;
+                        }
                         done = true;
                         if stop_reason != "tool_calls" && tool_calls.is_empty() {
                             self.sink.append(

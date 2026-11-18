@@ -923,12 +923,10 @@ fn a_busy_tab_shows_a_spinner() {
     app.tab_mut().status.turn_running = true;
     app.spinner = 3;
     let screen = screen(&mut app, 100, 20);
-    // a braille frame from the spinner set sits beside the tab label.
+    // a busy dot sits beside the tab label.
     assert!(
-        screen
-            .chars()
-            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
-        "expected a spinner glyph:\n{screen}"
+        screen.contains('\u{25cf}') || screen.contains('\u{25cb}'),
+        "expected a busy marker on the tab:\n{screen}"
     );
 }
 
@@ -2539,5 +2537,73 @@ fn the_rate_estimate_counts_full_width_text_as_one_token_a_character() {
     assert!(
         (80.0..=110.0).contains(&rate),
         "99 wide tokens in a second, got {rate}"
+    );
+}
+
+#[test]
+fn the_context_count_follows_the_turn_as_it_grows() {
+    let mut app = App::new("s", "m");
+    app.tab_mut()
+        .on_event("turn.context", &json!({"tokens": 12_345}));
+    assert_eq!(
+        app.tab().status.context_tokens,
+        12_345,
+        "the meter must move while the turn runs, not only when it ends"
+    );
+}
+
+#[test]
+fn typing_an_effort_lists_and_completes_the_levels_the_endpoint_offers() {
+    let mut app = App::new("s", "m");
+    app.served.insert(
+        "m".to_owned(),
+        ServedModel {
+            context_limit: Some(1000),
+            effort_levels: vec!["none".to_owned(), "low".to_owned(), "high".to_owned()],
+        },
+    );
+
+    typed(&mut app, "/effort h");
+    let levels = app.effort_levels(app.tab());
+    assert_eq!(
+        app.tab().effort_suggestions(&levels),
+        ["high"],
+        "only the matching level is offered"
+    );
+
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.tab().input_text(), "/effort high");
+
+    typed(&mut app, "x");
+    assert_eq!(app.tab().input_text(), "/effort highx");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(
+        app.tab().input_text(),
+        "/effort highx",
+        "nothing matches, so tab leaves the line alone"
+    );
+}
+
+#[test]
+fn a_busy_tab_animates_the_composer_edge() {
+    use ratatui::style::Color;
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.spinner = 2;
+
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let accent = Color::Rgb(0x8a, 0xc8, 0xff);
+    let lit = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.fg == accent && cell.symbol() == "\u{2500}")
+        .count();
+    assert!(
+        lit > 0,
+        "the loading run must be drawn on the composer edge"
     );
 }

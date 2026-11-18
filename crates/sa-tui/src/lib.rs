@@ -470,10 +470,9 @@ where
                 let sid = app.tab().session.clone();
                 match name {
                     "/exit" | "/quit" => break,
-                    "/help" => app.tab_mut().push(
-                        app::Role::System,
-                        "ctrl+n new tab · ctrl+w close tab · shift+tab switch · esc interrupt · ctrl-c quit · /cwd <dir> changes the working directory",
-                    ),
+                    "/help" => {
+                        app.tab_mut().push(app::Role::System, app::HELP_COMMANDS);
+                    }
                     "/new" => {
                         let cwd = tab_cwd(&app);
                         match create_session(client, &cwd).await {
@@ -568,22 +567,35 @@ where
                                     id: level,
                                 })
                                 .collect();
-                            app.open_picker(app::PickerKind::Effort, format!("{model} effort"), items);
+                            app.open_picker(
+                                app::PickerKind::Effort,
+                                format!("{model} effort"),
+                                items,
+                            );
                         }
                     }
-                    "/effort" => match rpc(client, "model.effort", json!({"session_id": sid, "effort": arg}))
-                        .await
+                    "/effort" => match rpc(
+                        client,
+                        "model.effort",
+                        json!({"session_id": sid, "effort": arg}),
+                    )
+                    .await
                     {
                         Ok(_) => {
                             app.tab_mut().status.effort = arg.to_owned();
                             app.touch();
-                            app.tab_mut().push(app::Role::System, format!("effort: {arg}"));
+                            app.tab_mut()
+                                .push(app::Role::System, format!("effort: {arg}"));
                         }
                         Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                     },
                     "/model" if !arg.is_empty() => {
-                        let _ = rpc(client, "model.select", json!({"session_id": sid, "model": arg}))
-                            .await;
+                        let _ = rpc(
+                            client,
+                            "model.select",
+                            json!({"session_id": sid, "model": arg}),
+                        )
+                        .await;
                         app.tab_mut().status.model = arg.to_owned();
                         app.touch();
                     }
@@ -598,14 +610,18 @@ where
                     "/cancel" => {
                         let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
                     }
-                    "/cwd" if arg.is_empty() => {
+                    "/cwd" | "/cd" if arg.is_empty() => {
                         let cwd = app.tab().cwd.clone();
                         app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
                     }
-                    "/cwd" => match resolve_dir(&app.tab().cwd, arg) {
+                    "/cwd" | "/cd" => match resolve_dir(&app.tab().cwd, arg) {
                         Some(cwd) => {
-                            match rpc(client, "session.cwd", json!({"session_id": sid, "cwd": cwd}))
-                                .await
+                            match rpc(
+                                client,
+                                "session.cwd",
+                                json!({"session_id": sid, "cwd": cwd}),
+                            )
+                            .await
                             {
                                 Ok(result) => {
                                     let cwd = result["cwd"].as_str().unwrap_or(&cwd).to_owned();
@@ -627,8 +643,7 @@ where
                         // every live session is already a tab, so what is worth bringing
                         // back is a session that was closed while working in this directory.
                         let cwd = app.tab().cwd.clone();
-                        match rpc(client, "session.list", json!({"include_deleted": true})).await
-                        {
+                        match rpc(client, "session.list", json!({"include_deleted": true})).await {
                             Ok(list) => {
                                 let mut rows: Vec<&Value> = list
                                     .as_array()
@@ -642,15 +657,16 @@ where
                                     })
                                     .unwrap_or_default();
                                 rows.sort_by_key(|row| {
-                                    std::cmp::Reverse(row["updated_at"].as_i64().unwrap_or_default())
+                                    std::cmp::Reverse(
+                                        row["updated_at"].as_i64().unwrap_or_default(),
+                                    )
                                 });
                                 let items: Vec<app::PickerItem> = rows
                                     .iter()
                                     .take(RESUME_LIMIT)
                                     .filter_map(|row| {
                                         let id = row["id"].as_str()?;
-                                        let title =
-                                            row["title"].as_str().unwrap_or("(untitled)");
+                                        let title = row["title"].as_str().unwrap_or("(untitled)");
                                         let short: String = id.chars().take(8).collect();
                                         Some(app::PickerItem {
                                             id: id.to_owned(),
@@ -670,7 +686,9 @@ where
                             Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
                         }
                     }
-                    _ => app.tab_mut().push(app::Role::System, "unknown command, /help"),
+                    _ => app
+                        .tab_mut()
+                        .push(app::Role::System, "unknown command, /help"),
                 }
             }
         }
@@ -784,6 +802,19 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
                     tab.on_replay(kind, &event["payload"]);
                 }
             }
+            // work that was still going when this window went away is still going now, so
+            // the tab keeps showing that it is busy.
+            if let Some(running) = turn_still_running(events) {
+                if let Some(tab) = app.tab_for(id) {
+                    tab.status.turn_running = running;
+                    if running {
+                        tab.working.get_or_insert_with(|| "working".to_owned());
+                    } else {
+                        tab.working = None;
+                    }
+                    tab.touch();
+                }
+            }
         }
     }
     let _ = rpc(
@@ -792,6 +823,18 @@ async fn open_tab(client: &mut Client, app: &mut App, row: &Value, fallback_mode
         json!({"session_id": id, "from_seq": 0}),
     )
     .await;
+}
+
+/// whether the history ends with a turn still in flight. `none` when it holds no turn at all.
+fn turn_still_running(events: &[Value]) -> Option<bool> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event["kind"].as_str()? {
+            "turn.started" => Some(true),
+            "turn.completed" | "turn.interrupted" => Some(false),
+            _ => None,
+        })
 }
 
 /// brings the strip in line with the daemon: a session created anywhere becomes a tab, a
@@ -1277,6 +1320,63 @@ mod daemon_tests {
         )
         .await
         .expect("run");
+    }
+
+    #[test]
+    fn help_lists_every_command() {
+        for command in [
+            "/cancel", "/cd", "/cost", "/cwd", "/effort", "/exit", "/help", "/keys", "/mcp",
+            "/model", "/new", "/resume",
+        ] {
+            assert!(
+                app::HELP_COMMANDS.contains(command),
+                "{command} is missing from /help"
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_in_flight_is_recognised_in_a_replayed_history() {
+        let running = vec![
+            json!({"kind": "turn.started"}),
+            json!({"kind": "llm.delta"}),
+        ];
+        assert_eq!(turn_still_running(&running), Some(true));
+
+        let finished = vec![
+            json!({"kind": "turn.started"}),
+            json!({"kind": "turn.completed"}),
+        ];
+        assert_eq!(turn_still_running(&finished), Some(false));
+
+        assert_eq!(turn_still_running(&[]), None, "no turn at all");
+    }
+
+    #[tokio::test]
+    async fn cd_is_an_alias_for_cwd() {
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed("/cd /tmp");
+        stream.push(press(crossterm::event::KeyCode::Enter));
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        assert!(
+            seen.iter()
+                .any(|r| r["method"] == "session.cwd" && r["params"]["cwd"] == "/tmp"),
+            "/cd must change the directory like /cwd: {seen:?}"
+        );
     }
 
     #[tokio::test]
