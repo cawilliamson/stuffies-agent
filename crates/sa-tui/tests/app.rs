@@ -2623,20 +2623,25 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     let text = sa_tui::app::context_summary(&home, groups.as_array().expect("groups"));
 
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines[0], "~", "the scope");
+    assert_eq!(lines[0], "Files loaded into context:", "{text}");
+    assert_eq!(lines[1], "", "a blank line before the first block");
+    assert_eq!(lines[2], "~", "the scope");
     assert_eq!(
-        lines[1], "\u{251c}\u{2500} ~/a/SOUL.md (34 tokens)",
+        lines[3], "\u{251c}\u{2500} ~/a/SOUL.md (34 tokens)",
         "files branch off their scope, sorted, not in arrival order:\n{text}"
     );
     assert_eq!(
-        lines[2], "\u{2514}\u{2500} ~/b/AGENTS.md (12 tokens)",
+        lines[4], "\u{2514}\u{2500} ~/b/AGENTS.md (12 tokens)",
         "the last one closes the branch:\n{text}"
     );
-    assert_eq!(lines[3], "~/.dotfiles", "the next scope:\n{text}");
+    assert_eq!(lines[5], "", "blocks are separated:\n{text}");
+    assert_eq!(lines[6], "~/.dotfiles", "the next scope:\n{text}");
     assert_eq!(
-        lines[4], "\u{2514}\u{2500} ~/.dotfiles/AGENTS.md (5 tokens)",
+        lines[7], "\u{2514}\u{2500} ~/.dotfiles/AGENTS.md (5 tokens)",
         "{text}"
     );
+    assert_eq!(lines[8], "", "{text}");
+    assert_eq!(lines[9], "Total context added: 51 tokens", "{text}");
 }
 
 #[test]
@@ -2653,7 +2658,8 @@ fn the_context_listing_is_shown_when_a_session_starts() {
         }),
     );
     let shown = screen(&mut app, 100, 24);
-    assert!(!shown.contains("context for"), "no heading: {shown}");
+    assert!(shown.contains("Files loaded into context:"), "{shown}");
+    assert!(shown.contains("Total context added: 9 tokens"), "{shown}");
     assert!(
         shown.contains("\u{2514}\u{2500} ~/AGENTS.md (9 tokens)"),
         "{shown}"

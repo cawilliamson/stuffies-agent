@@ -24,10 +24,11 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
     if groups.is_empty() {
         return format!("context: nothing loaded for {}", short(cwd));
     }
-    let mut lines: Vec<String> = Vec::new();
+    let mut blocks: Vec<String> = Vec::new();
+    let mut total = 0_u64;
     for group in groups {
         let root = group["root"].as_str().unwrap_or_default();
-        lines.push(short(root));
+        let mut block = vec![short(root)];
         let mut files: Vec<(String, u64)> = group["files"]
             .as_array()
             .map(|files| {
@@ -43,15 +44,34 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
         // a tree of what hangs off this directory, closing with a corner on the last one.
         let count = files.len();
         for (index, (file, tokens)) in files.into_iter().enumerate() {
+            total += tokens;
             let corner = if index + 1 == count {
                 '\u{2514}'
             } else {
                 '\u{251c}'
             };
-            lines.push(format!("{corner}\u{2500} {file} ({tokens} tokens)"));
+            block.push(format!("{corner}\u{2500} {file} ({tokens} tokens)"));
         }
+        blocks.push(block.join("\n"));
     }
-    lines.join("\n")
+    blocks.push(format!(
+        "Total context added: {} tokens",
+        with_thousands(total)
+    ));
+    format!("Files loaded into context:\n\n{}", blocks.join("\n\n"))
+}
+
+/// a count with its thousands separated, which is how a large figure is read at a glance.
+fn with_thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// every command the composer understands, with what it does.
