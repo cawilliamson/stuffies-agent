@@ -41,7 +41,7 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
             .unwrap_or_default();
         files.sort();
         for (file, tokens) in files {
-            lines.push(format!("- {file} ({tokens} tokens)"));
+            lines.push(format!("\u{2192} {file} ({tokens} tokens)"));
         }
     }
     lines.join("\n")
