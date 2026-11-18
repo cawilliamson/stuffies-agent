@@ -2812,3 +2812,18 @@ fn pipes_in_ordinary_text_are_left_alone() {
     assert!(shown.contains("run a | b to pipe, not a table"), "{shown}");
     assert!(!shown.contains('\u{250c}'), "{shown}");
 }
+
+#[test]
+fn the_activity_bar_never_strikes_through_the_working_label() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some("working".to_owned());
+    for spinner in 0..40 {
+        app.spinner = spinner;
+        let screen = screen(&mut app, 100, 20);
+        assert!(
+            screen.contains("working\u{2026}"),
+            "the moving run overwrote the label at spinner {spinner}:\n{screen}"
+        );
+    }
+}
