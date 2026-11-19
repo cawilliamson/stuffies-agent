@@ -2981,3 +2981,43 @@ fn a_message_carries_its_role_colour_in_the_text_and_the_frame() {
         "the frame keeps the role's own colour, not the lightened text tone"
     );
 }
+
+#[test]
+fn a_long_tool_call_is_shown_in_full_across_rows() {
+    let mut app = App::new("s", "m");
+    let command = "cd /home/chrisaw/.dotfiles && ls modules/home-automation modules/pico-dsv41 2>/dev/null; git status --short";
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": command}}),
+    );
+    app.tab_mut()
+        .on_event("tool.completed", &json!({"output": "", "exit_code": 0}));
+
+    let shown = screen(&mut app, 60, 30);
+    let flat: String = shown.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        flat.contains("gitstatus--short"),
+        "the whole command is drawn, not cut at a fixed length:\n{shown}"
+    );
+    assert!(!shown.contains('\u{2026}'), "nothing is elided:\n{shown}");
+}
+
+#[test]
+fn a_long_tool_output_is_shown_in_full_across_rows() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "ls"}}),
+    );
+    let line = "modules/home-automation/README.md modules/pico-dsv41/default.nix modules/pi-contexts/index.ts";
+    app.tab_mut()
+        .on_event("tool.completed", &json!({"output": line, "exit_code": 0}));
+
+    let shown = screen(&mut app, 60, 30);
+    let flat: String = shown.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        flat.contains("modules/pi-contexts/index.ts"),
+        "the whole output is drawn:\n{shown}"
+    );
+    assert!(!shown.contains('\u{2026}'), "nothing is elided:\n{shown}");
+}

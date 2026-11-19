@@ -1830,7 +1830,7 @@ impl App {
 fn summarise(args: &Value) -> String {
     for key in ["path", "command", "pattern"] {
         if let Some(value) = args.get(key).and_then(Value::as_str) {
-            return value.chars().take(90).collect();
+            return value.to_owned();
         }
     }
     String::new()
@@ -1936,7 +1936,9 @@ fn body_ansi(out: &mut Vec<Line<'static>>, text: &str, width: usize, ink: Color,
                 .map(|s| Span::styled(s.content, Style::default().fg(tint)))
                 .collect();
         }
-        out.push(framed_line(spans, room, edge));
+        for row in wrap_spans(&spans, room) {
+            out.push(framed_line(row, room, edge));
+        }
     }
 }
 
@@ -1971,23 +1973,69 @@ fn body(
                     Span::styled(span.content.into_owned(), style)
                 })
                 .collect();
-            out.push(framed_line(spans, room, edge));
+            for row in wrap_spans(&spans, room) {
+                out.push(framed_line(row, room, edge));
+            }
         }
         return;
     }
 
     for raw in text.lines() {
-        let mut line = raw.to_owned();
-        if line.chars().count() > room {
-            line = line.chars().take(room.saturating_sub(1)).collect();
-            line.push('\u{2026}');
+        let spans = [Span::styled(raw.to_owned(), Style::default().fg(ink))];
+        for row in wrap_spans(&spans, room) {
+            out.push(framed_line(row, room, edge));
         }
-        out.push(framed_line(
-            vec![Span::styled(line, Style::default().fg(ink))],
-            room,
-            edge,
-        ));
     }
+}
+
+/// splits styled text into rows that fit `room`, breaking at a space where one is close
+/// enough. nothing is dropped: a long command or a long line of output is shown in full.
+fn wrap_spans(spans: &[Span<'static>], room: usize) -> Vec<Vec<Span<'static>>> {
+    let mut cells: Vec<(char, Style)> = Vec::new();
+    for span in spans {
+        for ch in span.content.chars() {
+            cells.push((ch, span.style));
+        }
+    }
+    if room == 0 {
+        return vec![Vec::new()];
+    }
+
+    let mut rows = Vec::new();
+    let mut start = 0;
+    while start < cells.len() {
+        let mut end = (start + room).min(cells.len());
+        if end < cells.len() {
+            // break at the last space, so a command keeps its words together.
+            if let Some(at) = cells[start..end].iter().rposition(|(ch, _)| *ch == ' ') {
+                if at > room / 3 {
+                    end = start + at;
+                }
+            }
+        }
+        let mut row: Vec<Span<'static>> = Vec::new();
+        let mut text = String::new();
+        let mut style: Option<Style> = None;
+        for (ch, cell_style) in &cells[start..end] {
+            if style != Some(*cell_style) {
+                if let Some(previous) = style {
+                    row.push(Span::styled(std::mem::take(&mut text), previous));
+                }
+                style = Some(*cell_style);
+            }
+            text.push(*ch);
+        }
+        if let Some(previous) = style {
+            row.push(Span::styled(text, previous));
+        }
+        rows.push(row);
+        start = if end < cells.len() && cells[end].0 == ' ' {
+            end + 1
+        } else {
+            end
+        };
+    }
+    rows
 }
 
 /// one line inside a message frame, padded out to the frame's width.
