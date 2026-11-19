@@ -1891,7 +1891,7 @@ fn muted(colour: Color, fill: Color, towards_fill: f32) -> Color {
         let a = f32::from(a);
         let b = f32::from(b);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let value = (a + (b - a) * towards_fill).round().clamp(0.0, 255.0) as u8;
+        let value = (b - a).mul_add(towards_fill, a).round().clamp(0.0, 255.0) as u8;
         value
     };
     Color::Rgb(mix(r, fr), mix(g, fg), mix(b, fb))
