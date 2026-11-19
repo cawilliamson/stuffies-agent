@@ -189,14 +189,17 @@ fn node_at<'a>(root: &'a mut ContextNode, cursor: &[usize]) -> &'a mut ContextNo
 /// deep path is not stretched over a dozen levels with one entry on each.
 fn collapse(node: ContextNode) -> ContextNode {
     let mut node = node;
-    while node.tokens.is_none()
-        && node.children.len() == 1
-        && node.children[0].tokens.is_none()
-        && !node.children[0].fixed
-    {
+    // a directory that holds one thing is that thing's path: `i-have-adhd/SKILL.md`
+    // rather than a folder with a single line under it.
+    while node.tokens.is_none() && node.children.len() == 1 && !node.children[0].fixed {
         let only = node.children.remove(0);
         node.label = format!("{}/{}", node.label, only.label);
-        node.children = only.children;
+        if only.tokens.is_some() {
+            node.tokens = only.tokens;
+            node.children = Vec::new();
+        } else {
+            node.children = only.children;
+        }
     }
     node.children = node.children.into_iter().map(collapse).collect();
     node

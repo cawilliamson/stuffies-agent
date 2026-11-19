@@ -2638,6 +2638,8 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
         {"root": home, "files": [
             {"path": format!("{home}/b/AGENTS.md"), "relative": "b/AGENTS.md", "tokens": 12},
             {"path": format!("{home}/a/PERSONALITY.md"), "relative": "a/PERSONALITY.md", "tokens": 34},
+            {"path": format!("{home}/c/AGENTS.md"), "relative": "c/AGENTS.md", "tokens": 7},
+            {"path": format!("{home}/c/RULES.md"), "relative": "c/RULES.md", "tokens": 3},
         ]},
         {"root": format!("{home}/.dotfiles"), "files": [
             {"path": format!("{home}/.dotfiles/AGENTS.md"), "relative": "AGENTS.md", "tokens": 5},
@@ -2649,26 +2651,31 @@ fn the_context_listing_is_grouped_by_root_and_sorted() {
     assert_eq!(lines[0], "Files loaded into context:", "{text}");
     assert_eq!(lines[1], "", "a blank line before the tree");
     assert_eq!(lines[2], "\u{f07b} ~", "the scope, as a folder");
+    // a directory holding one file is that file's path on one line.
     assert_eq!(
-        lines[3], "\u{251c}\u{2500} \u{f07b} a",
-        "a folder per path:\n{text}"
+        lines[3], "\u{251c}\u{2500} \u{f15c} a/PERSONALITY.md (34 tokens)",
+        "one file folds into its directory:\n{text}"
     );
     assert_eq!(
-        lines[4], "\u{2502}  \u{2514}\u{2500} \u{f15c} PERSONALITY.md (34 tokens)",
-        "files are leaves under their folder:\n{text}"
-    );
-    assert_eq!(lines[5], "\u{251c}\u{2500} \u{f07b} b", "{text}");
-    assert_eq!(
-        lines[6], "\u{2502}  \u{2514}\u{2500} \u{f15c} AGENTS.md (12 tokens)",
+        lines[4], "\u{251c}\u{2500} \u{f15c} b/AGENTS.md (12 tokens)",
         "{text}"
     );
-    assert_eq!(lines[7], "\u{2514}\u{2500} \u{f07b} .dotfiles", "{text}");
+    // a directory holding more than one keeps its own line.
+    assert_eq!(lines[5], "\u{251c}\u{2500} \u{f07b} c", "{text}");
     assert_eq!(
-        lines[8], "   \u{2514}\u{2500} \u{f15c} AGENTS.md (5 tokens)",
+        lines[6], "\u{2502}  \u{251c}\u{2500} \u{f15c} AGENTS.md (7 tokens)",
+        "{text}"
+    );
+    assert_eq!(
+        lines[7], "\u{2502}  \u{2514}\u{2500} \u{f15c} RULES.md (3 tokens)",
+        "{text}"
+    );
+    assert_eq!(
+        lines[8], "\u{2514}\u{2500} \u{f15c} .dotfiles/AGENTS.md (5 tokens)",
         "{text}"
     );
     assert_eq!(lines[9], "", "{text}");
-    assert_eq!(lines[10], "Total context added: 51 tokens", "{text}");
+    assert_eq!(lines[10], "Total context added: 61 tokens", "{text}");
 }
 
 #[test]
@@ -2755,12 +2762,9 @@ fn a_chain_of_single_directories_is_folded_into_one_line() {
         lines[4], "   \u{251c}\u{2500} \u{f15c} AGENTS.md (10 tokens)",
         "{text}"
     );
+    // and a directory holding one file is that file's path, with the file's own icon.
     assert_eq!(
-        lines[5], "   \u{2514}\u{2500} \u{f07b} skills/ponytail",
-        "{text}"
-    );
-    assert_eq!(
-        lines[6], "      \u{2514}\u{2500} \u{f15c} SKILL.md (20 tokens)",
+        lines[5], "   \u{2514}\u{2500} \u{f15c} skills/ponytail/SKILL.md (20 tokens)",
         "{text}"
     );
 }
@@ -2803,12 +2807,8 @@ fn a_file_deployed_elsewhere_names_the_directory_it_lives_in() {
     assert_eq!(lines[2], "\u{f07b} ~/.dotfiles", "{text}");
     assert_eq!(
         lines[3],
-        "\u{2514}\u{2500} \u{f07b} ~/.config/stuffies-agent/workspaces/home-chrisaw-.dotfiles",
-        "the deployed directory is named in full, on its own line:\n{text}"
-    );
-    assert_eq!(
-        lines[4], "   \u{2514}\u{2500} \u{f15c} AGENTS.md (7 tokens)",
-        "{text}"
+        "\u{2514}\u{2500} \u{f15c} ~/.config/stuffies-agent/workspaces/home-chrisaw-.dotfiles/AGENTS.md (7 tokens)",
+        "the deployed path is named in full, on its own line:\n{text}"
     );
 }
 
