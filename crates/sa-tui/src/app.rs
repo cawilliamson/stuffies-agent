@@ -1956,8 +1956,8 @@ fn body(
 ) {
     let room = width.saturating_sub(4);
     if markdown {
-        let options =
-            tui_markdown::Options::default().table_width(u16::try_from(room).unwrap_or(u16::MAX));
+        let options = tui_markdown::Options::new(ListingStyle)
+            .table_width(u16::try_from(room).unwrap_or(u16::MAX));
         let rendered = tui_markdown::from_str_with_options(text, &options);
         for line in rendered.lines {
             let spans: Vec<Span<'static>> = line
@@ -1985,6 +1985,17 @@ fn body(
         for row in wrap_spans(&spans, room) {
             out.push(framed_line(row, room, edge));
         }
+    }
+}
+
+/// the renderer's sheet, with the fence lines around a code block turned off: the code is
+/// the message, and the renderer's own fence markers above and below it are noise.
+#[derive(Clone, Copy, Debug)]
+struct ListingStyle;
+
+impl tui_markdown::StyleSheet for ListingStyle {
+    fn code_block_fence(&self) -> &'static str {
+        ""
     }
 }
 

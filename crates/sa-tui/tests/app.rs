@@ -3021,3 +3021,20 @@ fn a_long_tool_output_is_shown_in_full_across_rows() {
     );
     assert!(!shown.contains('\u{2026}'), "nothing is elided:\n{shown}");
 }
+
+#[test]
+fn a_fenced_code_block_is_drawn_as_code_without_its_fences() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(
+        Role::Assistant,
+        "Here is the file:\n\n```php\n<?php\necho 1;\n?>\n```\n",
+    );
+
+    let shown = screen(&mut app, 80, 20);
+    assert!(shown.contains("<?php"), "the code is shown:\n{shown}");
+    assert!(shown.contains("echo 1;"), "every line of it:\n{shown}");
+    assert!(
+        !shown.contains("```"),
+        "the fence markers are the renderer's decoration, not the message:\n{shown}"
+    );
+}
