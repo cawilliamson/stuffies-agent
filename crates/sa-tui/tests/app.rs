@@ -704,11 +704,20 @@ fn reasoning_is_always_grey_and_the_divider_matches_its_frame() {
             .map(|c| c.fg)
     };
 
-    // the rule belongs to the assistant frame, so it carries that frame's colour.
-    assert_eq!(
-        fg_of("\u{251c}"),
-        Some(sa_tui::app::OK),
-        "the divider must match the frame it splits"
+    // the rule belongs to the assistant frame: it is that frame's colour, pulled towards
+    // the fill so the outline does not glow against a dark terminal.
+    let divider = fg_of("\u{251c}").expect("a divider");
+    let edge = sa_tui::app::OK;
+    assert_ne!(divider, edge, "the outline is muted, not the label colour");
+    let (Color::Rgb(r, g, b), Color::Rgb(er, eg, eb), Color::Rgb(fr, fg_, fb)) =
+        (divider, edge, sa_tui::app::role_fill(Role::Assistant))
+    else {
+        panic!("rgb");
+    };
+    let closer_to_fill = |v: u8, e: u8, f: u8| u32::from(v.abs_diff(f)) < u32::from(e.abs_diff(f));
+    assert!(
+        closer_to_fill(r, er, fr) && closer_to_fill(g, eg, fg_) && closer_to_fill(b, eb, fb),
+        "the outline sits between the role colour and its fill"
     );
 
     // reasoning is neutral grey, never tinted.
@@ -737,12 +746,17 @@ fn a_standalone_reasoning_frame_is_grey() {
     let edge = buffer
         .content()
         .iter()
-        .find(|c| c.symbol() == "\u{256d}" && c.fg == sa_tui::app::DIM)
-        .map(|c| c.fg);
-    assert_eq!(
-        edge,
-        Some(sa_tui::app::DIM),
-        "a thinking frame must be grey"
+        .find(|c| c.symbol() == "\u{256d}")
+        .map(|c| c.fg)
+        .expect("a frame corner");
+    // grey means the channels sit together: no tint from a role colour.
+    let ratatui::style::Color::Rgb(r, g, b) = edge else {
+        panic!("rgb");
+    };
+    let spread = r.max(g).max(b) - r.min(g).min(b);
+    assert!(
+        spread <= 20,
+        "a thinking frame must be grey, not tinted: {edge:?}"
     );
 }
 

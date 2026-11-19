@@ -1881,6 +1881,22 @@ pub const fn role_fill(role: Role) -> Color {
     }
 }
 
+/// a colour pulled most of the way towards the fill behind it, so a frame reads as the edge
+/// of a panel rather than a bright rectangle against the terminal.
+fn muted(colour: Color, fill: Color, towards_fill: f32) -> Color {
+    let (Color::Rgb(r, g, b), Color::Rgb(fr, fg, fb)) = (colour, fill) else {
+        return colour;
+    };
+    let mix = |a: u8, b: u8| -> u8 {
+        let a = f32::from(a);
+        let b = f32::from(b);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let value = (a + (b - a) * towards_fill).round().clamp(0.0, 255.0) as u8;
+        value
+    };
+    Color::Rgb(mix(r, fr), mix(g, fg), mix(b, fb))
+}
+
 /// drops the inline markdown markers so text can be measured.
 #[must_use]
 pub fn plain(text: &str) -> String {
@@ -2010,7 +2026,9 @@ fn body(
 fn framed_line(spans: Vec<Span<'static>>, room: usize, edge: Color, fill: Color) -> Line<'static> {
     let (spans, shown) = fit_spans(spans, room);
     let pad = room.saturating_sub(shown);
-    let ink = Style::default().fg(edge).bg(fill);
+    let ink = Style::default()
+        .fg(muted(edge, fill, BORDER_TOWARDS_FILL))
+        .bg(fill);
     let mut row = vec![Span::styled("\u{2502} ", ink)];
     row.extend(spans.into_iter().map(|span| {
         // a style the renderer chose for itself, such as a code block, keeps its own fill.
@@ -2029,7 +2047,9 @@ fn body_image(out: &mut Vec<Line<'static>>, thumb: &Thumb, width: usize, edge: C
     let room = width.saturating_sub(4);
     let caption: String = thumb.name.chars().take(room).collect();
     let pad = room.saturating_sub(caption.chars().count());
-    let ink = Style::default().fg(edge).bg(fill);
+    let ink = Style::default()
+        .fg(muted(edge, fill, BORDER_TOWARDS_FILL))
+        .bg(fill);
     out.push(Line::from(vec![
         Span::styled("\u{2502} ", ink),
         Span::styled(caption, Style::default().fg(DIM).bg(fill)),
@@ -2049,18 +2069,27 @@ fn body_image(out: &mut Vec<Line<'static>>, thumb: &Thumb, width: usize, edge: C
 }
 
 fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color, fill: Color) {
+    let border = muted(edge, fill, BORDER_TOWARDS_FILL);
     let head = format!("\u{256d}\u{2500} {label} ");
     let rule = width.saturating_sub(head.chars().count() + 1);
-    let ink = Style::default().fg(edge).bg(fill);
+    let ink = Style::default().fg(border).bg(fill);
     out.push(Line::from(vec![
-        Span::styled(head, ink),
+        Span::styled("\u{256d}\u{2500}", ink),
+        // the label is the one part of the frame that keeps the role's own colour.
+        Span::styled(format!(" {label} "), Style::default().fg(edge).bg(fill)),
         Span::styled("\u{2500}".repeat(rule), ink),
         Span::styled("\u{256e}", ink),
     ]));
 }
 
+/// how far a frame's outline is pulled towards its own fill. the fill identifies the role;
+/// a bright outline on top of it is what clashes with a dark terminal.
+const BORDER_TOWARDS_FILL: f32 = 0.72;
+
 fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color, fill: Color) {
-    let ink = Style::default().fg(edge).bg(fill);
+    let ink = Style::default()
+        .fg(muted(edge, fill, BORDER_TOWARDS_FILL))
+        .bg(fill);
     out.push(Line::from(vec![
         Span::styled("\u{251c}", ink),
         Span::styled("\u{2500}".repeat(width.saturating_sub(2)), ink),
@@ -2069,7 +2098,9 @@ fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color, fill: Color)
 }
 
 fn bottom(out: &mut Vec<Line<'static>>, width: usize, edge: Color, fill: Color) {
-    let ink = Style::default().fg(edge).bg(fill);
+    let ink = Style::default()
+        .fg(muted(edge, fill, BORDER_TOWARDS_FILL))
+        .bg(fill);
     out.push(Line::from(vec![
         Span::styled("\u{2570}", ink),
         Span::styled("\u{2500}".repeat(width.saturating_sub(2)), ink),
