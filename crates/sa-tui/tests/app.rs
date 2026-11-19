@@ -2941,10 +2941,11 @@ fn a_message_frame_is_filled_in_its_own_colour() {
         for x in 0..120 {
             let cell = &buffer[(x, y)];
             // the frame edge, whose fill is the message's own.
-            if cell.symbol() == "\u{2502}" && cell.bg != ratatui::style::Color::Reset {
-                if !fills.contains(&cell.bg) {
-                    fills.push(cell.bg);
-                }
+            if cell.symbol() == "\u{2502}"
+                && cell.bg != ratatui::style::Color::Reset
+                && !fills.contains(&cell.bg)
+            {
+                fills.push(cell.bg);
             }
         }
     }
