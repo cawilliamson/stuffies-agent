@@ -1855,46 +1855,36 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
         Role::System => "system".to_owned(),
         Role::Error => "error".to_owned(),
     };
-    let (edge, body) = match role {
-        Role::User => (ACCENT, Color::Rgb(0xe8, 0xf0, 0xff)),
-        Role::Assistant => (OK, Color::Rgb(0xd8, 0xe8, 0xdc)),
-        Role::Thinking => (DIM, Color::Rgb(0x8a, 0x93, 0xa0)),
-        Role::Tool => (Color::Rgb(0xe0, 0xb0, 0x60), Color::Rgb(0xd8, 0xc8, 0xa8)),
-        Role::ToolOutput => (FAINT, DIM),
-        Role::System => (DIM, DIM),
-        Role::Error => (BAD, Color::Rgb(0xf0, 0xc0, 0xc0)),
+    let edge = match role {
+        Role::User => ACCENT,
+        Role::Assistant => OK,
+        Role::Thinking | Role::System => DIM,
+        Role::Tool => Color::Rgb(0xe0, 0xb0, 0x60),
+        Role::ToolOutput => FAINT,
+        Role::Error => BAD,
     };
+    // the text carries the same colour as the frame: light enough to read a paragraph,
+    // unmistakably the role's own.
+    let body = lightened(edge, BODY_TOWARDS_WHITE);
     (label, edge, body)
 }
 
-/// the deep tint a frame is filled with. role-matched, but dark enough that code, ansi
-/// output and pictures keep their own colours on top.
+/// a colour pulled towards white, so a paragraph in a role's colour is still readable.
 #[must_use]
-pub const fn role_fill(role: Role) -> Color {
-    match role {
-        Role::User => Color::Rgb(0x10, 0x1a, 0x26),
-        Role::Assistant => Color::Rgb(0x10, 0x1c, 0x16),
-        Role::Thinking => Color::Rgb(0x16, 0x18, 0x1c),
-        Role::Tool => Color::Rgb(0x1c, 0x17, 0x10),
-        Role::ToolOutput | Role::System => Color::Rgb(0x14, 0x16, 0x1a),
-        Role::Error => Color::Rgb(0x24, 0x14, 0x16),
-    }
-}
-
-/// a colour pulled most of the way towards the fill behind it, so a frame reads as the edge
-/// of a panel rather than a bright rectangle against the terminal.
-fn muted(colour: Color, fill: Color, towards_fill: f32) -> Color {
-    let (Color::Rgb(r, g, b), Color::Rgb(fr, fg, fb)) = (colour, fill) else {
+pub fn lightened(colour: Color, amount: f32) -> Color {
+    let Color::Rgb(r, g, b) = colour else {
         return colour;
     };
-    let mix = |a: u8, b: u8| -> u8 {
-        let a = f32::from(a);
-        let b = f32::from(b);
+    let mix = |value: u8| -> u8 {
+        let value = f32::from(value);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let value = (b - a).mul_add(towards_fill, a).round().clamp(0.0, 255.0) as u8;
-        value
+        let mixed = (255.0 - value)
+            .mul_add(amount, value)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        mixed
     };
-    Color::Rgb(mix(r, fr), mix(g, fg), mix(b, fb))
+    Color::Rgb(mix(r), mix(g), mix(b))
 }
 
 /// drops the inline markdown markers so text can be measured.
@@ -1936,7 +1926,7 @@ fn diff_ink(line: &str, base: Color) -> Color {
 }
 
 /// pushes a body section whose text may carry ANSI colouring, as command output does.
-fn body_ansi(out: &mut Vec<Line<'static>>, text: &str, width: usize, ink: Color, fill: Color) {
+fn body_ansi(out: &mut Vec<Line<'static>>, text: &str, width: usize, ink: Color, edge: Color) {
     use ansi_to_tui::IntoText;
 
     let parsed = text.as_bytes().into_text().unwrap_or_else(|_| {
@@ -1959,7 +1949,7 @@ fn body_ansi(out: &mut Vec<Line<'static>>, text: &str, width: usize, ink: Color,
                 .map(|s| Span::styled(s.content, Style::default().fg(tint)))
                 .collect();
         }
-        out.push(framed_line(spans, room, fill));
+        out.push(framed_line(spans, room, edge));
     }
 }
 
@@ -1973,7 +1963,7 @@ fn body(
     width: usize,
     ink: Color,
     markdown: bool,
-    fill: Color,
+    edge: Color,
 ) {
     let room = width.saturating_sub(4);
     if markdown {
@@ -1994,7 +1984,7 @@ fn body(
                     Span::styled(span.content.into_owned(), style)
                 })
                 .collect();
-            out.push(framed_line(spans, room, fill));
+            out.push(framed_line(spans, room, edge));
         }
         return;
     }
@@ -2008,72 +1998,59 @@ fn body(
         out.push(framed_line(
             vec![Span::styled(line, Style::default().fg(ink))],
             room,
-            fill,
+            edge,
         ));
     }
 }
 
 /// one line inside a message frame, padded out to the frame's width.
-fn framed_line(spans: Vec<Span<'static>>, room: usize, fill: Color) -> Line<'static> {
+fn framed_line(spans: Vec<Span<'static>>, room: usize, edge: Color) -> Line<'static> {
     let (spans, shown) = fit_spans(spans, room);
     let pad = room.saturating_sub(shown);
-    let ink = Style::default().fg(fill).bg(fill);
-    let mut row = vec![Span::styled("\u{2502} ", ink)];
-    row.extend(spans.into_iter().map(|span| {
-        // a style the renderer chose for itself, such as a code block, keeps its own fill.
-        if span.style.bg.is_some() {
-            span
-        } else {
-            Span::styled(span.content, span.style.bg(fill))
-        }
-    }));
-    row.push(Span::styled(format!("{} \u{2502}", " ".repeat(pad)), ink));
+    let wall = Style::default().fg(edge);
+    let mut row = vec![Span::styled("\u{2502} ", wall)];
+    row.extend(spans);
+    row.push(Span::styled(format!("{} \u{2502}", " ".repeat(pad)), wall));
     Line::from(row)
 }
 
 /// pushes a picture section: the file name, then the pixels, both inside the frame.
-fn body_image(out: &mut Vec<Line<'static>>, thumb: &Thumb, width: usize, fill: Color) {
+fn body_image(out: &mut Vec<Line<'static>>, thumb: &Thumb, width: usize, edge: Color) {
     let room = width.saturating_sub(4);
     let caption: String = thumb.name.chars().take(room).collect();
     let pad = room.saturating_sub(caption.chars().count());
-    let ink = Style::default().fg(fill).bg(fill);
+    let wall = Style::default().fg(edge);
     out.push(Line::from(vec![
-        Span::styled("\u{2502} ", ink),
-        Span::styled(caption, Style::default().fg(DIM).bg(fill)),
-        Span::styled(format!("{} \u{2502}", " ".repeat(pad)), ink),
+        Span::styled("\u{2502} ", wall),
+        Span::styled(caption, Style::default().fg(edge)),
+        Span::styled(format!("{} \u{2502}", " ".repeat(pad)), wall),
     ]));
     for line in &thumb.lines {
         let (spans, used) = fit_spans(line.spans.clone(), room);
         let pad = room.saturating_sub(used);
-        let mut row = vec![Span::styled("\u{2502} ", ink)];
+        let mut row = vec![Span::styled("\u{2502} ", wall)];
         row.extend(spans);
-        row.push(Span::styled(format!("{} \u{2502}", " ".repeat(pad)), ink));
+        row.push(Span::styled(format!("{} \u{2502}", " ".repeat(pad)), wall));
         out.push(Line::from(row));
     }
 }
 
-fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color, fill: Color) {
-    let border = fill;
+fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
     let head = format!("\u{256d}\u{2500} {label} ");
     let rule = width.saturating_sub(head.chars().count() + 1);
-    let ink = Style::default().fg(border).bg(fill);
+    let ink = Style::default().fg(edge);
     out.push(Line::from(vec![
-        Span::styled("\u{256d}\u{2500}", ink),
-        // the label is the one part of the frame that keeps the role's own colour.
-        Span::styled(format!(" {label} "), Style::default().fg(edge).bg(fill)),
+        Span::styled(head, ink),
         Span::styled("\u{2500}".repeat(rule), ink),
         Span::styled("\u{256e}", ink),
     ]));
 }
 
-/// how far a frame's outline is pulled towards its own fill. the fill identifies the role;
-/// a bright outline on top of it is what clashes with a dark terminal.
-const BORDER_TOWARDS_FILL: f32 = 0.72;
+/// how far a role's body text is pulled towards white, so a paragraph stays readable.
+const BODY_TOWARDS_WHITE: f32 = 0.45;
 
-fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color, fill: Color) {
-    let ink = Style::default()
-        .fg(muted(edge, fill, BORDER_TOWARDS_FILL))
-        .bg(fill);
+fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
+    let ink = Style::default().fg(edge);
     out.push(Line::from(vec![
         Span::styled("\u{251c}", ink),
         Span::styled("\u{2500}".repeat(width.saturating_sub(2)), ink),
@@ -2081,13 +2058,12 @@ fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color, fill: Color)
     ]));
 }
 
-fn bottom(out: &mut Vec<Line<'static>>, width: usize, fill: Color) {
-    let ink = Style::default().fg(fill).bg(fill);
-    let corner = Style::default().fg(fill).bg(Color::Reset);
+fn bottom(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
+    let ink = Style::default().fg(edge);
     out.push(Line::from(vec![
-        Span::styled("\u{2570}", corner),
+        Span::styled("\u{2570}", ink),
         Span::styled("\u{2500}".repeat(width.saturating_sub(2)), ink),
-        Span::styled("\u{256f}", corner),
+        Span::styled("\u{256f}", ink),
     ]));
 }
 
@@ -2138,18 +2114,17 @@ fn entry_body(entry: &Entry) -> String {
 /// renders one transcript entry as a titled frame.
 fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     let (_, edge, ink) = role_style(entry.role, model);
-    let fill = role_fill(entry.role);
     let width = width.saturating_sub(2);
     let mut out = Vec::new();
-    top(&mut out, &entry_label(entry, model), width, edge, fill);
+    top(&mut out, &entry_label(entry, model), width, edge);
     // only prose the model wrote is markdown. our own notices are laid out by us, and a
     // listing whose lines matter must not be folded into one paragraph.
     let markdown = !matches!(entry.role, Role::System | Role::Tool | Role::ToolOutput);
-    body(&mut out, &entry_body(entry), width, ink, markdown, fill);
+    body(&mut out, &entry_body(entry), width, ink, markdown, edge);
     for thumb in &entry.images {
-        body_image(&mut out, thumb, width, fill);
+        body_image(&mut out, thumb, width, edge);
     }
-    bottom(&mut out, width, fill);
+    bottom(&mut out, width, edge);
     inset(out)
 }
 
@@ -2163,22 +2138,21 @@ fn framed_tool(
 ) -> Vec<Line<'static>> {
     let (_, edge, ink) = role_style(Role::Tool, "");
     let (_, _, out_ink) = role_style(Role::ToolOutput, "");
-    let fill = role_fill(Role::Tool);
     let width = width.saturating_sub(2);
     let mut out = Vec::new();
     // the exit code belongs in the title, so the rule stays clean.
     let title = exit_code.map_or_else(|| tool.to_owned(), |code| format!("{tool} (exit {code})"));
-    top(&mut out, &title, width, edge, fill);
+    top(&mut out, &title, width, edge);
     let invocation = if tool == "bash" {
         format!("$ {call}")
     } else {
         call.to_owned()
     };
     // a command and its output are literal: no markdown, but ANSI colouring is honoured.
-    body(&mut out, &invocation, width, ink, false, fill);
-    divider(&mut out, width, edge, fill);
-    body_ansi(&mut out, output, width, out_ink, fill);
-    bottom(&mut out, width, fill);
+    body(&mut out, &invocation, width, ink, false, edge);
+    divider(&mut out, width, edge);
+    body_ansi(&mut out, output, width, out_ink, edge);
+    bottom(&mut out, width, edge);
     inset(out)
 }
 
@@ -2191,25 +2165,17 @@ fn framed_split(
     message: &str,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let (_, edge, _) = role_style(Role::Assistant, model);
+    let (_, edge, reply_ink) = role_style(Role::Assistant, model);
     let label = entry_label(entry, model);
     let (_, _, think_ink) = role_style(Role::Thinking, model);
-    let fill = role_fill(Role::Assistant);
     let width = width.saturating_sub(2);
     let mut out = Vec::new();
-    top(&mut out, &label, width, edge, fill);
-    body(&mut out, thinking, width, think_ink, true, fill);
+    top(&mut out, &label, width, edge);
+    body(&mut out, thinking, width, think_ink, true, edge);
     // the rule is part of this frame, so it uses the frame's colour.
-    divider(&mut out, width, edge, fill);
-    body(
-        &mut out,
-        message,
-        width,
-        Color::Rgb(0xd8, 0xe8, 0xdc),
-        true,
-        fill,
-    );
-    bottom(&mut out, width, fill);
+    divider(&mut out, width, edge);
+    body(&mut out, message, width, reply_ink, true, edge);
+    bottom(&mut out, width, edge);
     inset(out)
 }
 

@@ -704,27 +704,21 @@ fn reasoning_is_always_grey_and_the_divider_matches_its_frame() {
             .map(|c| c.fg)
     };
 
-    // the rule belongs to the assistant frame: it is that frame's colour, pulled towards
-    // the fill so the outline does not glow against a dark terminal.
-    let divider = fg_of("\u{251c}").expect("a divider");
-    let edge = sa_tui::app::OK;
-    assert_ne!(divider, edge, "the outline is muted, not the label colour");
-    let (Color::Rgb(r, g, b), Color::Rgb(er, eg, eb), Color::Rgb(fr, fg_, fb)) =
-        (divider, edge, sa_tui::app::role_fill(Role::Assistant))
-    else {
-        panic!("rgb");
-    };
-    let closer_to_fill = |v: u8, e: u8, f: u8| u32::from(v.abs_diff(f)) < u32::from(e.abs_diff(f));
-    assert!(
-        closer_to_fill(r, er, fr) && closer_to_fill(g, eg, fg_) && closer_to_fill(b, eb, fb),
-        "the outline sits between the role colour and its fill"
+    // the rule belongs to the assistant frame, so it is that frame's colour.
+    assert_eq!(
+        fg_of("\u{251c}"),
+        Some(sa_tui::app::OK),
+        "the divider must match the frame it splits"
     );
 
     // reasoning is neutral grey, never tinted.
-    assert_eq!(
-        fg_of("w"),
-        Some(Color::Rgb(0x8a, 0x93, 0xa0)),
-        "reasoning text must be grey"
+    let Color::Rgb(r, g, b) = fg_of("w").expect("reasoning text") else {
+        panic!("rgb");
+    };
+    assert!(
+        r.max(g).max(b) - r.min(g).min(b) <= 24,
+        "reasoning text must be grey, not tinted: {:?}",
+        fg_of("w")
     );
     assert_ne!(
         fg_of("w"),
@@ -2939,7 +2933,7 @@ fn a_replayed_message_keeps_the_effort_it_ran_at() {
 }
 
 #[test]
-fn a_message_frame_is_filled_in_its_own_colour() {
+fn a_message_carries_its_role_colour_in_the_text_and_the_frame() {
     let mut app = App::new("session-abcdef", "m");
     app.tab_mut().push(Role::User, "refactor the parser");
     app.tab_mut()
@@ -2950,21 +2944,40 @@ fn a_message_frame_is_filled_in_its_own_colour() {
     sa_tui::draw(&mut terminal, &mut app).expect("draw");
     let buffer = terminal.backend().buffer();
 
-    let mut fills: Vec<ratatui::style::Color> = Vec::new();
-    for y in 0..24 {
-        for x in 0..120 {
-            let cell = &buffer[(x, y)];
-            // the frame edge, whose fill is the message's own.
-            if cell.symbol() == "\u{2502}"
-                && cell.bg != ratatui::style::Color::Reset
-                && !fills.contains(&cell.bg)
-            {
-                fills.push(cell.bg);
+    // the first cell of each message's text, and the frame it sits in.
+    let colour_of = |needle: &str| -> (ratatui::style::Color, ratatui::style::Color) {
+        for y in 0..24 {
+            let row: String = (0..120).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(at) = row.find(needle) {
+                #[allow(clippy::cast_possible_truncation)]
+                let cell = &buffer[(at as u16, y)];
+                return (cell.fg, cell.bg);
             }
         }
-    }
+        panic!("{needle} is not on screen");
+    };
+
+    let (user_text, user_bg) = colour_of("refactor");
+    let (reply_text, reply_bg) = colour_of("the parser splits");
+    assert_ne!(user_text, reply_text, "each role has its own colour");
+    assert_ne!(user_text, ratatui::style::Color::Rgb(0xff, 0xff, 0xff));
+    assert_eq!(
+        user_bg,
+        ratatui::style::Color::Reset,
+        "the terminal background shows through"
+    );
+    assert_eq!(reply_bg, ratatui::style::Color::Reset);
+
+    // the frame around a message is the same colour as its text.
+    let wall = buffer
+        .content()
+        .iter()
+        .find(|c| c.symbol() == "\u{256d}")
+        .map(|c| c.fg)
+        .expect("a frame corner");
+    let tinted = [user_text, reply_text];
     assert!(
-        fills.len() >= 2,
-        "a user message and a reply carry different fills: {fills:?}"
+        tinted.iter().any(|colour| *colour != wall),
+        "the frame keeps the role's own colour, not the lightened text tone"
     );
 }
