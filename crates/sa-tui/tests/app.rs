@@ -2923,3 +2923,33 @@ fn a_replayed_message_keeps_the_effort_it_ran_at() {
         "history keeps the effort it ran at, not the session's current one:\n{shown}"
     );
 }
+
+#[test]
+fn a_message_frame_is_filled_in_its_own_colour() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().push(Role::User, "refactor the parser");
+    app.tab_mut()
+        .push(Role::Assistant, "the parser splits on ; at line 40");
+
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let mut fills: Vec<ratatui::style::Color> = Vec::new();
+    for y in 0..24 {
+        for x in 0..120 {
+            let cell = &buffer[(x, y)];
+            // the frame edge, whose fill is the message's own.
+            if cell.symbol() == "\u{2502}" && cell.bg != ratatui::style::Color::Reset {
+                if !fills.contains(&cell.bg) {
+                    fills.push(cell.bg);
+                }
+            }
+        }
+    }
+    assert!(
+        fills.len() >= 2,
+        "a user message and a reply carry different fills: {fills:?}"
+    );
+}
