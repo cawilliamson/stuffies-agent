@@ -13,6 +13,7 @@ async fn the_provider_streams_an_answer() {
     let mut rx = provider
         .stream(ChatRequest {
             model: std::env::var("SA_MODEL").unwrap_or_default(),
+            system: None,
             messages: vec![message::user("Reply with exactly the word: hello")],
             tools: Vec::new(),
             max_tokens: Some(64),
@@ -63,6 +64,7 @@ async fn a_tool_call_and_its_result_round_trip() {
         let mut rx = provider
             .stream(ChatRequest {
                 model: model.clone(),
+                system: None,
                 messages: vec![ask.clone()],
                 tools: tools.clone(),
                 max_tokens: Some(256),
@@ -101,6 +103,7 @@ async fn a_tool_call_and_its_result_round_trip() {
     let mut rx = provider
         .stream(ChatRequest {
             model,
+            system: None,
             messages: vec![ask, assistant, result],
             tools,
             max_tokens: Some(256),

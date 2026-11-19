@@ -11,6 +11,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+command-group.workspace = true
+directories.workspace = true
 futures-util.workspace = true
 nix.workspace = true
 regex.workspace = true

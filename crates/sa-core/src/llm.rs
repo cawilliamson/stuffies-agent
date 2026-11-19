@@ -35,6 +35,8 @@ pub struct ToolSpec {
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
+    /// the system prompt as data: rig renders the sections when the request is sent.
+    pub system: Option<rig_core::completion::prompt::SystemPrompt>,
     /// the conversation, in rig's shape. rig owns the message model, the wire and the
     /// pairing rules; nothing here mirrors it.
     pub messages: Vec<rig_core::completion::Message>,
@@ -508,6 +510,9 @@ fn rig_request(request: &ChatRequest) -> Result<rig_core::completion::Completion
         ));
     };
     let mut completion = rig_core::completion::CompletionRequest::new(prompt).messages(messages);
+    if let Some(system) = &request.system {
+        completion = completion.with_system(system);
+    }
     if let Some(max_tokens) = request.max_tokens {
         completion = completion.max_tokens(max_tokens);
     }
@@ -738,6 +743,7 @@ mod tests {
     fn a_request_carries_the_tools_the_cap_and_the_effort() {
         let request = ChatRequest {
             model: "m".to_owned(),
+            system: None,
             messages: vec![message::system("be brief"), message::user("hi")],
             tools: vec![ToolSpec {
                 name: "read".to_owned(),
@@ -772,6 +778,7 @@ mod tests {
         let mut rx = provider
             .stream(ChatRequest {
                 model: "m".to_owned(),
+                system: None,
                 messages: Vec::new(),
                 tools: Vec::new(),
                 max_tokens: None,

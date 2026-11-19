@@ -10,13 +10,17 @@ use serde_json::{json, Value};
 /// workspace itself (see spec 6.1).
 #[must_use]
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map_or_else(|| home().join(".config"), PathBuf::from)
+    directories::BaseDirs::new()
+        .map_or_else(
+            || PathBuf::from(".config"),
+            |dirs| dirs.config_dir().to_path_buf(),
+        )
         .join("stuffies-agent")
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
+    directories::BaseDirs::new()
+        .map_or_else(|| PathBuf::from("."), |dirs| dirs.home_dir().to_path_buf())
 }
 
 /// a stable directory name for a workspace path.

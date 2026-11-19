@@ -595,7 +595,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn migrate(conn: &Connection) -> Result<(), StoreError> {
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS events (
              id INTEGER PRIMARY KEY,
              session_id TEXT NOT NULL,
@@ -632,39 +632,11 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
          );
          CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
          INSERT INTO schema_version (version)
-             SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);",
-    )?;
+             SELECT {SCHEMA_VERSION} WHERE NOT EXISTS (SELECT 1 FROM schema_version);"
+    ))?;
     let version: i64 = conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
         row.get(0)
     })?;
-
-    // v3 added the per-session reasoning effort.
-    if version == 2 {
-        let has_column: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'effort'",
-            [],
-            |row| row.get(0),
-        )?;
-        if has_column == 0 {
-            conn.execute_batch("ALTER TABLE sessions ADD COLUMN effort TEXT;")?;
-        }
-        conn.execute("UPDATE schema_version SET version = 3", [])?;
-        return Ok(());
-    }
-
-    // v2 dropped the autonomy column when the permission system was removed.
-    if version < SCHEMA_VERSION {
-        let has_column: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'autonomy'",
-            [],
-            |row| row.get(0),
-        )?;
-        if has_column > 0 {
-            conn.execute_batch("ALTER TABLE sessions DROP COLUMN autonomy;")?;
-        }
-        conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
-        return Ok(());
-    }
 
     if version != SCHEMA_VERSION {
         return Err(StoreError::UnknownState(format!(

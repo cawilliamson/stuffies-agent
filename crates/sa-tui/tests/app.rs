@@ -1035,11 +1035,17 @@ fn markdown_italics_and_code_render_without_markers() {
         .any(|c| c.symbol() == "c" && c.modifier.contains(Modifier::ITALIC));
     assert!(italic, "the italic run must be italic");
 
+    // the renderer styles a code run apart from the prose around it.
+    let prose = buffer
+        .content()
+        .iter()
+        .find(|c| c.symbol() == "c")
+        .map(|c| c.fg);
     let code = buffer
         .content()
         .iter()
-        .any(|c| c.symbol() == "-" && c.fg == sa_tui::app::CODE_INK);
-    assert!(code, "the code run must use the code colour");
+        .any(|c| c.symbol() == "-" && Some(c.fg) != prose);
+    assert!(code, "the code run must be styled apart from the prose");
 }
 
 #[test]

@@ -358,8 +358,8 @@ fn context_meter(used: u64, limit: u64) -> (String, Color) {
 pub fn short_path(path: &str) -> String {
     const MAX: usize = 40;
     let mut shown = path.to_owned();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = home.to_string_lossy().into_owned();
+    if let Some(dirs) = directories::BaseDirs::new() {
+        let home = dirs.home_dir().to_string_lossy().into_owned();
         if let Some(rest) = shown.strip_prefix(&home) {
             // only a whole component: /home/chrisaw2 is not inside /home/chrisaw.
             if rest.is_empty() || rest.starts_with('/') {

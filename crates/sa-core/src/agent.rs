@@ -10,6 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use rig_core::completion::prompt::{Section, SystemPrompt};
 use sa_proto::session::kinds;
 use sa_proto::session::{Event, Usage};
 use serde_json::{json, Value};
@@ -149,7 +150,7 @@ impl Agent {
     }
 
     pub async fn run_turn(&self, request: TurnRequest) -> Result<TurnOutcome, AgentError> {
-        let mut messages = self.build_transcript(&request)?;
+        let (system, mut messages) = self.build_transcript(&request)?;
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -172,6 +173,7 @@ impl Agent {
             let Some(streamed) = self
                 .until_cancelled(self.provider.stream(ChatRequest {
                     model: request.model.clone(),
+                    system: Some(system.clone()),
                     messages: messages.clone(),
                     tools: self.tools.specs(),
                     max_tokens: request.max_tokens,
@@ -325,19 +327,19 @@ impl Agent {
     fn build_transcript(
         &self,
         request: &TurnRequest,
-    ) -> Result<Vec<rig_core::completion::Message>, AgentError> {
+    ) -> Result<(SystemPrompt, Vec<rig_core::completion::Message>), AgentError> {
         let mut system = system_prompt(&self.tools.specs(), &request.workspace);
         if let Some(context) = &request.context {
-            system.push_str("\n\nProject context (read-only, deployed outside the workspace):\n");
-            system.push_str(context);
+            system
+                .sections
+                .push(Section::new("project_context", context.clone()));
         }
-        let mut messages = vec![message::system(system)];
-
         if let Some(summary) = &request.compaction_summary {
-            messages.push(message::system(format!(
-                "Summary of earlier work:\n{summary}"
-            )));
+            system
+                .sections
+                .push(Section::new("earlier_work", summary.clone()));
         }
+        let mut messages = Vec::new();
 
         // the whole conversation, tool calls and results included. dropping them made every
         // turn start from prose alone, so the model re-read the workspace and drifted from
@@ -417,33 +419,88 @@ impl Agent {
 
         // rig owns the pairing rules: an interrupted turn leaves a call nothing answered,
         // and repairing that here is what keeps the endpoint from rejecting the history.
-        let paired = rig_core::conversation::pairing::repair(messages);
-        if !paired.repairs.is_empty() {
-            tracing::debug!(repairs = ?paired.repairs, "repaired the replayed history");
-        }
-        Ok(paired.messages)
+        // rig shapes the history for the model that will read it: failed turns are
+        // skipped, and every tool call is answered before the wire sees it.
+        let adapted = rig_core::completion::history::adapt(
+            &messages,
+            &ChatTarget {
+                model: request.model.clone(),
+            },
+        );
+        Ok((system, adapted))
     }
 }
 
 /// who the agent is, what it can do, and how to behave. the tool list is generated from
 /// the registry so the prompt cannot drift from the tools that are actually callable.
-fn system_prompt(tools: &[ToolSpec], workspace: &str) -> String {
-    let mut prompt = format!(
-        "You are sa, a coding agent working in the git workspace at {workspace}. \
-         Tool paths resolve inside it; a path outside it is an error.\nTools:\n"
-    );
+fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
+    let mut tools_text = String::new();
     for tool in tools {
-        let _ = writeln!(prompt, "- {}: {}", tool.name, tool.description);
+        let _ = writeln!(tools_text, "- {}: {}", tool.name, tool.description);
     }
 
-    prompt.push_str(
-        "Rules:\n\
-         - read a file before editing it\n\
-         - search with grep and find rather than the shell\n\
-         - run the project's own checks after changing code\n\
-         - keep replies short\n",
-    );
-    prompt
+    SystemPrompt {
+        role: format!(
+            "You are sa, a coding agent working in the git workspace at {workspace}. \
+             Tool paths resolve inside it; a path outside it is an error."
+        ),
+        sections: vec![
+            Section::new("tools", tools_text),
+            Section::new(
+                "rules",
+                "- read a file before editing it\n\
+                 - search with grep and find rather than the shell\n\
+                 - run the project's own checks after changing code\n\
+                 - keep replies short",
+            ),
+        ],
+    }
+}
+
+/// the wire the replayed history is shaped for: an openai-compatible chat completions
+/// endpoint. rig asks it what it accepts, so the history fits the model reading it.
+#[derive(Debug)]
+struct ChatTarget {
+    model: String,
+}
+
+impl rig_core::completion::ReplayTarget for ChatTarget {
+    fn api(&self) -> rig_core::completion::message::Api {
+        rig_core::completion::message::Api::from_static("openai.chat")
+    }
+
+    fn provider(&self) -> &'static str {
+        "openai"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn accepts(&self, _model: &str) -> rig_core::completion::history::Accepts {
+        rig_core::completion::history::Accepts::ALL
+    }
+
+    fn map_options(
+        &self,
+        _request: &rig_core::completion::CompletionRequest,
+        fields: rig_core::completion::options::OptionFields<'_>,
+    ) -> rig_core::completion::options::OptionMap {
+        use rig_core::completion::options::{Mapping, OptionMap};
+        // the agent sets none of these itself; anything a caller sets is sent as it is.
+        const UNSET: &str = "the agent does not set this option";
+        OptionMap {
+            reasoning: Mapping::of(fields.reasoning, |_| Mapping::Send(serde_json::json!({}))),
+            cache: Mapping::of(fields.cache, |_| Mapping::Omit(UNSET)),
+            service_tier: Mapping::of(fields.service_tier, |_| Mapping::Omit(UNSET)),
+            verbosity: Mapping::of(fields.verbosity, |_| Mapping::Omit(UNSET)),
+            parallel_tool_calls: Mapping::of(fields.parallel_tool_calls, |_| Mapping::Omit(UNSET)),
+            top_p: Mapping::of(fields.top_p, |_| Mapping::Omit(UNSET)),
+            seed: Mapping::of(fields.seed, |_| Mapping::Omit(UNSET)),
+            stop: Mapping::of_stop(fields.stop, |_| Mapping::Omit(UNSET)),
+            cache_key: Mapping::of(fields.cache_key, |_| Mapping::Omit(UNSET)),
+        }
+    }
 }
 
 fn parse_args(raw: &str) -> Value {

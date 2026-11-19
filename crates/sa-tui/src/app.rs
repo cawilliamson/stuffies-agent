@@ -150,11 +150,12 @@ pub fn context_summary(cwd: &str, groups: &[Value]) -> String {
     }
 
     let mut lines = vec!["Files loaded into context:".to_owned(), String::new()];
-    if let Some(root) = root {
-        // the directory the tree hangs off, drawn as the folder it is.
-        lines.push(format!("\u{f07b} {}", root.label));
-        let children: Vec<ContextNode> = root.children.into_iter().map(collapse).collect();
-        render_tree(&children, "", &mut lines);
+    if let Some(mut root) = root {
+        root.children = root.children.into_iter().map(collapse).collect();
+        // termtree draws the guides; the glyphs are set to the ones this listing has
+        // always used, so the shape is unchanged.
+        let drawn = context_tree(&root).with_glyphs(LISTING_GLYPHS).to_string();
+        lines.extend(drawn.trim_end().split('\n').map(str::to_owned));
     }
     lines.push(String::new());
     lines.push(format!(
@@ -201,26 +202,36 @@ fn collapse(node: ContextNode) -> ContextNode {
     node
 }
 
-/// draws a level of the tree, with the guides that show what belongs to what.
-fn render_tree(children: &[ContextNode], prefix: &str, lines: &mut Vec<String>) {
-    for (index, entry) in children.iter().enumerate() {
-        let last = index + 1 == children.len();
-        let corner = if last { '\u{2514}' } else { '\u{251c}' };
-        let icon = if entry.children.is_empty() && entry.tokens.is_some() {
-            FILE_ICON
-        } else {
-            '\u{f07b}'
-        };
-        let suffix = entry
-            .tokens
-            .map_or_else(String::new, |tokens| format!(" ({tokens} tokens)"));
-        lines.push(format!(
-            "{prefix}{corner}\u{2500} {icon} {}{suffix}",
-            entry.label
-        ));
-        let next = format!("{prefix}{}", if last { "   " } else { "\u{2502}  " });
-        render_tree(&entry.children, &next, lines);
+/// the listing's tree, as termtree draws it.
+fn context_tree(node: &ContextNode) -> termtree::Tree<String> {
+    let mut tree = termtree::Tree::new(node_label(node));
+    for child in &node.children {
+        tree.push(context_tree(child));
     }
+    tree
+}
+
+/// the guides this listing uses: the same box-drawing tree it has always drawn.
+const LISTING_GLYPHS: termtree::GlyphPalette = termtree::GlyphPalette {
+    middle_item: "\u{251c}",
+    last_item: "\u{2514}",
+    item_indent: "\u{2500} ",
+    middle_skip: "\u{2502}",
+    last_skip: " ",
+    skip_indent: "  ",
+};
+
+/// one entry: a folder, or a file with what it costs.
+fn node_label(node: &ContextNode) -> String {
+    let icon = if node.children.is_empty() && node.tokens.is_some() {
+        FILE_ICON
+    } else {
+        '\u{f07b}'
+    };
+    let suffix = node
+        .tokens
+        .map_or_else(String::new, |tokens| format!(" ({tokens} tokens)"));
+    format!("{icon} {}{suffix}", node.label)
 }
 
 /// the nerd font glyph every loaded file carries.
@@ -1833,83 +1844,11 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
     (label, edge, body)
 }
 
-/// the colour inline code is drawn in.
-pub const CODE_INK: Color = Color::Rgb(0xe0, 0xc0, 0x80);
-
 /// drops the inline markdown markers so text can be measured.
 #[must_use]
 pub fn plain(text: &str) -> String {
     text.replace("**", "").replace(['*', '`'], "")
 }
-
-/// splits `**bold**`, `*italic*` and `` `code` `` runs into styled spans, dropping the
-/// markers. unmatched markers simply style the remainder.
-fn styled(text: &str, base: Style) -> Vec<Span<'static>> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut buf = String::new();
-    let mut rest = text;
-    let mut bold = false;
-    let mut italic = false;
-    let mut code = false;
-
-    let style_of = |bold: bool, italic: bool, code: bool| {
-        let mut style = base;
-        if bold {
-            style = style.add_modifier(ratatui::style::Modifier::BOLD);
-        }
-        if italic {
-            style = style.add_modifier(ratatui::style::Modifier::ITALIC);
-        }
-        if code {
-            style = style.fg(CODE_INK);
-        }
-        style
-    };
-
-    while let Some(ch) = rest.chars().next() {
-        // longest marker first, so `**` is never read as two italics.
-        if let Some(after) = rest.strip_prefix("**") {
-            if !buf.is_empty() {
-                spans.push(Span::styled(
-                    std::mem::take(&mut buf),
-                    style_of(bold, italic, code),
-                ));
-            }
-            bold = !bold;
-            rest = after;
-            continue;
-        }
-        if let Some(after) = rest.strip_prefix('*') {
-            if !buf.is_empty() {
-                spans.push(Span::styled(
-                    std::mem::take(&mut buf),
-                    style_of(bold, italic, code),
-                ));
-            }
-            italic = !italic;
-            rest = after;
-            continue;
-        }
-        if let Some(after) = rest.strip_prefix('`') {
-            if !buf.is_empty() {
-                spans.push(Span::styled(
-                    std::mem::take(&mut buf),
-                    style_of(bold, italic, code),
-                ));
-            }
-            code = !code;
-            rest = after;
-            continue;
-        }
-        buf.push(ch);
-        rest = &rest[ch.len_utf8()..];
-    }
-    if !buf.is_empty() {
-        spans.push(Span::styled(buf, style_of(bold, italic, code)));
-    }
-    spans
-}
-
 /// cuts styled spans to a visible width.
 fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usize) {
     let mut out: Vec<Span<'static>> = Vec::new();
@@ -1981,6 +1920,9 @@ fn body_ansi(out: &mut Vec<Line<'static>>, text: &str, width: usize, edge: Color
 }
 
 /// pushes one body section: each row is exactly `width` cells.
+///
+/// markdown is rendered by tui-markdown, which owns headings, lists, fenced code with
+/// syntax highlighting, and tables; plain text is shown as it came.
 fn body(
     out: &mut Vec<Line<'static>>,
     text: &str,
@@ -1990,167 +1932,54 @@ fn body(
     markdown: bool,
 ) {
     let room = width.saturating_sub(4);
-    let lines: Vec<&str> = text.lines().collect();
-    let mut index = 0;
-    while index < lines.len() {
-        // a markdown table is drawn as a table, not as its own pipe-separated source.
-        if markdown {
-            if let Some((table, consumed)) = table_at(&lines[index..]) {
-                for line in render_table(&table, room) {
-                    out.push(frame_line(&line, room, edge, ink, false));
-                }
-                index += consumed;
-                continue;
-            }
+    if markdown {
+        let options =
+            tui_markdown::Options::default().table_width(u16::try_from(room).unwrap_or(u16::MAX));
+        let rendered = tui_markdown::from_str_with_options(text, &options);
+        for line in rendered.lines {
+            let spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    // the sheet leaves body text uncoloured so it takes the transcript's ink.
+                    let style = if span.style.fg.is_none() {
+                        span.style.fg(ink)
+                    } else {
+                        span.style
+                    };
+                    Span::styled(span.content.into_owned(), style)
+                })
+                .collect();
+            out.push(framed_line(spans, room, edge));
         }
-        let raw = lines[index];
-        index += 1;
+        return;
+    }
+
+    for raw in text.lines() {
         let mut line = raw.to_owned();
         if line.chars().count() > room {
-            line = line
-                .chars()
-                .take(room.saturating_sub(1))
-                .collect::<String>();
+            line = line.chars().take(room.saturating_sub(1)).collect();
             line.push('\u{2026}');
         }
-        out.push(frame_line(&line, room, edge, ink, markdown));
+        out.push(framed_line(
+            vec![Span::styled(line, Style::default().fg(ink))],
+            room,
+            edge,
+        ));
     }
 }
 
 /// one line inside a message frame, padded out to the frame's width.
-fn frame_line(line: &str, room: usize, edge: Color, ink: Color, markdown: bool) -> Line<'static> {
-    let shown = if markdown {
-        plain(line).chars().count()
-    } else {
-        line.chars().count()
-    };
+fn framed_line(spans: Vec<Span<'static>>, room: usize, edge: Color) -> Line<'static> {
+    let (spans, shown) = fit_spans(spans, room);
     let pad = room.saturating_sub(shown);
-    let base = Style::default().fg(ink);
-    let mut spans = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
-    if markdown {
-        spans.extend(styled(line, base));
-    } else {
-        spans.push(Span::styled(line.to_owned(), base));
-    }
-    spans.push(Span::styled(
+    let mut row = vec![Span::styled("\u{2502} ", Style::default().fg(edge))];
+    row.extend(spans);
+    row.push(Span::styled(
         format!("{} \u{2502}", " ".repeat(pad)),
         Style::default().fg(edge),
     ));
-    Line::from(spans)
-}
-
-/// the cells of a table row, with the pipes that delimit them removed.
-fn cells(row: &str) -> Vec<String> {
-    row.trim()
-        .trim_start_matches('|')
-        .trim_end_matches('|')
-        .split('|')
-        .map(|cell| cell.trim().to_owned())
-        .collect()
-}
-
-/// whether a row is the `|---|---|` line that makes the row above it a header.
-fn is_separator(row: &str) -> bool {
-    let cells = cells(row);
-    !cells.is_empty()
-        && cells.iter().all(|cell| {
-            let body = cell.trim_start_matches(':').trim_end_matches(':');
-            !body.is_empty() && body.chars().all(|character| character == '-')
-        })
-}
-
-/// a markdown table starting at the head of `lines`, and how many lines it consumed.
-fn table_at(lines: &[&str]) -> Option<(Vec<Vec<String>>, usize)> {
-    let header = lines.first()?;
-    if !header.contains('|') {
-        return None;
-    }
-    let separator = lines.get(1)?;
-    if !is_separator(separator) {
-        return None;
-    }
-    let width = cells(header).len();
-    if width == 0 || cells(separator).len() != width {
-        return None;
-    }
-
-    let mut rows = vec![cells(header)];
-    let mut consumed = 2;
-    for row in lines.iter().skip(2) {
-        if !row.contains('|') || row.trim().is_empty() {
-            break;
-        }
-        let mut cells = cells(row);
-        cells.resize(width, String::new());
-        rows.push(cells);
-        consumed += 1;
-    }
-    Some((rows, consumed))
-}
-
-/// draws a table that fits `room` columns: the header, a rule, then the rows.
-fn render_table(rows: &[Vec<String>], room: usize) -> Vec<String> {
-    let columns = rows.first().map_or(0, Vec::len);
-    if columns == 0 {
-        return Vec::new();
-    }
-    let mut widths: Vec<usize> = (0..columns)
-        .map(|column| {
-            rows.iter()
-                .map(|row| {
-                    row.get(column)
-                        .map_or(0, |cell| plain(cell).chars().count())
-                })
-                .max()
-                .unwrap_or(1)
-                .clamp(3, 40)
-        })
-        .collect();
-    // the borders cost three cells per column; give the space back to the widest column
-    // until the table fits the frame.
-    let overhead = columns * 3 + 1;
-    while widths.iter().sum::<usize>() + overhead > room {
-        let Some((widest, _)) = widths.iter().enumerate().max_by_key(|(_, width)| **width) else {
-            break;
-        };
-        if widths[widest] <= 3 {
-            break;
-        }
-        widths[widest] -= 1;
-    }
-
-    let rule = |left: char, middle: char, right: char| {
-        let mut line = String::from(left);
-        for (column, width) in widths.iter().enumerate() {
-            line.push_str(&"\u{2500}".repeat(width + 2));
-            line.push(if column + 1 == columns { right } else { middle });
-        }
-        line
-    };
-    let row = |cells: &[String]| {
-        let mut line = String::from("\u{2502}");
-        for (column, width) in widths.iter().enumerate() {
-            let cell = cells.get(column).map_or("", String::as_str);
-            let text: String = plain(cell).chars().take(*width).collect();
-            let pad = width.saturating_sub(text.chars().count());
-            line.push(' ');
-            line.push_str(&text);
-            line.push_str(&" ".repeat(pad));
-            line.push_str(" \u{2502}");
-        }
-        line
-    };
-
-    let mut out = vec![rule('\u{250c}', '\u{252c}', '\u{2510}')];
-    if let Some(header) = rows.first() {
-        out.push(row(header));
-        out.push(rule('\u{251c}', '\u{253c}', '\u{2524}'));
-    }
-    for row_cells in rows.iter().skip(1) {
-        out.push(row(row_cells));
-    }
-    out.push(rule('\u{2514}', '\u{2534}', '\u{2518}'));
-    out
+    Line::from(row)
 }
 
 /// pushes a picture section: the file name, then the pixels, both inside the frame.
@@ -2398,17 +2227,9 @@ pub fn expand_home(token: &str) -> String {
     token.to_owned()
 }
 
-fn media_type_for(path: &str) -> &'static str {
-    let extension = std::path::Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(str::to_ascii_lowercase);
-    match extension.as_deref() {
-        Some("gif") => "image/gif",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        _ => "image/png",
-    }
+/// the picture's real type, read from its bytes rather than trusted from its name.
+fn media_type_for(bytes: &[u8]) -> &'static str {
+    infer::get(bytes).map_or("image/png", |kind| kind.mime_type())
 }
 
 fn load_attachment(
@@ -2428,7 +2249,7 @@ fn load_attachment(
             .and_then(|name| name.to_str())
             .unwrap_or(path)
             .to_owned(),
-        media_type: media_type_for(path).to_owned(),
+        media_type: media_type_for(&bytes).to_owned(),
         data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
         protocol,
     })

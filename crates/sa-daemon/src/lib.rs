@@ -34,15 +34,9 @@ impl Config {
         let runtime_dir = socket::default_runtime_dir();
         // never a relative path: an unset XDG_STATE_HOME must not drop `.sa/` into the
         // daemon's cwd, which is usually a workspace (spec 6.1).
-        let state_dir = std::env::var_os("XDG_STATE_HOME")
-            .map_or_else(
-                || {
-                    std::env::var_os("HOME")
-                        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
-                        .join(".local/state")
-                },
-                PathBuf::from,
-            )
+        let state_dir = directories::BaseDirs::new()
+            .and_then(|dirs| dirs.state_dir().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("stuffies-agent");
         let socket_path = std::env::var_os("SA_SOCKET")
             .map_or_else(|| runtime_dir.join(socket::SOCKET_FILE), PathBuf::from);

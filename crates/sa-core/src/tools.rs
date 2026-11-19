@@ -7,6 +7,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use command_group::AsyncCommandGroup;
+
 use crate::agent::{BoxFuture, ToolExecutor, ToolOutcome};
 use crate::llm::{ToolCall, ToolSpec};
 
@@ -220,14 +222,24 @@ impl ToolRegistry {
             // the environment is inherited from the running daemon, never rebuilt: a
             // hardcoded PATH is wrong on every machine that is not the one it was set on.
             .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
+            // group_spawn inherits the parent's streams unless they are asked for.
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        // the command runs in its own process group, and the group is what gets killed:
+        // a `sleep 100 &` would otherwise outlive the shell that started it.
+        let child = process
+            .group_spawn()
+            .map_err(|e| ToolError::Args(e.to_string()))?;
+        let mut killer = KillGroup(child.id().and_then(|id| i32::try_from(id).ok()));
 
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(COMMAND_TIMEOUT_SECS),
-            process.output(),
+            child.wait_with_output(),
         )
         .await
         .map_err(|_| ToolError::Args(format!("timed out after {COMMAND_TIMEOUT_SECS}s")))??;
+        killer.disarm();
 
         // one combined stream, as a terminal would show it: no section headers.
         let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -360,5 +372,87 @@ mod tests {
             registry.resolve("/etc/passwd"),
             Err(ToolError::Escape(_))
         ));
+    }
+}
+
+/// kills the whole process group when dropped, so a command that is abandoned by a
+/// cancelled turn takes everything it started with it.
+struct KillGroup(Option<i32>);
+
+impl KillGroup {
+    const fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        if let Some(group) = self.0 {
+            // the group may already be gone, which is not an error worth reporting.
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(group),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod group_tests {
+    use super::*;
+
+    /// a command that backgrounds a child and waits, as a long build does.
+    const BACKGROUNDED: &str = "sleep 30 & echo $! > ";
+
+    #[tokio::test]
+    async fn abandoning_a_command_kills_what_it_started() {
+        let dir = std::env::temp_dir().join(format!("sa-group-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let pid_file = dir.join("child.pid");
+        let _ = std::fs::remove_file(&pid_file);
+
+        let registry = std::sync::Arc::new(ToolRegistry::new(dir.clone()));
+        let command = format!("{BACKGROUNDED}{}; wait", pid_file.display());
+        let call = ToolCall {
+            id: "c1".to_owned(),
+            name: "bash".to_owned(),
+            arguments: json!({ "command": command }).to_string(),
+        };
+        let running = tokio::spawn({
+            let registry = std::sync::Arc::clone(&registry);
+            async move { registry.execute(call).await }
+        });
+
+        // let the shell start and write the grandchild's pid.
+        for _ in 0..100 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the grandchild must report its pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        assert!(alive(pid), "the grandchild is running before the drop");
+
+        // aborting the task is what escape does: the future is dropped.
+        running.abort();
+
+        let mut dead = false;
+        for _ in 0..100 {
+            if !alive(pid) {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(dead, "the grandchild outlived the turn: {pid}");
+    }
+
+    fn alive(pid: i32) -> bool {
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
     }
 }

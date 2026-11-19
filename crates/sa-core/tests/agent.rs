@@ -289,19 +289,19 @@ async fn the_system_prompt_names_the_tools_the_rules_and_the_workspace() {
     let seen = provider.seen_requests();
     let system = seen
         .first()
-        .and_then(|request| request.messages.first())
-        .and_then(|message| match message {
-            rig_core::completion::Message::System { content } => Some(content.clone()),
-            _ => None,
-        })
+        .and_then(|request| request.system.as_ref())
+        .map(rig_core::completion::prompt::SystemPrompt::text)
         .expect("a system prompt");
 
     assert!(
-        system.contains("Tools:"),
+        system.contains("<tools>"),
         "the prompt lists tools:\n{system}"
     );
     assert!(system.contains("read"), "the tool registry feeds the list");
-    assert!(system.contains("Rules:"), "the prompt carries rules");
+    assert!(
+        system.contains("<rules>"),
+        "the prompt carries rules:\n{system}"
+    );
     assert!(
         system.contains("the git workspace at /tmp/ws"),
         "the model is told the session's workspace, not the daemon's cwd:\n{system}"
