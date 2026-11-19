@@ -595,11 +595,10 @@ async fn a_second_turn_sees_the_first_turns_context() {
     .await;
     for _ in 0..300 {
         let seen = provider.seen_requests();
-        if seen.iter().any(|r| {
-            r.messages
-                .iter()
-                .any(|m| m.content.as_ref().and_then(|c| c.as_text()) == Some("second prompt"))
-        }) {
+        if seen
+            .iter()
+            .any(|r| user_texts(&r.messages).iter().any(|t| t == "second prompt"))
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -609,23 +608,15 @@ async fn a_second_turn_sees_the_first_turns_context() {
     // the background retitle also calls the provider, so find the turn by its prompt.
     let second = seen
         .iter()
-        .find(|r| {
-            r.messages
-                .iter()
-                .any(|m| m.content.as_ref().and_then(|c| c.as_text()) == Some("second prompt"))
-        })
+        .find(|r| user_texts(&r.messages).iter().any(|t| t == "second prompt"))
         .expect("the second turn must reach the provider");
-    let carried = second.messages.iter().any(|m| {
-        m.role == "user" && m.content.as_ref().and_then(|c| c.as_text()) == Some("first prompt")
-    });
+    let carried = user_texts(&second.messages)
+        .iter()
+        .any(|t| t == "first prompt");
     assert!(
         carried,
         "the second turn must carry the first prompt: {:?}",
-        second
-            .messages
-            .iter()
-            .map(|m| (m.role.clone(), m.content.clone()))
-            .collect::<Vec<_>>()
+        user_texts(&second.messages)
     );
 
     let _ = stop.send(());
@@ -944,4 +935,22 @@ async fn a_closed_session_can_be_brought_back() {
     );
 
     daemon.stop().await;
+}
+
+/// the plain text the operator sent.
+fn user_texts(messages: &[sa_core::rig_core::completion::Message]) -> Vec<String> {
+    use sa_core::rig_core::completion::{message::UserContent, Message};
+    messages
+        .iter()
+        .flat_map(|message| match message {
+            Message::User { content } => content
+                .iter()
+                .filter_map(|content| match content {
+                    UserContent::Text(text) => Some(text.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect()
 }

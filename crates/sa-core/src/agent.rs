@@ -14,7 +14,7 @@ use sa_proto::session::kinds;
 use sa_proto::session::{Event, Usage};
 use serde_json::{json, Value};
 
-use crate::llm::{ChatMessage, ChatRequest, Delta, Provider, ToolCall, ToolSpec};
+use crate::llm::{message, ChatRequest, Delta, Provider, ToolCall, ToolSpec};
 use crate::store::StoreError;
 
 /// how often an in-flight turn checks for cancellation. short enough that escape feels
@@ -149,7 +149,7 @@ impl Agent {
     }
 
     pub async fn run_turn(&self, request: TurnRequest) -> Result<TurnOutcome, AgentError> {
-        let mut messages = self.build_transcript(&request);
+        let mut messages = self.build_transcript(&request)?;
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -166,7 +166,7 @@ impl Agent {
             // anything the operator typed while the last round-trip ran becomes the next
             // instruction, rather than waiting for this turn to finish.
             for message in self.sink.drain_steering() {
-                messages.push(ChatMessage::user(message));
+                messages.push(message::user(message));
             }
 
             let Some(streamed) = self
@@ -269,7 +269,7 @@ impl Agent {
 
             // the assistant turn must carry the calls verbatim, before any result, so the
             // model can associate each result with the call that requested it.
-            messages.push(ChatMessage::assistant_with_calls(&text, &tool_calls));
+            messages.push(message::assistant_with_calls(&text, &tool_calls)?);
 
             for call in &tool_calls {
                 self.sink.append(
@@ -303,7 +303,7 @@ impl Agent {
                                 "duration_ms": started.elapsed().as_millis() as u64,
                             }),
                         )?;
-                        messages.push(ChatMessage::tool(&call.id, output));
+                        messages.push(message::tool_result(call, output)?);
                     }
                     Err(error) => {
                         self.sink.append(
@@ -315,58 +315,113 @@ impl Agent {
                                 "class": "tool_error",
                             }),
                         )?;
-                        messages.push(ChatMessage::tool(&call.id, format!("error: {error}")));
+                        messages.push(message::tool_result(call, format!("error: {error}"))?);
                     }
                 }
             }
         }
     }
 
-    fn build_transcript(&self, request: &TurnRequest) -> Vec<ChatMessage> {
+    fn build_transcript(
+        &self,
+        request: &TurnRequest,
+    ) -> Result<Vec<rig_core::completion::Message>, AgentError> {
         let mut system = system_prompt(&self.tools.specs(), &request.workspace);
         if let Some(context) = &request.context {
             system.push_str("\n\nProject context (read-only, deployed outside the workspace):\n");
             system.push_str(context);
         }
-        let mut messages = vec![ChatMessage::system(system)];
+        let mut messages = vec![message::system(system)];
 
         if let Some(summary) = &request.compaction_summary {
-            messages.push(ChatMessage::system(format!(
+            messages.push(message::system(format!(
                 "Summary of earlier work:\n{summary}"
             )));
         }
 
+        // the whole conversation, tool calls and results included. dropping them made every
+        // turn start from prose alone, so the model re-read the workspace and drifted from
+        // what it had already done.
+        let mut asked: Vec<ToolCall> = Vec::new();
+        let mut asked_text = String::new();
+        let mut announced = false;
         for event in &request.history {
             match event.kind.as_str() {
                 kinds::TURN_STARTED => {
                     if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
                         if prompt != request.prompt {
-                            messages.push(ChatMessage::user(prompt));
+                            messages.push(message::user(prompt));
                         }
                     }
                 }
                 kinds::TURN_STEERED => {
                     if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
-                        messages.push(ChatMessage::user(prompt));
+                        messages.push(message::user(prompt));
                     }
                 }
                 kinds::LLM_COMPLETED => {
-                    if let Some(text) = event.payload.get("text").and_then(Value::as_str) {
+                    let text = event.payload.get("text").and_then(Value::as_str);
+                    let calls_tools = event.payload.get("stop_reason").and_then(Value::as_str)
+                        == Some("tool_calls");
+                    if calls_tools {
+                        // the turn that asked for the calls is emitted with them, once the
+                        // first result arrives, so a call is never left unpaired.
+                        asked_text = text.unwrap_or_default().to_owned();
+                    } else if let Some(text) = text {
                         if !text.is_empty() {
-                            messages.push(ChatMessage::assistant(text));
+                            messages.push(message::assistant(text));
                         }
                     }
+                }
+                kinds::TOOL_REQUESTED => {
+                    let id = event.payload["call_id"].as_str().unwrap_or_default();
+                    let name = event.payload["tool"].as_str().unwrap_or_default();
+                    if id.is_empty() || name.is_empty() {
+                        continue;
+                    }
+                    asked.push(ToolCall {
+                        id: id.to_owned(),
+                        name: name.to_owned(),
+                        arguments: event.payload["args"].to_string(),
+                    });
+                }
+                kinds::TOOL_COMPLETED | kinds::TOOL_FAILED => {
+                    if !announced && !asked.is_empty() {
+                        messages.push(message::assistant_with_calls(&asked_text, &asked)?);
+                        announced = true;
+                    }
+                    let id = event.payload["call_id"].as_str().unwrap_or_default();
+                    let Some(call) = asked.iter().find(|call| call.id == id) else {
+                        continue;
+                    };
+                    let content = event.payload["output"].as_str().map_or_else(
+                        || {
+                            format!(
+                                "error: {}",
+                                event.payload["error"].as_str().unwrap_or("failed")
+                            )
+                        },
+                        str::to_owned,
+                    );
+                    messages.push(message::tool_result(call, content)?);
                 }
                 _ => {}
             }
         }
 
         messages.push(if request.images.is_empty() {
-            ChatMessage::user(request.prompt.clone())
+            message::user(request.prompt.clone())
         } else {
-            ChatMessage::user_with_images(request.prompt.clone(), &request.images)
+            message::user_with_images(request.prompt.clone(), &request.images)
         });
-        messages
+
+        // rig owns the pairing rules: an interrupted turn leaves a call nothing answered,
+        // and repairing that here is what keeps the endpoint from rejecting the history.
+        let paired = rig_core::conversation::pairing::repair(messages);
+        if !paired.repairs.is_empty() {
+            tracing::debug!(repairs = ?paired.repairs, "repaired the replayed history");
+        }
+        Ok(paired.messages)
     }
 }
 

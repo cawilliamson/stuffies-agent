@@ -953,7 +953,7 @@ impl Manager {
             .provider
             .stream(crate::llm::ChatRequest {
                 model: model.to_owned(),
-                messages: vec![crate::llm::ChatMessage::user(format!(
+                messages: vec![crate::llm::message::user(format!(
                     "Give this coding session a title of at most six words. \
                      No quotes, no trailing punctuation. Reply with the title only.\n\n{source}"
                 ))],
@@ -1088,7 +1088,7 @@ impl Manager {
             .provider
             .stream(crate::llm::ChatRequest {
                 model: model.to_owned(),
-                messages: vec![crate::llm::ChatMessage::user(format!(
+                messages: vec![crate::llm::message::user(format!(
                     "Summarise the following work log in at most 400 words. Keep decisions, \
                      file paths and open questions. Do not add commentary.\n{transcript}"
                 ))],

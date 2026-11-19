@@ -3,9 +3,7 @@
 //! one at a time: a shared endpoint throttles parallel callers, which reads as a flake.
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stderr)]
 
-use sa_core::llm::{
-    ChatMessage, ChatRequest, Delta, OpenAiProvider, Provider, ToolSpec, WireToolCall,
-};
+use sa_core::llm::{message, ChatRequest, Delta, OpenAiProvider, Provider, ToolCall, ToolSpec};
 use serde_json::json;
 
 #[tokio::test]
@@ -15,7 +13,7 @@ async fn the_provider_streams_an_answer() {
     let mut rx = provider
         .stream(ChatRequest {
             model: std::env::var("SA_MODEL").unwrap_or_default(),
-            messages: vec![ChatMessage::user("Reply with exactly the word: hello")],
+            messages: vec![message::user("Reply with exactly the word: hello")],
             tools: Vec::new(),
             max_tokens: Some(64),
             reasoning_effort: None,
@@ -56,8 +54,7 @@ async fn a_tool_call_and_its_result_round_trip() {
         description: "Read a file as text.".to_owned(),
         parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
     }];
-    let ask =
-        ChatMessage::user("Read the file Cargo.toml with the read tool, then say what it is.");
+    let ask = message::user("Read the file Cargo.toml with the read tool, then say what it is.");
 
     // a model may answer directly instead of calling the tool; that is a property of the
     // model, not of this code, so the phase is retried rather than failed.
@@ -89,20 +86,17 @@ async fn a_tool_call_and_its_result_round_trip() {
     eprintln!("[call] {:?}", calls[0]);
 
     // the assistant turn must carry the call verbatim, and the result must name the tool.
-    let assistant = ChatMessage {
-        role: "assistant".to_owned(),
-        content: Some(sa_core::llm::MessageContent::Text(String::new())),
-        tool_calls: Some(calls.iter().map(WireToolCall::from).collect()),
-        tool_call_id: None,
-    };
-    let result = ChatMessage {
-        role: "tool".to_owned(),
-        content: Some(sa_core::llm::MessageContent::Text(
-            "[package]\nname = \"sa\"\nversion = \"0.1.0\"".to_owned(),
-        )),
-        tool_calls: None,
-        tool_call_id: Some(calls[0].id.clone()),
-    };
+    let assistant =
+        message::assistant_with_calls("", std::slice::from_ref(&calls[0])).expect("assistant");
+    let result = message::tool_result(
+        &ToolCall {
+            id: calls[0].id.clone(),
+            name: calls[0].name.clone(),
+            arguments: calls[0].arguments.clone(),
+        },
+        "[package]\nname = \"sa\"\nversion = \"0.1.0\"",
+    )
+    .expect("result");
 
     let mut rx = provider
         .stream(ChatRequest {

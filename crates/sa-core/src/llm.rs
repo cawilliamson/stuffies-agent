@@ -6,7 +6,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -25,163 +25,6 @@ pub enum LlmError {
 }
 
 /// one part of a multimodal message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentPart {
-    Text { text: String },
-    ImageUrl { image_url: ImageUrl },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageUrl {
-    pub url: String,
-}
-
-/// message content: text, or text with images. serialised as a bare string when it is
-/// only text, which is what every endpoint expects for the ordinary case.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum MessageContent {
-    Text(String),
-    Parts(Vec<ContentPart>),
-}
-
-impl MessageContent {
-    /// the text, when the content is text only.
-    #[must_use]
-    pub fn as_text(&self) -> Option<&str> {
-        match self {
-            Self::Text(text) => Some(text),
-            Self::Parts(_) => None,
-        }
-    }
-}
-
-/// one message in the openai chat-completions shape.
-///
-/// tool results must carry the `tool_call_id` of the call they answer, and the assistant
-/// message that requested them must carry the calls verbatim, or the model cannot associate
-/// a result with a call and will re-issue it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub content: Option<MessageContent>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub tool_calls: Option<Vec<WireToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub tool_call_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireToolCall {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub function: WireFunction,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireFunction {
-    pub name: String,
-    pub arguments: String,
-}
-
-impl From<&ToolCall> for WireToolCall {
-    fn from(call: &ToolCall) -> Self {
-        Self {
-            id: call.id.clone(),
-            kind: "function".to_owned(),
-            function: WireFunction {
-                name: call.name.clone(),
-                arguments: call.arguments.clone(),
-            },
-        }
-    }
-}
-
-impl ChatMessage {
-    #[must_use]
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".to_owned(),
-            content: Some(MessageContent::Text(content.into())),
-            tool_calls: None,
-            tool_call_id: None,
-        }
-    }
-
-    #[must_use]
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".to_owned(),
-            content: Some(MessageContent::Text(content.into())),
-            tool_calls: None,
-            tool_call_id: None,
-        }
-    }
-
-    /// a user turn carrying images alongside its text.
-    #[must_use]
-    pub fn user_with_images(
-        content: impl Into<String>,
-        images: &[sa_proto::session::ImageAttachment],
-    ) -> Self {
-        let mut parts = vec![ContentPart::Text {
-            text: content.into(),
-        }];
-        for image in images {
-            parts.push(ContentPart::ImageUrl {
-                image_url: ImageUrl {
-                    url: image.data_url(),
-                },
-            });
-        }
-        Self {
-            role: "user".to_owned(),
-            content: Some(MessageContent::Parts(parts)),
-            tool_calls: None,
-            tool_call_id: None,
-        }
-    }
-
-    #[must_use]
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: "assistant".to_owned(),
-            content: Some(MessageContent::Text(content.into())),
-            tool_calls: None,
-            tool_call_id: None,
-        }
-    }
-
-    /// the assistant turn that requested tool calls. `content` may be empty.
-    #[must_use]
-    pub fn assistant_with_calls(content: &str, calls: &[ToolCall]) -> Self {
-        Self {
-            role: "assistant".to_owned(),
-            content: if content.is_empty() {
-                None
-            } else {
-                Some(MessageContent::Text(content.to_owned()))
-            },
-            tool_calls: Some(calls.iter().map(WireToolCall::from).collect()),
-            tool_call_id: None,
-        }
-    }
-
-    /// the result of one tool call, addressed to the call that requested it.
-    #[must_use]
-    pub fn tool(call_id: &str, content: impl Into<String>) -> Self {
-        Self {
-            role: "tool".to_owned(),
-            content: Some(MessageContent::Text(content.into())),
-            tool_calls: None,
-            tool_call_id: Some(call_id.to_owned()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolSpec {
     pub name: String,
@@ -192,7 +35,9 @@ pub struct ToolSpec {
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
-    pub messages: Vec<ChatMessage>,
+    /// the conversation, in rig's shape. rig owns the message model, the wire and the
+    /// pairing rules; nothing here mirrors it.
+    pub messages: Vec<rig_core::completion::Message>,
     pub tools: Vec<ToolSpec>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
@@ -203,6 +48,75 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+}
+
+/// the handful of message shapes a turn builds, in rig's model. rig owns the type, the wire
+/// and the pairing rules; these only spare every call site rig's fallible identifiers.
+pub mod message {
+    use super::{LlmError, ToolCall};
+    use rig_core::completion::message::{AssistantMessage, UserContent};
+    use rig_core::completion::{AssistantContent, Message};
+
+    #[must_use]
+    pub fn system(content: impl Into<String>) -> Message {
+        Message::system(content)
+    }
+
+    #[must_use]
+    pub fn user(content: impl Into<String>) -> Message {
+        Message::user(content)
+    }
+
+    #[must_use]
+    pub fn assistant(content: impl Into<String>) -> Message {
+        Message::assistant(content)
+    }
+
+    /// a user turn carrying images alongside its text.
+    #[must_use]
+    pub fn user_with_images(
+        content: impl Into<String>,
+        images: &[sa_proto::session::ImageAttachment],
+    ) -> Message {
+        let mut parts = vec![UserContent::text(content.into())];
+        for image in images {
+            parts.push(UserContent::image_url(image.data_url(), None, None));
+        }
+        Message::User { content: parts }
+    }
+
+    /// the assistant turn that requested tool calls. `content` may be empty.
+    pub fn assistant_with_calls(content: &str, calls: &[ToolCall]) -> Result<Message, LlmError> {
+        let mut parts = Vec::with_capacity(calls.len() + 1);
+        if !content.is_empty() {
+            parts.push(AssistantContent::text(content));
+        }
+        for call in calls {
+            parts.push(AssistantContent::ToolCall(tool_call(call)?));
+        }
+        Ok(Message::Assistant(AssistantMessage::new(parts)))
+    }
+
+    /// the result of one tool call, addressed to the call that requested it.
+    pub fn tool_result(call: &ToolCall, content: impl Into<String>) -> Result<Message, LlmError> {
+        Ok(Message::tool_result(
+            super::rig_call_id(&call.id)?,
+            super::tool_name(&call.name)?,
+            content.into(),
+        ))
+    }
+
+    fn tool_call(call: &ToolCall) -> Result<rig_core::completion::message::ToolCall, LlmError> {
+        let arguments =
+            serde_json::from_str(&call.arguments).unwrap_or_else(|_| serde_json::json!({}));
+        Ok(rig_core::completion::message::ToolCall::new(
+            super::rig_call_id(&call.id)?,
+            rig_core::completion::message::ToolFunction::new(
+                super::tool_name(&call.name)?,
+                arguments,
+            ),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -567,80 +481,6 @@ pub fn group_efforts(control: Profile, probed: Vec<(String, Profile)>) -> Discov
     }
 }
 
-/// our transcript, in the shape rig sends.
-fn rig_messages(messages: &[ChatMessage]) -> Result<Vec<rig_core::completion::Message>, LlmError> {
-    use rig_core::completion::message::{AssistantMessage, UserContent};
-    use rig_core::completion::{AssistantContent, Message};
-
-    let mut out = Vec::new();
-    // a tool result must name its tool, and the assistant turn that asked for it knows it.
-    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
-    for message in messages {
-        let text = message
-            .content
-            .as_ref()
-            .and_then(MessageContent::as_text)
-            .unwrap_or_default()
-            .to_owned();
-        match message.role.as_str() {
-            "system" => out.push(Message::system(text)),
-            "user" => {
-                let content = match &message.content {
-                    Some(MessageContent::Parts(parts)) => parts
-                        .iter()
-                        .map(|part| match part {
-                            ContentPart::Text { text } => UserContent::text(text.clone()),
-                            ContentPart::ImageUrl { image_url } => {
-                                UserContent::image_url(image_url.url.clone(), None, None)
-                            }
-                        })
-                        .collect(),
-                    _ => vec![UserContent::text(text)],
-                };
-                out.push(Message::User { content });
-            }
-            "assistant" => {
-                let mut content: Vec<AssistantContent> = Vec::new();
-                if !text.is_empty() {
-                    content.push(AssistantContent::text(text));
-                }
-                for call in message.tool_calls.iter().flatten() {
-                    names.insert(call.id.clone(), call.function.name.clone());
-                    let arguments: serde_json::Value =
-                        serde_json::from_str(&call.function.arguments)
-                            .unwrap_or_else(|_| serde_json::json!({}));
-                    // built from the same CallId the result will use, or the wire sees two
-                    // different ids for one call and the model re-issues it.
-                    content.push(AssistantContent::ToolCall(
-                        rig_core::completion::message::ToolCall::new(
-                            rig_call_id(&call.id)?,
-                            rig_core::completion::message::ToolFunction::new(
-                                tool_name(&call.function.name)?,
-                                arguments,
-                            ),
-                        ),
-                    ));
-                }
-                out.push(Message::Assistant(AssistantMessage::new(content)));
-            }
-            "tool" => {
-                let id = message.tool_call_id.clone().unwrap_or_default();
-                let name = names.get(&id).cloned().unwrap_or_default();
-                out.push(Message::tool_result(
-                    rig_call_id(&id)?,
-                    tool_name(&name)?,
-                    text,
-                ));
-            }
-            other => {
-                return Err(LlmError::Stream(format!("unknown message role: {other}")));
-            }
-        }
-    }
-    Ok(out)
-}
-
 /// rig's identifiers are newtypes that refuse an empty string, so building one is a step
 /// that can fail rather than a cast.
 fn rig_call_id(raw: &str) -> Result<rig_core::completion::message::CallId, LlmError> {
@@ -661,7 +501,7 @@ fn rig_request(request: &ChatRequest) -> Result<rig_core::completion::Completion
     // rig sends the history first and the "prompt" last, so the newest message is the
     // prompt and everything before it is history. the other way round reorders the
     // conversation and the model loses the thread.
-    let mut messages = rig_messages(&request.messages)?;
+    let mut messages = request.messages.clone();
     let Some(prompt) = messages.pop() else {
         return Err(LlmError::Stream(
             "a request needs at least one message".to_owned(),
@@ -873,51 +713,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_transcript_maps_onto_the_providers_shape() {
-        use rig_core::completion::Message;
+    fn a_tool_result_names_the_call_and_the_tool_it_answers() {
+        let call = ToolCall {
+            id: "c1".to_owned(),
+            name: "read".to_owned(),
+            arguments: "{\"path\":\"a\"}".to_owned(),
+        };
+        let assistant = message::assistant_with_calls("calling", std::slice::from_ref(&call))
+            .expect("assistant");
+        let result = message::tool_result(&call, "file body").expect("result");
 
-        let messages = vec![
-            ChatMessage::system("be brief"),
-            ChatMessage::user("hello"),
-            ChatMessage {
-                role: "assistant".to_owned(),
-                content: Some(MessageContent::Text("calling".to_owned())),
-                tool_calls: Some(vec![WireToolCall {
-                    id: "c1".to_owned(),
-                    kind: "function".to_owned(),
-                    function: WireFunction {
-                        name: "read".to_owned(),
-                        arguments: "{\"path\":\"a\"}".to_owned(),
-                    },
-                }]),
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: "tool".to_owned(),
-                content: Some(MessageContent::Text("file body".to_owned())),
-                tool_calls: None,
-                tool_call_id: Some("c1".to_owned()),
-            },
-        ];
-
-        let mapped = rig_messages(&messages).expect("mapped");
-        assert!(matches!(mapped[0], Message::System { .. }));
-        assert!(matches!(mapped[1], Message::User { .. }));
-        assert!(matches!(mapped[2], Message::Assistant(_)));
-        // the result must name the tool it answers, or the model cannot pair them.
-        let rendered = format!("{:?}", mapped[3]);
+        // the result must name the call and the tool it answers, or the model re-issues it.
+        let rendered = format!("{result:?}");
         assert!(rendered.contains("file body"), "{rendered}");
-        assert!(
-            rendered.contains("read"),
-            "the tool keeps its name: {rendered}"
-        );
+        assert!(rendered.contains("read"), "{rendered}");
+        assert!(rendered.contains("c1"), "{rendered}");
+        assert!(matches!(
+            assistant,
+            rig_core::completion::Message::Assistant(_)
+        ));
     }
 
     #[test]
     fn a_request_carries_the_tools_the_cap_and_the_effort() {
         let request = ChatRequest {
             model: "m".to_owned(),
-            messages: vec![ChatMessage::system("be brief"), ChatMessage::user("hi")],
+            messages: vec![message::system("be brief"), message::user("hi")],
             tools: vec![ToolSpec {
                 name: "read".to_owned(),
                 description: "Read a file.".to_owned(),
