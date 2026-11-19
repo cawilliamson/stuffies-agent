@@ -1863,28 +1863,15 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
         Role::ToolOutput => FAINT,
         Role::Error => BAD,
     };
-    // the text carries the same colour as the frame: light enough to read a paragraph,
-    // unmistakably the role's own.
-    let body = lightened(edge, BODY_TOWARDS_WHITE);
+    let body = match role {
+        Role::User => Color::Rgb(0xe8, 0xf0, 0xff),
+        Role::Assistant => Color::Rgb(0xd8, 0xe8, 0xdc),
+        Role::Thinking => Color::Rgb(0x8a, 0x93, 0xa0),
+        Role::Tool => Color::Rgb(0xd8, 0xc8, 0xa8),
+        Role::ToolOutput | Role::System => DIM,
+        Role::Error => Color::Rgb(0xf0, 0xc0, 0xc0),
+    };
     (label, edge, body)
-}
-
-/// a colour pulled towards white, so a paragraph in a role's colour is still readable.
-#[must_use]
-pub fn lightened(colour: Color, amount: f32) -> Color {
-    let Color::Rgb(r, g, b) = colour else {
-        return colour;
-    };
-    let mix = |value: u8| -> u8 {
-        let value = f32::from(value);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let mixed = (255.0 - value)
-            .mul_add(amount, value)
-            .round()
-            .clamp(0.0, 255.0) as u8;
-        mixed
-    };
-    Color::Rgb(mix(r), mix(g), mix(b))
 }
 
 /// drops the inline markdown markers so text can be measured.
@@ -2045,9 +2032,6 @@ fn top(out: &mut Vec<Line<'static>>, label: &str, width: usize, edge: Color) {
         Span::styled("\u{256e}", ink),
     ]));
 }
-
-/// how far a role's body text is pulled towards white, so a paragraph stays readable.
-const BODY_TOWARDS_WHITE: f32 = 0.45;
 
 fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
     let ink = Style::default().fg(edge);
