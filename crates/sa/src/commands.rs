@@ -425,7 +425,7 @@ enum Incoming {
 
 fn help() {
     println!(
-        "\x1b[2mcommands: /new /sessions /model <id> /cancel /cost /reasoning /help /exit\n\
+        "\x1b[2mcommands: /new /sessions /model <id> /cancel /reasoning /help /exit\n\
          ctrl-c cancels the running turn; at an idle prompt it exits.\x1b[0m"
     );
 }

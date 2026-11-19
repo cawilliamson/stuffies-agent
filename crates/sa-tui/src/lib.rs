@@ -288,7 +288,6 @@ where
             }
             Incoming::Resize => app.touch(),
             Incoming::Key(key) => {
-                app.note_key(key);
                 if let Some(path) = &keylog {
                     use std::io::Write as _;
                     if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
@@ -505,32 +504,6 @@ where
                             Err(err) => app.tab_mut().push(app::Role::Error, err),
                         }
                     }
-                    "/keys" => {
-                        let seen = app
-                            .recent_keys
-                            .iter()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(" · ");
-                        let held = if app.shift_held { "down" } else { "up" };
-                        let modifiers = if app.modifiers_seen == 0 {
-                            "the terminal has sent no modifier key events, so it cannot report \
-                             shift+enter: use ctrl+j for a new line"
-                        } else {
-                            "the terminal reports modifier keys, so shift+enter is readable"
-                        };
-                        let text = if seen.is_empty() {
-                            "no keys seen yet".to_owned()
-                        } else {
-                            format!(
-                                "keys the terminal delivered: {seen} \u{00b7} shift is {held} \
-                                 \u{00b7} shift+enter shows as SHIFT when the terminal can \
-                                 report it, and a bare enter while shift is down still makes \
-                                 a new line; ctrl+j always does \u{00b7} {modifiers}"
-                            )
-                        };
-                        app.tab_mut().push(app::Role::System, text);
-                    }
                     "/mcp" => match rpc(client, "mcp.list", json!({})).await {
                         Ok(list) => {
                             let rows = list.as_array().cloned().unwrap_or_default();
@@ -619,14 +592,6 @@ where
                         .await;
                         app.tab_mut().status.model = arg.to_owned();
                         app.touch();
-                    }
-                    "/cost" => {
-                        let tab = app.tab();
-                        let text = format!(
-                            "{} in / {} out",
-                            tab.status.prompt_tokens, tab.status.completion_tokens
-                        );
-                        app.tab_mut().push(app::Role::System, text);
                     }
                     "/cancel" => {
                         let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
@@ -1379,8 +1344,8 @@ mod daemon_tests {
     #[test]
     fn help_lists_every_command() {
         for command in [
-            "/cancel", "/cd", "/cost", "/cwd", "/effort", "/exit", "/help", "/keys", "/mcp",
-            "/model", "/new", "/pwd", "/resume",
+            "/cancel", "/cd", "/cwd", "/effort", "/exit", "/help", "/mcp", "/model", "/new",
+            "/pwd", "/resume",
         ] {
             assert!(
                 app::HELP_COMMANDS.contains(command),
@@ -1586,12 +1551,12 @@ mod daemon_tests {
 
     #[tokio::test]
     async fn a_command_reaches_the_daemon() {
-        // "/cost" is answered from local state, but it must not reach turn.start.
+        // "/pwd" is answered from local state, but it must not reach turn.start.
         let (mut client, server) = daemon(startup_replies());
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
-        let mut stream = typed("/cost");
+        let mut stream = typed("/pwd");
         stream.push(press(crossterm::event::KeyCode::Enter));
 
         run_with(

@@ -247,8 +247,6 @@ pub const HELP_COMMANDS: &str = "\
 /effort [level] — show or set the reasoning effort; tab completes the levels
 /model <name> — switch the model for this tab
 /mcp — list the mcp servers and their tools
-/keys — what the terminal delivers, for diagnosing keys
-/cost — tokens used in this tab
 /cancel — interrupt the turn that is running
 /new — open a tab
 /resume — reopen a session that was closed
@@ -1376,10 +1374,6 @@ pub struct App {
     /// the terminal's image protocol, resolved once at startup. none means the terminal
     /// cannot show pictures, so attachments still send but do not preview.
     pub image_picker: Option<ratatui_image::picker::Picker>,
-    /// the last few key events as the terminal delivered them, for `/keys`. a terminal that
-    /// cannot report shift+enter sends a plain enter, and this is how that is told apart
-    /// from a key we mishandle.
-    pub recent_keys: std::collections::VecDeque<String>,
     /// whether the shift key is physically down, as reported by the terminal. a terminal that
     /// cannot put shift+enter in a key event still reports the shift key itself, and a bare
     /// enter arriving while it is held is a shift+enter.
@@ -1387,10 +1381,6 @@ pub struct App {
     /// the same for control: a terminal that sends a bare carriage return for ctrl+enter
     /// still reports the control key, and enter while it is down is not a send.
     pub ctrl_held: bool,
-    /// how many modifier key events the terminal has sent. zero means it cannot report
-    /// shift on its own, so a bare enter is all it will ever send and shift+enter is
-    /// indistinguishable from enter.
-    pub modifiers_seen: u64,
     /// what the endpoint says about each model it serves. a model absent here has no
     /// known window or effort list, and is not given guessed ones.
     pub served: std::collections::HashMap<String, ServedModel>,
@@ -1408,10 +1398,8 @@ impl App {
             picker: None,
             confirm: None,
             image_picker: None,
-            recent_keys: std::collections::VecDeque::new(),
             shift_held: false,
             ctrl_held: false,
-            modifiers_seen: 0,
             served: std::collections::HashMap::new(),
         }
     }
@@ -1659,14 +1647,6 @@ impl App {
         }
     }
 
-    /// records what the terminal delivered, keeping the last few.
-    pub fn note_key(&mut self, key: KeyEvent) {
-        if self.recent_keys.len() >= 8 {
-            self.recent_keys.pop_front();
-        }
-        self.recent_keys.push_back(format!("{key:?}"));
-    }
-
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         if self.confirm.is_some() {
             return self.on_confirm_key(key);
@@ -1679,7 +1659,6 @@ impl App {
         // cannot put the modifier in the enter event.
         if let KeyCode::Modifier(modifier) = key.code {
             let down = key.kind != KeyEventKind::Release;
-            self.modifiers_seen += 1;
             match modifier {
                 ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => {
                     self.shift_held = down;
