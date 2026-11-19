@@ -2083,11 +2083,25 @@ fn divider(out: &mut Vec<Line<'static>>, width: usize, edge: Color, fill: Color)
 
 fn bottom(out: &mut Vec<Line<'static>>, width: usize, fill: Color) {
     let ink = Style::default().fg(fill).bg(fill);
+    let corner = Style::default().fg(fill).bg(Color::Reset);
     out.push(Line::from(vec![
-        Span::styled("\u{2570}", ink),
+        Span::styled("\u{2570}", corner),
         Span::styled("\u{2500}".repeat(width.saturating_sub(2)), ink),
-        Span::styled("\u{256f}", ink),
+        Span::styled("\u{256f}", corner),
     ]));
+}
+
+/// a cell of clear space either side, so a bubble sits inside the pane rather than running
+/// into the pane's own edge.
+fn inset(out: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    out.into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::raw(" ")];
+            spans.extend(line.spans);
+            spans.push(Span::raw(" "));
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// the frame title for an entry: the tool's own name, or `output (exit N)`.
@@ -2125,6 +2139,7 @@ fn entry_body(entry: &Entry) -> String {
 fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     let (_, edge, ink) = role_style(entry.role, model);
     let fill = role_fill(entry.role);
+    let width = width.saturating_sub(2);
     let mut out = Vec::new();
     top(&mut out, &entry_label(entry, model), width, edge, fill);
     // only prose the model wrote is markdown. our own notices are laid out by us, and a
@@ -2135,7 +2150,7 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
         body_image(&mut out, thumb, width, fill);
     }
     bottom(&mut out, width, fill);
-    out
+    inset(out)
 }
 
 /// renders a tool call and its output as one frame split by a rule, rather than two boxes.
@@ -2149,6 +2164,7 @@ fn framed_tool(
     let (_, edge, ink) = role_style(Role::Tool, "");
     let (_, _, out_ink) = role_style(Role::ToolOutput, "");
     let fill = role_fill(Role::Tool);
+    let width = width.saturating_sub(2);
     let mut out = Vec::new();
     // the exit code belongs in the title, so the rule stays clean.
     let title = exit_code.map_or_else(|| tool.to_owned(), |code| format!("{tool} (exit {code})"));
@@ -2163,7 +2179,7 @@ fn framed_tool(
     divider(&mut out, width, edge, fill);
     body_ansi(&mut out, output, width, out_ink, fill);
     bottom(&mut out, width, fill);
-    out
+    inset(out)
 }
 
 /// renders a turn's reasoning and its reply as one frame split by a rule, rather than two
@@ -2179,6 +2195,7 @@ fn framed_split(
     let label = entry_label(entry, model);
     let (_, _, think_ink) = role_style(Role::Thinking, model);
     let fill = role_fill(Role::Assistant);
+    let width = width.saturating_sub(2);
     let mut out = Vec::new();
     top(&mut out, &label, width, edge, fill);
     body(&mut out, thinking, width, think_ink, true, fill);
@@ -2193,7 +2210,7 @@ fn framed_split(
         fill,
     );
     bottom(&mut out, width, fill);
-    out
+    inset(out)
 }
 
 /// the transcript of a tab as renderable lines.
