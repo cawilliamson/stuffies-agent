@@ -28,6 +28,21 @@ fn typed(app: &mut App, text: &str) {
     }
 }
 
+/// the screen as rows, so a layout that collapsed into one line is visible.
+fn rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, app).expect("draw");
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
 fn screen(app: &mut App, width: u16, height: u16) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -2666,15 +2681,33 @@ fn the_context_listing_is_shown_when_a_session_starts() {
             "cwd": home,
             "groups": [{"root": home, "files": [
                 {"path": format!("{home}/AGENTS.md"), "relative": "AGENTS.md", "tokens": 9},
+                {"path": format!("{home}/PERSONALITY.md"), "relative": "PERSONALITY.md", "tokens": 4},
             ]}],
         }),
     );
     let shown = screen(&mut app, 100, 24);
     assert!(shown.contains("Files loaded into context:"), "{shown}");
-    assert!(shown.contains("Total context added: 9 tokens"), "{shown}");
+    assert!(shown.contains("Total context added: 13 tokens"), "{shown}");
+    assert!(shown.contains("\u{f15c} AGENTS.md (9 tokens)"), "{shown}");
+
+    // the listing is laid out by us, so each of its lines stays on its own row: markdown
+    // folding them into one paragraph is the regression this catches.
+    let rows = rows(&mut app, 100, 24);
+    let row_of = |needle: &str| {
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is not on screen:\n{}", rows.join("\n")))
+    };
+    assert_ne!(
+        row_of("AGENTS.md"),
+        row_of("PERSONALITY.md"),
+        "two entries must not share a row:\n{}",
+        rows.join("\n")
+    );
     assert!(
-        shown.contains("\u{2514}\u{2500} \u{f15c} AGENTS.md (9 tokens)"),
-        "{shown}"
+        row_of("Total context added:") > row_of("PERSONALITY.md"),
+        "the total sits below the listing:\n{}",
+        rows.join("\n")
     );
 }
 

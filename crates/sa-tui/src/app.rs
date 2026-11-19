@@ -2066,7 +2066,9 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     let (_, edge, ink) = role_style(entry.role, model);
     let mut out = Vec::new();
     top(&mut out, &entry_label(entry, model), width, edge);
-    let markdown = !matches!(entry.role, Role::Tool | Role::ToolOutput);
+    // only prose the model wrote is markdown. our own notices are laid out by us, and a
+    // listing whose lines matter must not be folded into one paragraph.
+    let markdown = !matches!(entry.role, Role::System | Role::Tool | Role::ToolOutput);
     body(&mut out, &entry_body(entry), width, edge, ink, markdown);
     for thumb in &entry.images {
         body_image(&mut out, thumb, width, edge);
