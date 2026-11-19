@@ -2866,3 +2866,60 @@ fn the_activity_bar_never_strikes_through_the_working_label() {
         );
     }
 }
+
+#[test]
+fn a_message_names_the_model_and_effort_that_produced_it() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().apply_session_row(&json!({
+        "id": "session-abcdef",
+        "title": "work",
+        "state": "active",
+        "cwd": "/tmp",
+        "model": "deepseek-v4-1-flash-1017-ablit",
+        "effort": "high",
+        "created_at": 1,
+        "updated_at": 2,
+    }));
+    app.tab_mut().on_event(
+        "turn.started",
+        &json!({
+            "prompt": "hello",
+            "model": "deepseek-v4-1-flash-1017-ablit",
+            "effort": "low",
+        }),
+    );
+    app.tab_mut().on_event("llm.delta", &json!({"text": "hi"}));
+
+    let shown = screen(&mut app, 120, 24);
+    assert!(
+        shown.contains("deepseek-v4-1-flash-1017-ablit:low"),
+        "the message names the effort it ran at:\n{shown}"
+    );
+}
+
+#[test]
+fn a_replayed_message_keeps_the_effort_it_ran_at() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().on_replay(
+        "turn.started",
+        &json!({"prompt": "hello", "model": "m1", "effort": "none"}),
+    );
+    app.tab_mut().on_replay("llm.delta", &json!({"text": "hi"}));
+    // the session has since moved to a different effort.
+    app.tab_mut().apply_session_row(&json!({
+        "id": "session-abcdef",
+        "title": "work",
+        "state": "active",
+        "cwd": "/tmp",
+        "model": "m1",
+        "effort": "max",
+        "created_at": 1,
+        "updated_at": 2,
+    }));
+
+    let shown = screen(&mut app, 120, 24);
+    assert!(
+        shown.contains("m1:none"),
+        "history keeps the effort it ran at, not the session's current one:\n{shown}"
+    );
+}

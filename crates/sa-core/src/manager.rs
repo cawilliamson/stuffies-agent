@@ -586,6 +586,15 @@ impl Manager {
 
         let turn_id = uuid::Uuid::new_v4().to_string();
         let cancel = Arc::new(AtomicBool::new(false));
+        // the model and effort this turn runs at, decided once so the log records what
+        // actually produced each message rather than what the session is set to now.
+        let model = row.model.clone().unwrap_or_else(|| self.default_model());
+        let effort = self.reasoning_effort(
+            &model,
+            row.effort
+                .as_deref()
+                .or(self.config.reasoning_effort.as_deref()),
+        );
         let seq = self.append(
             session_id,
             kinds::TURN_STARTED,
@@ -595,7 +604,8 @@ impl Manager {
                 // kept in the log so the transcript can show the picture inline, and so a
                 // replayed session reads the same as the live one.
                 "images": images,
-                "model": self.default_model(),
+                "model": model,
+                "effort": effort,
                 "detach": detach,
                 "client": attached_client,
             }),
@@ -618,7 +628,9 @@ impl Manager {
         let turn = turn_id.clone();
         tokio::spawn(async move {
             manager
-                .run_turn(session, turn, prompt, images, row, cancel, steering, detach)
+                .run_turn(
+                    session, turn, prompt, images, row, model, effort, cancel, steering, detach,
+                )
                 .await;
         });
 
@@ -634,6 +646,8 @@ impl Manager {
         prompt: String,
         images: Vec<sa_proto::session::ImageAttachment>,
         row: SessionRow,
+        model: String,
+        effort: Option<String>,
         cancel: Arc<AtomicBool>,
         steering: Arc<std::sync::Mutex<Vec<String>>>,
         detach: bool,
@@ -714,8 +728,6 @@ impl Manager {
             Arc::clone(&self.config.mcp),
         ));
 
-        let model = row.model.clone().unwrap_or_else(|| self.default_model());
-
         // compaction is checked before the turn, and only ever appends (spec 10.4).
         match tokio::time::timeout(budget, self.maybe_compact(&session_id, &model)).await {
             Ok(Err(err)) => tracing::warn!(%err, "compaction skipped"),
@@ -763,13 +775,8 @@ impl Manager {
             context: crate::workspace::context(&workspace, None),
             images,
             max_tokens: self.config.max_tokens,
-            // only a value this model actually advertises, or nothing at all.
-            reasoning_effort: self.reasoning_effort(
-                &model,
-                row.effort
-                    .as_deref()
-                    .or(self.config.reasoning_effort.as_deref()),
-            ),
+            // the value recorded with the turn, so the log and the request agree.
+            reasoning_effort: effort,
         };
 
         // a stalled model stream must not hang the session forever (spec 14, v1.1).

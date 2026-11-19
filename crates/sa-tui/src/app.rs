@@ -426,6 +426,10 @@ pub struct Entry {
     pub exit_code: Option<i32>,
     /// pictures sent with the prompt, drawn inside the message frame.
     pub images: Vec<Thumb>,
+    /// the model that produced this message, when it came from one.
+    pub model: Option<String>,
+    /// the reasoning effort that produced it, when the turn set one.
+    pub effort: Option<String>,
 }
 
 impl Entry {
@@ -436,6 +440,8 @@ impl Entry {
             tool: None,
             exit_code: None,
             images: Vec::new(),
+            model: None,
+            effort: None,
         }
     }
 }
@@ -1140,6 +1146,15 @@ impl Tab {
             }
             "turn.started" => {
                 let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+                // what this turn runs at, so each message it produces carries it.
+                if let Some(model) = payload.get("model").and_then(Value::as_str) {
+                    if !model.is_empty() {
+                        self.status.model = model.to_owned();
+                    }
+                }
+                if let Some(effort) = payload.get("effort").and_then(Value::as_str) {
+                    self.status.effort = effort.to_owned();
+                }
                 let images = thumbnails(&payload["images"]);
                 if self.transcript.last().map(|e| e.role) == Some(Role::User) {
                     // a steer or a resubmit already put the prompt up; the pictures belong
@@ -1189,7 +1204,12 @@ impl Tab {
             }
             _ => {
                 if !text.is_empty() {
-                    self.transcript.push(Entry::new(role, text));
+                    let mut entry = Entry::new(role, text);
+                    if role == Role::Assistant {
+                        entry.model = Some(self.status.model.clone()).filter(|m| !m.is_empty());
+                        entry.effort = Some(self.status.effort.clone()).filter(|e| !e.is_empty());
+                    }
+                    self.transcript.push(entry);
                 }
             }
         }
@@ -2051,6 +2071,16 @@ fn entry_label(entry: &Entry, model: &str) -> String {
             || "output".to_owned(),
             |code| format!("output (exit {code})"),
         ),
+        // the model and effort that produced this message, not the session's current pair.
+        Role::Assistant => {
+            let named = entry.model.as_deref().unwrap_or(model);
+            match entry.effort.as_deref().filter(|effort| !effort.is_empty()) {
+                Some(effort) if !named.is_empty() => format!("{named}:{effort}"),
+                Some(effort) => effort.to_owned(),
+                None if named.is_empty() => "assistant".to_owned(),
+                None => named.to_owned(),
+            }
+        }
         other => role_style(other, model).0,
     }
 }
@@ -2109,8 +2139,15 @@ fn framed_tool(
 
 /// renders a turn's reasoning and its reply as one frame split by a rule, rather than two
 /// separate boxes.
-fn framed_split(model: &str, thinking: &str, message: &str, width: usize) -> Vec<Line<'static>> {
-    let (label, edge, _) = role_style(Role::Assistant, model);
+fn framed_split(
+    entry: &Entry,
+    model: &str,
+    thinking: &str,
+    message: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let (_, edge, _) = role_style(Role::Assistant, model);
+    let label = entry_label(entry, model);
     let (_, _, think_ink) = role_style(Role::Thinking, model);
     let mut out = Vec::new();
     top(&mut out, &label, width, edge);
@@ -2162,7 +2199,13 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
             if next < tab.transcript.len() && tab.transcript[next].role == Role::Assistant {
                 let message = tab.transcript[next].text.clone();
                 separate(&mut out);
-                out.extend(framed_split(&tab.status.model, &thinking, &message, inner));
+                out.extend(framed_split(
+                    &tab.transcript[next],
+                    &tab.status.model,
+                    &thinking,
+                    &message,
+                    inner,
+                ));
                 index = next + 1;
             } else {
                 separate(&mut out);
