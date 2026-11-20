@@ -102,11 +102,16 @@ pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-/// the busy marker on a tab: a star turning through its points, the way macos draws work
-/// in progress, rather than a solid glyph blinking on and off.
-const BUSY_FRAMES: [&str; 6] = [
-    "\u{2736}", "\u{2738}", "\u{2739}", "\u{273a}", "\u{2739}", "\u{2738}",
-];
+/// the busy marker: a quarter-filled circle turning clockwise, the way macos draws work in
+/// progress. a terminal cannot rotate a glyph, so the rotation is four glyphs: upper left,
+/// upper right, lower right, lower left.
+const BUSY_FRAMES: [&str; 4] = ["\u{25f4}", "\u{25f7}", "\u{25f6}", "\u{25f5}"];
+
+/// the frame of that marker for the current tick.
+#[must_use]
+pub const fn busy_frame(spinner: usize) -> &'static str {
+    BUSY_FRAMES[spinner % BUSY_FRAMES.len()]
+}
 
 /// shortens a tab label while keeping its trailing `(session)` marker intact, then cuts it
 /// hard so the result never exceeds the budget.
@@ -139,7 +144,7 @@ const TAB_LABEL_MAX: usize = 28;
 fn tab_text(app: &App, index: usize, cap: usize) -> String {
     let tab = &app.tabs[index];
     let mark = if tab.status.turn_running {
-        format!("{} ", BUSY_FRAMES[app.spinner % BUSY_FRAMES.len()])
+        format!("{} ", busy_frame(app.spinner))
     } else {
         String::new()
     };
@@ -197,7 +202,7 @@ fn working_label_cells(tab: &app::Tab) -> u16 {
         return 0;
     }
     tab.working.as_ref().map_or(0, |word| {
-        u16::try_from(word.chars().count() + 3).unwrap_or(0)
+        u16::try_from(word.chars().count() + 5).unwrap_or(0)
     })
 }
 
@@ -265,10 +270,18 @@ fn suggestion_list(frame: &mut Frame<'_>, above: Rect, title: &str, items: Vec<S
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// the session tab strip. it slides to keep the active tab visible and marks that tabs are
-/// hidden on either side, the way a browser does.
-#[must_use]
-pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
+/// one cell run in the tab strip: a tab's chip, or one of the markers that says more tabs
+/// are hidden behind an edge.
+struct Chip {
+    text: String,
+    style: Style,
+    /// the tab this chip draws, when it draws one.
+    tab: Option<usize>,
+}
+
+/// the session tab strip's chips. it slides to keep the active tab visible and marks that
+/// tabs are hidden on either side, the way a browser does.
+fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
     let room = usize::from(width);
     let cap = label_cap(room);
     let labels: Vec<String> = (0..app.tabs.len())
@@ -277,41 +290,79 @@ pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
     let widths: Vec<usize> = labels.iter().map(|label| tab_cells(label)).collect();
     let (start, end) = visible_tabs(&widths, app.active, room);
 
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut chips: Vec<Chip> = Vec::new();
     if start > 0 {
-        spans.push(Span::styled("\u{2039}", Style::default().fg(app::FAINT)));
+        chips.push(Chip {
+            text: "\u{2039}".to_owned(),
+            style: Style::default().fg(app::FAINT),
+            tab: None,
+        });
     }
     for (offset, label) in labels[start..end].iter().enumerate() {
         if offset > 0 {
-            spans.push(Span::styled("\u{2502}", Style::default().fg(app::FAINT)));
+            chips.push(Chip {
+                text: "\u{2502}".to_owned(),
+                style: Style::default().fg(app::FAINT),
+                tab: None,
+            });
         }
         // the chip against a marker loses the padding the marker already provides, so the
         // strip reads `\u{2039}12 ... 18\u{203a}` rather than `\u{2039} 12 ... 18 \u{203a}`.
         let first = offset == 0 && start > 0;
         let last = start + offset + 1 == end && end < labels.len();
-        let chip = match (first, last) {
+        let text = match (first, last) {
             (true, true) => label.clone(),
             (true, false) => format!("{label} "),
             (false, true) => format!(" {label}"),
             (false, false) => format!(" {label} "),
         };
-        if start + offset == app.active {
-            spans.push(Span::styled(
-                chip,
-                Style::default()
-                    .fg(Color::Rgb(0x10, 0x14, 0x1a))
-                    .bg(app::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ));
+        let index = start + offset;
+        let style = if index == app.active {
+            Style::default()
+                .fg(Color::Rgb(0x10, 0x14, 0x1a))
+                .bg(app::ACCENT)
+                .add_modifier(Modifier::BOLD)
         } else {
-            spans.push(Span::styled(chip, Style::default().fg(app::DIM)));
-        }
+            Style::default().fg(app::DIM)
+        };
+        chips.push(Chip {
+            text,
+            style,
+            tab: Some(index),
+        });
     }
     if end < labels.len() {
-        spans.push(Span::styled("\u{203a}", Style::default().fg(app::FAINT)));
+        chips.push(Chip {
+            text: "\u{203a}".to_owned(),
+            style: Style::default().fg(app::FAINT),
+            tab: None,
+        });
     }
+    chips
+}
 
+#[must_use]
+pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
+    let spans: Vec<Span<'static>> = tab_chips(app, width)
+        .into_iter()
+        .map(|chip| Span::styled(chip.text, chip.style))
+        .collect();
     Line::from(spans)
+}
+
+/// the column range of each drawn tab, so a click lands on the tab it hit.
+#[must_use]
+pub fn tab_hits(app: &App, width: u16) -> Vec<(u16, u16, usize)> {
+    let mut hits = Vec::new();
+    let mut column = 0u16;
+    for chip in tab_chips(app, width) {
+        let cells = u16::try_from(chip.text.chars().count()).unwrap_or(0);
+        if let Some(tab) = chip.tab {
+            hits.push((column, column.saturating_add(cells), tab));
+        }
+        column = column.saturating_add(cells);
+    }
+    hits
 }
 
 /// a compact context meter: filled cells and a percentage, coloured by pressure.
@@ -420,6 +471,13 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     // context pressure, not raw throughput: how much of the window is in use.
     let (meter, ink) = context_meter(tab.status.context_tokens, app.context_limit(tab));
     segments.push((format!(" {meter} "), ink, Color::Rgb(0x2a, 0x2a, 0x2a)));
+    if tab.status.queued > 0 {
+        segments.push((
+            format!(" \u{f0c9} {} queued ", tab.status.queued),
+            Color::Rgb(0x2a, 0x2a, 0x1a),
+            Color::Rgb(0x8a, 0x7a, 0x3a),
+        ));
+    }
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (index, (text, fg, bg)) in segments.iter().enumerate() {
@@ -433,7 +491,7 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     // takes the whole hint rather than sharing it.
     let busy = tab.status.turn_running;
     let hint = if busy {
-        " esc interrupt "
+        " esc interrupt \u{00b7} alt+enter after \u{00b7} alt+up take back "
     } else {
         " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump "
     };
@@ -465,7 +523,8 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
     if tab.status.turn_running && !tab.tool_running {
         if let Some(word) = &tab.working {
             block = block.title(
-                Line::from(format!(" {word}\u{2026} ")).style(Style::default().fg(app::ACCENT)),
+                Line::from(format!(" {} {word}\u{2026} ", busy_frame(app.spinner)))
+                    .style(Style::default().fg(app::ACCENT)),
             );
         }
     }
@@ -508,12 +567,9 @@ pub fn compact(count: u64) -> String {
     }
 }
 
-/// draws the open picker over the interface.
-pub fn picker(frame: &mut Frame<'_>, app: &App) {
-    let Some(picker) = &app.picker else {
-        return;
-    };
-    let screen = frame.area();
+/// the open picker's frame, its text area, and which item its first visible row shows.
+fn picker_layout(app: &App, screen: Rect) -> Option<(Rect, Rect, usize)> {
+    let picker = app.picker.as_ref()?;
     let width = screen
         .width
         .saturating_sub(8)
@@ -527,6 +583,29 @@ pub fn picker(frame: &mut Frame<'_>, app: &App) {
         width,
         height,
     };
+    let inner = Block::default().borders(Borders::ALL).inner(rect);
+    // keep the selection on screen without scrolling the whole list into view.
+    let visible = usize::from(inner.height).max(1);
+    let offset = picker.selected.saturating_sub(visible.saturating_sub(1));
+    Some((rect, inner, offset))
+}
+
+/// the open picker's text area and the index of its first visible row, so a click can be
+/// mapped to an item without duplicating the layout.
+#[must_use]
+pub fn picker_text_area(app: &App, screen: Rect) -> Option<(Rect, usize)> {
+    picker_layout(app, screen).map(|(_, inner, offset)| (inner, offset))
+}
+
+/// draws the open picker over the interface.
+pub fn picker(frame: &mut Frame<'_>, app: &App) {
+    let Some(picker) = &app.picker else {
+        return;
+    };
+    let screen = frame.area();
+    let Some((rect, inner, offset)) = picker_layout(app, screen) else {
+        return;
+    };
 
     frame.render_widget(Clear, rect);
     let block = Block::default()
@@ -534,12 +613,9 @@ pub fn picker(frame: &mut Frame<'_>, app: &App) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(app::ACCENT))
         .title(Line::from(format!(" {} ", picker.title)).style(Style::default().fg(app::ACCENT)));
-    let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    // keep the selection on screen without scrolling the whole list into view.
     let visible = usize::from(inner.height).max(1);
-    let offset = picker.selected.saturating_sub(visible.saturating_sub(1));
     let lines: Vec<Line<'static>> = picker
         .items
         .iter()
@@ -642,8 +718,17 @@ pub fn attachment_preview(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_stateful_widget(ratatui_image::StatefulImage::default(), inner, protocol);
 }
 
-/// draws the whole screen, returning where the text cursor belongs.
-pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
+/// the screen's regions, so a click can be mapped to what it landed on.
+pub struct Regions {
+    pub tabs: Rect,
+    pub transcript: Rect,
+    pub composer: Rect,
+    pub status: Rect,
+}
+
+/// the same layout `render` draws, computed from the app rather than from a frame.
+#[must_use]
+pub fn regions(app: &App, area: Rect) -> Regions {
     // a composed prompt may be several lines: give it the room, up to a cap.
     let input_rows = app.tab().input_lines().0.len().clamp(1, MAX_COMPOSER_ROWS);
     let composer_height = u16::try_from(input_rows).unwrap_or(1).saturating_add(2);
@@ -655,34 +740,93 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
             Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
-        .split(frame.area());
+        .split(area);
+    Regions {
+        tabs: rows[0],
+        transcript: rows[1],
+        composer: rows[2],
+        status: rows[3],
+    }
+}
 
-    frame.render_widget(Paragraph::new(tab_bar(app, rows[0].width)), rows[0]);
+/// what a point on the screen belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    /// the tab at this index.
+    Tab(usize),
+    /// the picker item at this index.
+    Picker(usize),
+    /// the transcript, which scrolls.
+    Transcript,
+    Composer,
+    Status,
+}
+
+/// the thing under a point, if it is anything a click can act on.
+#[must_use]
+pub fn hit(app: &App, area: Rect, column: u16, row: u16) -> Option<Hit> {
+    let point = ratatui::layout::Position::new(column, row);
+    // a picker is modal: a click belongs to it, or to nothing behind it.
+    if let Some((rect, inner, offset)) = picker_layout(app, area) {
+        if !rect.contains(point) {
+            return None;
+        }
+        if !inner.contains(point) {
+            return None;
+        }
+        let index = usize::from(row.saturating_sub(inner.y)).saturating_add(offset);
+        return Some(Hit::Picker(index));
+    }
+    let screen = regions(app, area);
+    if screen.tabs.contains(point) {
+        let within = column.saturating_sub(screen.tabs.x);
+        return tab_hits(app, screen.tabs.width)
+            .into_iter()
+            .find(|(start, end, _)| within >= *start && within < *end)
+            .map(|(_, _, tab)| Hit::Tab(tab));
+    }
+    if screen.transcript.contains(point) {
+        return Some(Hit::Transcript);
+    }
+    if screen.composer.contains(point) {
+        return Some(Hit::Composer);
+    }
+    screen.status.contains(point).then_some(Hit::Status)
+}
+
+/// draws the whole screen, returning where the text cursor belongs.
+pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
+    let screen = regions(app, frame.area());
+
+    frame.render_widget(Paragraph::new(tab_bar(app, screen.tabs.width)), screen.tabs);
 
     let border = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(RULE));
-    let inner = border.inner(rows[1]);
-    frame.render_widget(border, rows[1]);
+    let inner = border.inner(screen.transcript);
+    frame.render_widget(border, screen.transcript);
     transcript(frame, inner, app);
 
-    let cursor = composer(frame, rows[2], app);
+    let cursor = composer(frame, screen.composer, app);
     // work in progress reads as a moving bar along the composer's edge, the way a browser
     // shows an indeterminate load, rather than as a character spinning in place.
     if app.tab().status.turn_running {
-        activity_bar(frame, rows[2], app, working_label_cells(app.tab()));
+        activity_bar(frame, screen.composer, app, working_label_cells(app.tab()));
     }
     // the choices for the argument being typed sit directly above the composer, where the
     // operator is looking.
-    suggestion_list(frame, rows[2], "cwd", app.tab().cwd_suggestions());
+    suggestion_list(frame, screen.composer, "cwd", app.tab().cwd_suggestions());
     let levels = app.effort_levels(app.tab());
     suggestion_list(
         frame,
-        rows[2],
+        screen.composer,
         "effort",
         app.tab().effort_suggestions(&levels),
     );
-    frame.render_widget(Paragraph::new(status_bar(app, rows[3].width)), rows[3]);
+    frame.render_widget(
+        Paragraph::new(status_bar(app, screen.status.width)),
+        screen.status,
+    );
     cursor
 }

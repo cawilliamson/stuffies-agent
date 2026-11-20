@@ -86,7 +86,11 @@ impl Drop for Restore {
             );
         }
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableMouseCapture,
+            LeaveAlternateScreen
+        );
     }
 }
 
@@ -116,7 +120,13 @@ pub fn draw<B: ratatui::backend::Backend>(
 #[allow(clippy::future_not_send)]
 pub async fn run(client: &mut Client, session: Option<String>, new: bool) -> Result<(), String> {
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
-    crossterm::execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
+    crossterm::execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        // tabs and the scroll wheel are clickable, so the terminal reports the mouse.
+        crossterm::event::EnableMouseCapture
+    )
+    .map_err(|e| e.to_string())?;
     // without this the terminal reports shift+enter as a plain enter, and the operator's
     // newline arrives as a send. it is pushed unconditionally: asking first needs a reply
     // many terminals never send, and one that does not speak the protocol ignores the
@@ -246,6 +256,7 @@ where
     loop {
         enum Incoming {
             Key(crossterm::event::KeyEvent),
+            Mouse(crossterm::event::MouseEvent),
             Frame(Value),
             Tick,
             Resize,
@@ -261,6 +272,7 @@ where
                 {
                     Incoming::Key(key)
                 }
+                Some(Ok(Event::Mouse(mouse))) => Incoming::Mouse(mouse),
                 // a resize must force a redraw, or the frames keep their old width.
                 Some(Ok(Event::Resize(_, _))) => Incoming::Resize,
                 Some(Ok(_)) => continue,
@@ -287,6 +299,14 @@ where
                 }
             }
             Incoming::Resize => app.touch(),
+            Incoming::Mouse(mouse) => {
+                let area = terminal
+                    .size()
+                    .map(|size| ratatui::layout::Rect::new(0, 0, size.width, size.height))
+                    .map_err(|e| e.to_string())?;
+                action = app.on_mouse(area, mouse);
+                force_draw = true;
+            }
             Incoming::Key(key) => {
                 if let Some(path) = &keylog {
                     use std::io::Write as _;
@@ -299,47 +319,15 @@ where
                 force_draw = true;
             }
             Incoming::Frame(frame) => {
-                let method = frame
-                    .get("method")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                match method {
-                    "event" => {
-                        let sid = frame["params"]["session_id"].as_str().unwrap_or_default();
-                        let kind = frame["params"]["kind"].as_str().unwrap_or_default();
-                        if let Some(tab) = app.tab_for(sid) {
-                            tab.on_event(kind, &frame["params"]["payload"]);
-                        }
-                        // the title call is announced, then its result, then applied.
-                        if kind == "title.generating" {
-                            let payload = &frame["params"]["payload"];
-                            let model = payload["model"].as_str().unwrap_or("model");
-                            let effort = payload["effort"].as_str().unwrap_or("low");
-                            if let Some(tab) = app.tab_for(sid) {
-                                tab.push(
-                                    app::Role::System,
-                                    format!("generating a session title with {model}:{effort}"),
-                                );
-                            }
-                        }
-                        if kind == "session.renamed" {
-                            if let Some(title) = frame["params"]["payload"]["title"].as_str() {
-                                app.apply_rename(sid, title);
-                            }
-                        }
-                    }
-                    "sessions.changed" => {
-                        // a session was created or deleted somewhere: every window shows
-                        // every session, so bring the strip back in line.
-                        let cwd = tab_cwd(&app);
-                        if let Err(err) = sync_tabs(client, &mut app, &fallback_model, &cwd).await {
-                            app.tab_mut().push(app::Role::Error, err);
-                        }
-                    }
-                    _ => {}
-                }
+                apply_frame(client, &mut app, &frame, &fallback_model).await?;
             }
         }
+
+        // a follow-up with nothing running is just a prompt.
+        let action = match action {
+            Action::FollowUp(prompt) if !app.tab().status.turn_running => Action::Submit(prompt),
+            other => other,
+        };
 
         match action {
             Action::None => {}
@@ -392,7 +380,7 @@ where
                         app.tab_mut()
                             .push(app::Role::System, format!("effort: {level}"));
                     }
-                    Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
+                    Err(err) => app.tab_mut().push(app::Role::Error, err),
                 }
             }
             Action::CloseTab => {
@@ -410,271 +398,44 @@ where
                     }
                 }
             }
-            Action::Cancel => {
-                // always sent: the view reverts on the key press, so a running turn is not
-                // visible from the flag any more.
+            // pi's escape: take the queue back into the editor, then interrupt.
+            Action::Cancel => take_back(client, &mut app, true).await,
+            Action::Dequeue => take_back(client, &mut app, false).await,
+            Action::FollowUp(prompt) => {
                 let sid = app.tab().session.clone();
-                let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
-            }
-            Action::Submit(prompt) => {
-                let sid = app.tab().session.clone();
-                let images: Vec<serde_json::Value> = app
-                    .tab()
-                    .attachments
-                    .iter()
-                    .map(|a| json!({"media_type": a.media_type, "data": a.data, "name": a.name}))
-                    .collect();
-                // a prompt sent while a turn runs redirects it rather than being refused.
-                if app.tab().status.turn_running {
-                    match rpc(
-                        client,
-                        "turn.steer",
-                        json!({"session_id": sid, "prompt": prompt.clone()}),
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            app.touch();
-                            frame.force();
-                            frame
-                                .render(terminal, &mut app)
-                                .map_err(|e| e.to_string())?;
-                            continue;
-                        }
-                        // the daemon has no turn for this session, so this window's idea of
-                        // "running" is stale. start a real turn instead of losing the text.
-                        Err(err) => {
-                            app.tab_mut().status.turn_running = false;
-                            app.tab_mut().working = None;
-                            app.tab_mut().push(
-                                app::Role::System,
-                                format!("no turn to steer ({err}); sending as a new turn"),
-                            );
-                        }
-                    }
-                }
-                app.tab_mut().status.turn_running = true;
-                app.tab_mut().working = Some(app::working_word());
-                app.touch();
                 match rpc(
                     client,
-                    "turn.start",
-                    json!({
-                        "session_id": sid,
-                        "prompt": prompt,
-                        "detach": false,
-                        "images": images,
-                    }),
+                    "turn.follow_up",
+                    json!({"session_id": sid, "prompt": prompt}),
                 )
                 .await
                 {
-                    Ok(_) => app.tab_mut().attachments.clear(),
-                    Err(err) => {
-                        app.tab_mut().status.turn_running = false;
-                        app.tab_mut().working = None;
-                        app.tab_mut()
-                            .push(app::Role::Error, format!("turn.start failed: {err}"));
-                    }
+                    Ok(_) => app
+                        .tab_mut()
+                        .push(app::Role::System, format!("after this turn: {prompt}")),
+                    Err(err) => app
+                        .tab_mut()
+                        .push(app::Role::Error, format!("turn.follow_up failed: {err}")),
+                }
+                app.touch();
+                frame.force();
+                frame
+                    .render(terminal, &mut app)
+                    .map_err(|e| e.to_string())?;
+            }
+            Action::Submit(prompt) => {
+                if send_prompt(client, &mut app, &prompt).await? {
+                    app.touch();
+                    frame.force();
+                    frame
+                        .render(terminal, &mut app)
+                        .map_err(|e| e.to_string())?;
+                    continue;
                 }
             }
             Action::Command(command) => {
-                let (name, arg) = command
-                    .split_once(' ')
-                    .map_or((command.as_str(), ""), |(head, tail)| (head, tail.trim()));
-                let sid = app.tab().session.clone();
-                match name {
-                    "/exit" | "/quit" => break,
-                    "/help" => {
-                        app.tab_mut().push(app::Role::System, app::HELP_COMMANDS);
-                    }
-                    "/new" => {
-                        let cwd = tab_cwd(&app);
-                        match create_session(client, &cwd).await {
-                            Ok(id) => {
-                                if let Err(err) =
-                                    sync_tabs(client, &mut app, &fallback_model, &cwd).await
-                                {
-                                    app.tab_mut().push(app::Role::Error, err);
-                                } else if let Some(index) =
-                                    app.tabs.iter().position(|tab| tab.session == id)
-                                {
-                                    app.switch_tab(index);
-                                }
-                            }
-                            Err(err) => app.tab_mut().push(app::Role::Error, err),
-                        }
-                    }
-                    "/mcp" => match rpc(client, "mcp.list", json!({})).await {
-                        Ok(list) => {
-                            let rows = list.as_array().cloned().unwrap_or_default();
-                            if rows.is_empty() {
-                                app.tab_mut()
-                                    .push(app::Role::System, "no mcp servers configured");
-                            }
-                            for row in rows {
-                                let name = row["name"].as_str().unwrap_or("?");
-                                let text = row["error"].as_str().map_or_else(
-                                    || {
-                                        let tools = row["tools"]
-                                            .as_array()
-                                            .map(|tools| {
-                                                tools
-                                                    .iter()
-                                                    .filter_map(|tool| tool.as_str())
-                                                    .collect::<Vec<_>>()
-                                                    .join(", ")
-                                            })
-                                            .unwrap_or_default();
-                                        format!("{name}: {tools}")
-                                    },
-                                    |error| format!("{name}: {error}"),
-                                );
-                                app.tab_mut().push(app::Role::System, text);
-                            }
-                        }
-                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
-                    },
-                    "/effort" if arg.is_empty() => {
-                        // the catalog is read at startup, before the daemon's background
-                        // probe has finished, so refresh it when there is nothing to offer.
-                        if app.effort_levels(app.tab()).is_empty() {
-                            app.served = model_catalog(client).await.into_iter().collect();
-                        }
-                        // the endpoint's own values, not a list this build invented.
-                        let model = app.tab().status.model.clone();
-                        let current = app.tab().status.effort.clone();
-                        let levels = app.effort_levels(app.tab());
-                        if levels.is_empty() {
-                            app.tab_mut().push(
-                                app::Role::System,
-                                format!("{model}: the endpoint advertises no effort levels"),
-                            );
-                        } else {
-                            let items = levels
-                                .into_iter()
-                                .map(|level| app::PickerItem {
-                                    label: if level == current {
-                                        format!("{level} (current)")
-                                    } else {
-                                        level.clone()
-                                    },
-                                    id: level,
-                                })
-                                .collect();
-                            app.open_picker(
-                                app::PickerKind::Effort,
-                                format!("{model} effort"),
-                                items,
-                            );
-                        }
-                    }
-                    "/effort" => match rpc(
-                        client,
-                        "model.effort",
-                        json!({"session_id": sid, "effort": arg}),
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            app.tab_mut().status.effort = arg.to_owned();
-                            app.touch();
-                            app.tab_mut()
-                                .push(app::Role::System, format!("effort: {arg}"));
-                        }
-                        Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
-                    },
-                    "/model" if !arg.is_empty() => {
-                        let _ = rpc(
-                            client,
-                            "model.select",
-                            json!({"session_id": sid, "model": arg}),
-                        )
-                        .await;
-                        app.tab_mut().status.model = arg.to_owned();
-                        app.touch();
-                    }
-                    "/cancel" => {
-                        let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
-                    }
-                    "/cwd" | "/cd" | "/pwd" if arg.is_empty() => {
-                        let cwd = app.tab().cwd.clone();
-                        app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
-                    }
-                    "/cwd" | "/cd" => match resolve_dir(&app.tab().cwd, arg) {
-                        Some(cwd) => {
-                            match rpc(
-                                client,
-                                "session.cwd",
-                                json!({"session_id": sid, "cwd": cwd}),
-                            )
-                            .await
-                            {
-                                Ok(result) => {
-                                    let cwd = result["cwd"].as_str().unwrap_or(&cwd).to_owned();
-                                    let branch = app::git_branch(&cwd);
-                                    let tab = app.tab_mut();
-                                    tab.cwd = cwd.clone();
-                                    tab.branch = branch;
-                                    app.touch();
-                                    app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
-                                }
-                                Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
-                            }
-                        }
-                        None => app
-                            .tab_mut()
-                            .push(app::Role::Error, format!("not a directory: {arg}")),
-                    },
-                    "/resume" => {
-                        // every live session is already a tab, so what is worth bringing
-                        // back is a session that was closed while working in this directory.
-                        let cwd = app.tab().cwd.clone();
-                        match rpc(client, "session.list", json!({"include_deleted": true})).await {
-                            Ok(list) => {
-                                let mut rows: Vec<&Value> = list
-                                    .as_array()
-                                    .map(|rows| {
-                                        rows.iter()
-                                            .filter(|row| {
-                                                row["state"] == "deleted"
-                                                    && row["cwd"].as_str() == Some(cwd.as_str())
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
-                                rows.sort_by_key(|row| {
-                                    std::cmp::Reverse(
-                                        row["updated_at"].as_i64().unwrap_or_default(),
-                                    )
-                                });
-                                let items: Vec<app::PickerItem> = rows
-                                    .iter()
-                                    .take(RESUME_LIMIT)
-                                    .filter_map(|row| {
-                                        let id = row["id"].as_str()?;
-                                        let title = row["title"].as_str().unwrap_or("(untitled)");
-                                        let short: String = id.chars().take(8).collect();
-                                        Some(app::PickerItem {
-                                            id: id.to_owned(),
-                                            label: format!("{title} ({short})"),
-                                        })
-                                    })
-                                    .collect();
-                                if items.is_empty() {
-                                    app.tab_mut().push(
-                                        app::Role::System,
-                                        "no closed sessions in this directory",
-                                    );
-                                } else {
-                                    app.open_picker(app::PickerKind::Resume, "resume", items);
-                                }
-                            }
-                            Err(err) => app.tab_mut().push(app::Role::Error, err.clone()),
-                        }
-                    }
-                    _ => app
-                        .tab_mut()
-                        .push(app::Role::System, "unknown command, /help"),
+                if run_command(client, &mut app, &fallback_model, &command).await? {
+                    break;
                 }
             }
         }
@@ -893,6 +654,61 @@ const RESUME_LIMIT: usize = 100;
 const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// calls the daemon with a deadline, so a stalled daemon cannot freeze the interface.
+/// takes the queue back into the editor, and interrupts the turn when asked.
+#[allow(clippy::future_not_send)]
+async fn take_back(client: &mut Client, app: &mut App, cancel: bool) {
+    let sid = app.tab().session.clone();
+    if let Some(texts) = take_back_queue(client, &sid).await {
+        restore_queue(app, &texts);
+    }
+    if cancel {
+        let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
+    }
+}
+
+/// takes everything queued for the session back out of the daemon, as pi's dequeue does.
+///
+/// the queue is read before the view is touched: holding the view across an await would
+/// make this future non-`Send` for no gain.
+async fn take_back_queue(client: &mut Client, session_id: &str) -> Option<Vec<String>> {
+    let queue = rpc(client, "turn.dequeue", json!({"session_id": session_id}))
+        .await
+        .ok()?;
+    let mut texts: Vec<String> = Vec::new();
+    for key in ["steering", "follow_up"] {
+        texts.extend(
+            queue[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_owned)),
+        );
+    }
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts)
+    }
+}
+
+/// puts taken-back messages in front of whatever the operator is already typing.
+fn restore_queue(app: &mut App, texts: &[String]) {
+    let restored = texts.join("\n\n");
+    let existing = app.tab().input_text();
+    let merged = if existing.trim().is_empty() {
+        restored
+    } else {
+        format!("{restored}\n\n{existing}")
+    };
+    let tab = app.tab_mut();
+    tab.set_input(&merged);
+    tab.status.queued = 0;
+    tab.push(
+        app::Role::System,
+        format!("took back {} queued message(s)", texts.len()),
+    );
+}
+
 async fn rpc(client: &mut Client, method: &str, params: Value) -> Result<Value, String> {
     match tokio::time::timeout(RPC_TIMEOUT, client.call(method, params)).await {
         Ok(Ok(value)) => Ok(value),
@@ -1576,4 +1392,310 @@ mod daemon_tests {
             "a slash command is not a prompt"
         );
     }
+}
+
+/// runs one slash command. returns true when the operator asked to quit.
+#[allow(clippy::future_not_send)]
+async fn run_command(
+    client: &mut Client,
+    app: &mut App,
+    fallback_model: &str,
+    command: &str,
+) -> Result<bool, String> {
+    let (name, arg) = command
+        .split_once(' ')
+        .map_or((command, ""), |(head, tail)| (head, tail.trim()));
+    let sid = app.tab().session.clone();
+    match name {
+        "/exit" | "/quit" => return Ok(true),
+        "/help" => {
+            app.tab_mut().push(app::Role::System, app::HELP_COMMANDS);
+        }
+        "/new" => {
+            let cwd = tab_cwd(app);
+            match create_session(client, &cwd).await {
+                Ok(id) => {
+                    if let Err(err) = sync_tabs(client, app, fallback_model, &cwd).await {
+                        app.tab_mut().push(app::Role::Error, err);
+                    } else if let Some(index) = app.tabs.iter().position(|tab| tab.session == id) {
+                        app.switch_tab(index);
+                    }
+                }
+                Err(err) => app.tab_mut().push(app::Role::Error, err),
+            }
+        }
+        "/mcp" => match rpc(client, "mcp.list", json!({})).await {
+            Ok(list) => {
+                let rows = list.as_array().cloned().unwrap_or_default();
+                if rows.is_empty() {
+                    app.tab_mut()
+                        .push(app::Role::System, "no mcp servers configured");
+                }
+                for row in rows {
+                    let name = row["name"].as_str().unwrap_or("?");
+                    let text = row["error"].as_str().map_or_else(
+                        || {
+                            let tools = row["tools"]
+                                .as_array()
+                                .map(|tools| {
+                                    tools
+                                        .iter()
+                                        .filter_map(|tool| tool.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                })
+                                .unwrap_or_default();
+                            format!("{name}: {tools}")
+                        },
+                        |error| format!("{name}: {error}"),
+                    );
+                    app.tab_mut().push(app::Role::System, text);
+                }
+            }
+            Err(err) => app.tab_mut().push(app::Role::Error, err),
+        },
+        "/effort" if arg.is_empty() => {
+            // the catalog is read at startup, before the daemon's background
+            // probe has finished, so refresh it when there is nothing to offer.
+            if app.effort_levels(app.tab()).is_empty() {
+                app.served = model_catalog(client).await.into_iter().collect();
+            }
+            // the endpoint's own values, not a list this build invented.
+            let model = app.tab().status.model.clone();
+            let current = app.tab().status.effort.clone();
+            let levels = app.effort_levels(app.tab());
+            if levels.is_empty() {
+                app.tab_mut().push(
+                    app::Role::System,
+                    format!("{model}: the endpoint advertises no effort levels"),
+                );
+            } else {
+                let items = levels
+                    .into_iter()
+                    .map(|level| app::PickerItem {
+                        label: if level == current {
+                            format!("{level} (current)")
+                        } else {
+                            level.clone()
+                        },
+                        id: level,
+                    })
+                    .collect();
+                app.open_picker(app::PickerKind::Effort, format!("{model} effort"), items);
+            }
+        }
+        "/effort" => match rpc(
+            client,
+            "model.effort",
+            json!({"session_id": sid, "effort": arg}),
+        )
+        .await
+        {
+            Ok(_) => {
+                app.tab_mut().status.effort = arg.to_owned();
+                app.touch();
+                app.tab_mut()
+                    .push(app::Role::System, format!("effort: {arg}"));
+            }
+            Err(err) => app.tab_mut().push(app::Role::Error, err),
+        },
+        "/model" if !arg.is_empty() => {
+            let _ = rpc(
+                client,
+                "model.select",
+                json!({"session_id": sid, "model": arg}),
+            )
+            .await;
+            app.tab_mut().status.model = arg.to_owned();
+            app.touch();
+        }
+        "/cancel" => {
+            let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
+        }
+        "/cwd" | "/cd" | "/pwd" if arg.is_empty() => {
+            let cwd = app.tab().cwd.clone();
+            app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
+        }
+        "/cwd" | "/cd" => match resolve_dir(&app.tab().cwd, arg) {
+            Some(cwd) => {
+                match rpc(
+                    client,
+                    "session.cwd",
+                    json!({"session_id": sid, "cwd": cwd}),
+                )
+                .await
+                {
+                    Ok(result) => {
+                        let cwd = result["cwd"].as_str().unwrap_or(&cwd).to_owned();
+                        let branch = app::git_branch(&cwd);
+                        let tab = app.tab_mut();
+                        tab.cwd = cwd.clone();
+                        tab.branch = branch;
+                        app.touch();
+                        app.tab_mut().push(app::Role::System, format!("cwd: {cwd}"));
+                    }
+                    Err(err) => app.tab_mut().push(app::Role::Error, err),
+                }
+            }
+            None => app
+                .tab_mut()
+                .push(app::Role::Error, format!("not a directory: {arg}")),
+        },
+        "/resume" => {
+            // every live session is already a tab, so what is worth bringing
+            // back is a session that was closed while working in this directory.
+            let cwd = app.tab().cwd.clone();
+            match rpc(client, "session.list", json!({"include_deleted": true})).await {
+                Ok(list) => {
+                    let mut rows: Vec<&Value> = list
+                        .as_array()
+                        .map(|rows| {
+                            rows.iter()
+                                .filter(|row| {
+                                    row["state"] == "deleted"
+                                        && row["cwd"].as_str() == Some(cwd.as_str())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    rows.sort_by_key(|row| {
+                        std::cmp::Reverse(row["updated_at"].as_i64().unwrap_or_default())
+                    });
+                    let items: Vec<app::PickerItem> = rows
+                        .iter()
+                        .take(RESUME_LIMIT)
+                        .filter_map(|row| {
+                            let id = row["id"].as_str()?;
+                            let title = row["title"].as_str().unwrap_or("(untitled)");
+                            let short: String = id.chars().take(8).collect();
+                            Some(app::PickerItem {
+                                id: id.to_owned(),
+                                label: format!("{title} ({short})"),
+                            })
+                        })
+                        .collect();
+                    if items.is_empty() {
+                        app.tab_mut()
+                            .push(app::Role::System, "no closed sessions in this directory");
+                    } else {
+                        app.open_picker(app::PickerKind::Resume, "resume", items);
+                    }
+                }
+                Err(err) => app.tab_mut().push(app::Role::Error, err),
+            }
+        }
+        _ => app
+            .tab_mut()
+            .push(app::Role::System, "unknown command, /help"),
+    }
+    Ok(false)
+}
+
+/// sends a prompt: steers the running turn if there is one, otherwise starts a new
+/// turn. returns true when the text went to the turn that was already running.
+#[allow(clippy::future_not_send)]
+async fn send_prompt(client: &mut Client, app: &mut App, prompt: &str) -> Result<bool, String> {
+    let sid = app.tab().session.clone();
+    let images: Vec<serde_json::Value> = app
+        .tab()
+        .attachments
+        .iter()
+        .map(|a| json!({"media_type": a.media_type, "data": a.data, "name": a.name}))
+        .collect();
+    // a prompt sent while a turn runs redirects it rather than being refused.
+    if app.tab().status.turn_running {
+        match rpc(
+            client,
+            "turn.steer",
+            json!({"session_id": sid, "prompt": prompt}),
+        )
+        .await
+        {
+            Ok(_) => return Ok(true),
+            // the daemon has no turn for this session, so this window's idea of
+            // "running" is stale. start a real turn instead of losing the text.
+            Err(err) => {
+                app.tab_mut().status.turn_running = false;
+                app.tab_mut().working = None;
+                app.tab_mut().push(
+                    app::Role::System,
+                    format!("no turn to steer ({err}); sending as a new turn"),
+                );
+            }
+        }
+    }
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some(app::working_word());
+    app.touch();
+    match rpc(
+        client,
+        "turn.start",
+        json!({
+            "session_id": sid,
+            "prompt": prompt,
+            "detach": false,
+            "images": images,
+        }),
+    )
+    .await
+    {
+        Ok(_) => app.tab_mut().attachments.clear(),
+        Err(err) => {
+            app.tab_mut().status.turn_running = false;
+            app.tab_mut().working = None;
+            app.tab_mut()
+                .push(app::Role::Error, format!("turn.start failed: {err}"));
+        }
+    }
+    Ok(false)
+}
+
+/// applies one notification from the daemon to the view.
+#[allow(clippy::future_not_send)]
+async fn apply_frame(
+    client: &mut Client,
+    app: &mut App,
+    frame: &Value,
+    fallback_model: &str,
+) -> Result<(), String> {
+    let method = frame
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match method {
+        "event" => {
+            let sid = frame["params"]["session_id"].as_str().unwrap_or_default();
+            let kind = frame["params"]["kind"].as_str().unwrap_or_default();
+            if let Some(tab) = app.tab_for(sid) {
+                tab.on_event(kind, &frame["params"]["payload"]);
+            }
+            // the title call is announced, then its result, then applied.
+            if kind == "title.generating" {
+                let payload = &frame["params"]["payload"];
+                let model = payload["model"].as_str().unwrap_or("model");
+                let effort = payload["effort"].as_str().unwrap_or("low");
+                if let Some(tab) = app.tab_for(sid) {
+                    tab.push(
+                        app::Role::System,
+                        format!("generating a session title with {model}:{effort}"),
+                    );
+                }
+            }
+            if kind == "session.renamed" {
+                if let Some(title) = frame["params"]["payload"]["title"].as_str() {
+                    app.apply_rename(sid, title);
+                }
+            }
+        }
+        "sessions.changed" => {
+            // a session was created or deleted somewhere: every window shows
+            // every session, so bring the strip back in line.
+            let cwd = tab_cwd(app);
+            if let Err(err) = sync_tabs(client, app, fallback_model, &cwd).await {
+                app.tab_mut().push(app::Role::Error, err);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

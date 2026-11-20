@@ -946,11 +946,11 @@ fn a_busy_tab_shows_a_spinner() {
     app.tab_mut().status.turn_running = true;
     app.spinner = 3;
     let screen = screen(&mut app, 100, 20);
-    // a star sits beside the tab label.
+    // the ring sits beside the tab label.
     assert!(
         screen
             .chars()
-            .any(|c| ('\u{2736}'..='\u{273a}').contains(&c)),
+            .any(|c| ('\u{25f4}'..='\u{25f7}').contains(&c)),
         "expected a busy marker on the tab:\n{screen}"
     );
 }
@@ -963,7 +963,7 @@ fn an_idle_tab_has_no_spinner() {
     assert!(
         !screen
             .chars()
-            .any(|c| ('\u{2736}'..='\u{273a}').contains(&c)),
+            .any(|c| ('\u{25f4}'..='\u{25f7}').contains(&c)),
         "no spinner when idle:\n{screen}"
     );
 }
@@ -2143,6 +2143,61 @@ fn shift_enter_makes_a_new_line_instead_of_sending() {
 }
 
 #[test]
+fn alt_enter_queues_the_text_for_after_the_turn() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    typed(&mut app, "and then summarise");
+
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
+        Action::FollowUp("and then summarise".to_owned())
+    );
+    assert_eq!(
+        app.tab().input_text(),
+        "",
+        "the queue takes the text out of the composer"
+    );
+}
+
+#[test]
+fn alt_enter_is_no_longer_a_newline() {
+    // alt used to insert a line break; the queue keys took it, as they have in pi.
+    let mut app = App::new("session-abcdef", "m");
+    typed(&mut app, "one");
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
+        Action::FollowUp("one".to_owned())
+    );
+}
+
+#[test]
+fn alt_up_takes_the_queue_back() {
+    let mut app = App::new("session-abcdef", "m");
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
+        Action::Dequeue
+    );
+}
+
+#[test]
+fn a_queue_event_counts_what_is_pending() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().on_event(
+        "turn.queued",
+        &json!({"steering": ["a"], "follow_up": ["b"]}),
+    );
+    assert_eq!(app.tab().status.queued, 2);
+
+    app.tab_mut()
+        .on_event("turn.queued", &json!({"steering": [], "follow_up": []}));
+    assert_eq!(
+        app.tab().status.queued,
+        0,
+        "an emptied queue is recorded too"
+    );
+}
+
+#[test]
 fn the_cursor_tracks_a_multi_line_prompt() {
     let mut app = App::new("session-abcdef", "m");
     typed(&mut app, "one");
@@ -3056,18 +3111,19 @@ fn reasoning_is_set_apart_from_the_reply_it_produced() {
     let reply = row_of("here is the answer");
 
     assert!(thinking < rule && rule < reply, "reasoning comes first");
-    // clear space either side of the rule: the two sections do not run into each other.
-    for row in [rule - 1, rule + 1] {
-        let text: String = rows[row]
-            .chars()
-            .filter(|c| !matches!(c, '\u{2502}' | ' '))
-            .collect();
-        assert!(
-            text.is_empty(),
-            "row {row} should be blank inside the frame: {:?}",
-            rows[row]
-        );
-    }
+    // no padding rows: the rule is the only thing between the two sections.
+    assert_eq!(
+        rule,
+        thinking + 1,
+        "the reasoning ends on the row before the rule:\n{}",
+        rows.join("\n")
+    );
+    assert_eq!(
+        reply,
+        rule + 1,
+        "the reply starts on the row after the rule:\n{}",
+        rows.join("\n")
+    );
 }
 
 #[test]
@@ -3142,4 +3198,188 @@ fn reasoning_is_italic_so_it_reads_as_aside_from_the_reply() {
     };
     assert!(italic_on("weighing"), "reasoning is italic");
     assert!(!italic_on("here is"), "the reply is not");
+}
+
+#[test]
+fn a_message_frame_has_no_padding_rows() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::Assistant, "the answer");
+
+    let rows = rows(&mut app, 100, 24);
+    let text = rows.join("\n");
+    // the message's own frame, not the pane it sits in.
+    let top = rows
+        .iter()
+        .position(|row| row.contains("\u{256d}\u{2500} m "))
+        .expect("the message's top border");
+    let bottom = rows
+        .iter()
+        .skip(top)
+        .position(|row| row.contains('\u{2570}'))
+        .expect("the message's bottom border")
+        + top;
+    assert_eq!(
+        bottom,
+        top + 2,
+        "a one-line message is a border, its line, and a border:\n{text}"
+    );
+}
+
+#[test]
+fn the_working_header_carries_the_spinner() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some("cogitating".to_owned());
+    app.spinner = 2;
+
+    let screen = screen(&mut app, 100, 20);
+    let mark = sa_tui::ui::busy_frame(2);
+    assert!(
+        screen.contains(&format!("{mark} cogitating")),
+        "the marker belongs beside the word:\n{screen}"
+    );
+}
+
+#[test]
+fn the_spinner_is_a_ring_that_turns() {
+    // the quarter turns: four positions, no repeats, and it wraps.
+    let frames: Vec<&str> = (0..4).map(sa_tui::ui::busy_frame).collect();
+    let mut unique = frames.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), 4, "every frame is distinct: {frames:?}");
+    assert_eq!(sa_tui::ui::busy_frame(4), frames[0], "it wraps");
+}
+
+const fn mouse(
+    kind: crossterm::event::MouseEventKind,
+    column: u16,
+    row: u16,
+) -> crossterm::event::MouseEvent {
+    crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    }
+}
+
+const fn screen_area(width: u16, height: u16) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(0, 0, width, height)
+}
+
+#[test]
+fn a_click_on_a_tab_switches_to_it() {
+    let mut app = App::new("session-abcdef", "m");
+    app.add_tab("session-second", "m");
+    app.switch_tab(0);
+
+    // the second chip is somewhere on the strip; find the column it occupies.
+    let hits = sa_tui::ui::tab_hits(&app, 100);
+    let (start, end, index) = *hits
+        .iter()
+        .find(|(_, _, tab)| *tab == 1)
+        .expect("a chip for tab 2");
+    assert!(end > start);
+    let column = start + (end - start) / 2;
+
+    let action = app.on_mouse(
+        screen_area(100, 24),
+        mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            0,
+        ),
+    );
+    assert_eq!(action, Action::SwitchTab(index));
+}
+
+#[test]
+fn a_middle_click_on_a_tab_closes_it() {
+    let mut app = App::new("session-abcdef", "m");
+    app.add_tab("session-second", "m");
+    app.switch_tab(0);
+
+    let hits = sa_tui::ui::tab_hits(&app, 100);
+    let (start, end, _) = *hits
+        .iter()
+        .find(|(_, _, tab)| *tab == 1)
+        .expect("a chip for tab 2");
+    let column = start + (end - start) / 2;
+
+    let action = app.on_mouse(
+        screen_area(100, 24),
+        mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Middle),
+            column,
+            0,
+        ),
+    );
+    assert_eq!(action, Action::CloseTab);
+    assert_eq!(
+        app.active, 1,
+        "the tab under the click is the one that closes"
+    );
+}
+
+#[test]
+fn the_wheel_scrolls_the_transcript_only_where_it_is() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().scroll = 10;
+    app.tab_mut().max_scroll = 40;
+
+    // over the transcript: it moves.
+    let action = app.on_mouse(
+        screen_area(100, 24),
+        mouse(crossterm::event::MouseEventKind::ScrollDown, 40, 10),
+    );
+    assert_eq!(action, Action::None);
+    assert!(app.tab().scroll > 10, "the wheel scrolls the transcript");
+
+    // over the composer: it does not.
+    let before = app.tab().scroll;
+    app.on_mouse(
+        screen_area(100, 24),
+        mouse(crossterm::event::MouseEventKind::ScrollUp, 40, 22),
+    );
+    assert_eq!(
+        app.tab().scroll,
+        before,
+        "the composer does not scroll the chat"
+    );
+}
+
+#[test]
+fn a_click_on_a_picker_row_chooses_it() {
+    let mut app = App::new("session-abcdef", "m");
+    app.open_picker(
+        PickerKind::Resume,
+        "resume",
+        vec![
+            PickerItem {
+                id: "one".to_owned(),
+                label: "first".to_owned(),
+            },
+            PickerItem {
+                id: "two".to_owned(),
+                label: "second".to_owned(),
+            },
+        ],
+    );
+
+    let area = screen_area(100, 24);
+    // the second row sits one line below the first inside the picker's frame.
+    let Some((inner, _)) = sa_tui::ui::picker_text_area(&app, area) else {
+        panic!("the picker has a text area");
+    };
+    let action = app.on_mouse(
+        area,
+        mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            inner.x + 2,
+            inner.y + 1,
+        ),
+    );
+    assert_eq!(action, Action::ResumePicked("two".to_owned()));
+    assert!(app.picker.is_none(), "choosing closes the picker");
 }

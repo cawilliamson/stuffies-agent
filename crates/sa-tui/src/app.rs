@@ -1,6 +1,9 @@
 //! the tui state machine, independent of any terminal so it can be tested.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -255,16 +258,16 @@ fn with_thousands(value: u64) -> String {
 
 /// every command the composer understands, with what it does.
 pub const HELP_COMMANDS: &str = "\
-/help — this list
-/cwd <dir> (alias /cd) — change the working directory; tab completes directories
-/pwd — print the working directory
-/effort [level] — show or set the reasoning effort; tab completes the levels
-/model <name> — switch the model for this tab
-/mcp — list the mcp servers and their tools
 /cancel — interrupt the turn that is running
+/cwd <dir> (alias /cd) — change the working directory; tab completes directories
+/effort [level] — show or set the reasoning effort; tab completes the levels
+/exit — quit
+/help — this list
+/mcp — list the mcp servers and their tools
+/model <name> — switch the model for this tab
 /new — open a tab
-/resume — reopen a session that was closed
-/exit — quit";
+/pwd — print the working directory
+/resume — reopen a session that was closed";
 
 /// a gap between text deltas longer than this is a stall, not generation: the clock stops
 /// for it, so thinking and tool time never dilute the figure.
@@ -278,6 +281,9 @@ const SCROLL_STEP: u16 = 3;
 const SCROLLBAR_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
 /// lines moved per page key.
 const PAGE_STEP: u16 = 20;
+
+/// lines moved per wheel notch.
+const WHEEL_STEP: i32 = 3;
 
 pub const INK: Color = Color::Rgb(0xc8, 0xd0, 0xdc);
 pub const DIM: Color = Color::Rgb(0x6c, 0x76, 0x86);
@@ -469,6 +475,8 @@ pub struct Status {
     /// estimated tokens in the model's view, and the window it has.
     pub context_tokens: u64,
     pub context_limit: u64,
+    /// how many messages the operator has queued for the running turn.
+    pub queued: usize,
     pub turn_running: bool,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -851,6 +859,18 @@ impl Tab {
         true
     }
 
+    /// queues the text for after the running turn, as alt+enter does in pi.
+    fn follow_up(&mut self) -> Action {
+        let text = self.input_text().trim().to_owned();
+        if text.is_empty() {
+            return Action::None;
+        }
+        self.set_input("");
+        self.follow = true;
+        self.touch();
+        Action::FollowUp(text)
+    }
+
     fn submit(&mut self) -> Action {
         let text = self.input_text().trim().to_owned();
         if text.is_empty() {
@@ -936,6 +956,20 @@ impl Tab {
     }
 
     /// records a scroll. the bar appears on the first one and the tick clears it.
+    /// moves the transcript by whole lines, the way the wheel does.
+    pub fn scroll_by(&mut self, lines: i32) {
+        if lines < 0 {
+            let step = u16::try_from(lines.unsigned_abs()).unwrap_or(u16::MAX);
+            self.scroll = self.scroll.saturating_sub(step);
+            self.follow = false;
+        } else {
+            let step = u16::try_from(lines).unwrap_or(u16::MAX);
+            self.scroll = self.scroll.saturating_add(step).min(self.max_scroll);
+            self.follow = self.scroll >= self.max_scroll;
+        }
+        self.scrolled();
+    }
+
     fn scrolled(&mut self) {
         self.scroll_touched = Some(std::time::Instant::now());
         self.touch();
@@ -1128,6 +1162,12 @@ impl Tab {
                     self.status.context_tokens = tokens;
                     self.touch();
                 }
+            }
+            "turn.queued" => {
+                let steering = payload["steering"].as_array().map_or(0, Vec::len);
+                let follow_up = payload["follow_up"].as_array().map_or(0, Vec::len);
+                self.status.queued = steering + follow_up;
+                self.touch();
             }
             "turn.steered" => {
                 if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
@@ -1381,6 +1421,10 @@ pub struct Picker {
 pub enum Action {
     None,
     Submit(String),
+    /// queue for after the running turn, rather than inside it.
+    FollowUp(String),
+    /// take everything queued back into the editor.
+    Dequeue,
     Cancel,
     Quit,
     Command(String),
@@ -1643,6 +1687,30 @@ impl App {
     }
 
     /// keys belong to the picker while it is open, so the composer never sees them.
+    /// takes the picker's current selection, closing it either way.
+    fn pick_selected(&mut self) -> Action {
+        let picked = self.picker.as_ref().and_then(|picker| {
+            let item = picker.items.get(picker.selected)?;
+            Some((picker.kind, item.id.clone()))
+        });
+        self.picker = None;
+        self.touch();
+        picked.map_or(Action::None, |(kind, id)| match kind {
+            PickerKind::Resume => Action::ResumePicked(id),
+            PickerKind::Effort => Action::EffortPicked(id),
+        })
+    }
+
+    /// a click on a picker row chooses that row.
+    pub fn pick_at(&mut self, index: usize) -> Action {
+        if let Some(picker) = self.picker.as_mut() {
+            if index < picker.items.len() {
+                picker.selected = index;
+            }
+        }
+        self.pick_selected()
+    }
+
     fn on_picker_key(&mut self, key: KeyEvent) -> Action {
         let count = self.picker.as_ref().map_or(0, |p| p.items.len());
         match key.code {
@@ -1660,21 +1728,40 @@ impl App {
                 self.touch();
                 Action::None
             }
-            KeyCode::Enter => {
-                let picked = self.picker.as_ref().and_then(|picker| {
-                    let item = picker.items.get(picker.selected)?;
-                    Some((picker.kind, item.id.clone()))
-                });
-                self.picker = None;
-                self.touch();
-                picked.map_or(Action::None, |(kind, id)| match kind {
-                    PickerKind::Resume => Action::ResumePicked(id),
-                    PickerKind::Effort => Action::EffortPicked(id),
-                })
-            }
+            KeyCode::Enter => self.pick_selected(),
             KeyCode::Esc => {
                 self.picker = None;
                 self.touch();
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// what a mouse event means. the mouse is a shortcut for something a key also does: no
+    /// action is reachable only by clicking.
+    pub fn on_mouse(&mut self, area: ratatui::layout::Rect, mouse: MouseEvent) -> Action {
+        let hit = crate::ui::hit(self, area, mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => match hit {
+                Some(crate::ui::Hit::Tab(index)) => Action::SwitchTab(index),
+                Some(crate::ui::Hit::Picker(index)) => self.pick_at(index),
+                _ => Action::None,
+            },
+            // a middle click closes the tab it lands on, as a browser does.
+            MouseEventKind::Down(MouseButton::Middle) => match hit {
+                Some(crate::ui::Hit::Tab(index)) => {
+                    self.switch_tab(index);
+                    Action::CloseTab
+                }
+                _ => Action::None,
+            },
+            MouseEventKind::ScrollUp if hit == Some(crate::ui::Hit::Transcript) => {
+                self.tab_mut().scroll_by(-WHEEL_STEP);
+                Action::None
+            }
+            MouseEventKind::ScrollDown if hit == Some(crate::ui::Hit::Transcript) => {
+                self.tab_mut().scroll_by(WHEEL_STEP);
                 Action::None
             }
             _ => Action::None,
@@ -1711,8 +1798,9 @@ impl App {
 
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        // a newline without sending. alt is the alias for terminals that cannot tell
-        // shift+enter from enter, and so is a bare enter while shift is held.
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // a newline without sending: shift+enter and ctrl+j, which is what pi binds. alt is
+        // not a newline alias any more: it carries the queue keys below.
         let enter = matches!(key.code, KeyCode::Enter | KeyCode::Char('\r'));
         // a terminal that loses a release must not leave a modifier stuck down, or enter
         // would stop sending for the rest of the session.
@@ -1724,10 +1812,7 @@ impl App {
                 self.ctrl_held = false;
             }
         }
-        let newline = shift
-            || key.modifiers.contains(KeyModifiers::ALT)
-            || (self.shift_held && enter)
-            || (self.ctrl_held && enter);
+        let newline = shift || (self.shift_held && enter) || (self.ctrl_held && enter);
 
         if ctrl {
             return match key.code {
@@ -1776,9 +1861,13 @@ impl App {
                 Action::None
             }
             KeyCode::BackTab => Action::NextTab,
+            // alt+enter queues for after this turn; alt+up takes the queue back, as pi
+            // binds them.
+            KeyCode::Enter | KeyCode::Char('\r') if alt => self.tab_mut().follow_up(),
+            KeyCode::Up if alt => Action::Dequeue,
             // shift+enter makes a new line; enter alone sends.
             // ctrl+j arrives as a bare newline and needs no terminal protocol, so it is the
-            // newline that always works. shift+enter and alt+enter join it.
+            // newline that always works. shift+enter joins it.
             KeyCode::Char('\n') => self.tab_mut().insert_newline(),
             KeyCode::Enter | KeyCode::Char('\r') if newline => self.tab_mut().insert_newline(),
             KeyCode::Enter | KeyCode::Char('\r') => self.tab_mut().submit(),
@@ -2122,11 +2211,6 @@ fn bottom(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
     ]));
 }
 
-/// an empty row inside a frame.
-fn blank(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
-    out.push(framed_line(Vec::new(), width.saturating_sub(4), edge));
-}
-
 /// a cell of clear space either side, so a bubble sits inside the pane rather than running
 /// into the pane's own edge.
 fn inset(out: Vec<Line<'static>>) -> Vec<Line<'static>> {
@@ -2241,14 +2325,10 @@ fn framed_split(
     let width = width.saturating_sub(2);
     let mut out = Vec::new();
     top(&mut out, &label, width, edge);
-    blank(&mut out, width, edge);
     body(&mut out, thinking, width, think_ink, true, edge, true);
-    blank(&mut out, width, edge);
     // the rule is part of this frame, so it uses the frame's colour.
     divider(&mut out, width, edge);
-    blank(&mut out, width, edge);
     body(&mut out, message, width, reply_ink, true, edge, false);
-    blank(&mut out, width, edge);
     bottom(&mut out, width, edge);
     inset(out)
 }
