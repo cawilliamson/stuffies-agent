@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKe
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use sa_tui::app::{transcript_lines, Action, App, PickerItem, PickerKind, Role, ServedModel};
-use sa_tui::ui::tab_hits;
+use sa_tui::ui::{picker_text_area, tab_hits};
 use serde_json::json;
 
 const fn key(code: KeyCode) -> KeyEvent {
@@ -185,7 +185,9 @@ fn events_route_to_the_tab_that_owns_the_session() {
 #[test]
 fn the_tab_bar_is_one_row_of_lit_and_dim_tabs() {
     let mut app = App::new("session-one", "m");
+    app.tab_mut().cwd = "/tmp/one".to_owned();
     app.add_tab("session-two", "m");
+    app.tab_mut().cwd = "/tmp/two".to_owned();
 
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -193,11 +195,8 @@ fn the_tab_bar_is_one_row_of_lit_and_dim_tabs() {
     let buffer = terminal.backend().buffer();
 
     let row0: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
-    assert!(
-        row0.contains("1 (session"),
-        "the tab must carry its id:\n{row0}"
-    );
-    assert!(row0.contains("2 (session"), "second tab label:\n{row0}");
+    assert!(row0.contains("one"), "the tab must carry its id:\n{row0}");
+    assert!(row0.contains("two"), "second tab label:\n{row0}");
     assert!(row0.contains('\u{2502}'), "tabs need a divider:\n{row0}");
 
     // the active tab is a lit chip; the inactive one is not filled.
@@ -971,37 +970,20 @@ fn an_idle_tab_has_no_spinner() {
 }
 
 #[test]
-fn the_tab_title_keeps_its_session_id_after_a_rename() {
+fn a_tab_shows_the_directory_it_works_in() {
     let mut app = App::new("abcdef12-3456", "m");
-    let tab = app.tab_for("abcdef12-3456").expect("tab");
-    let short: String = "abcdef12-3456".chars().take(8).collect();
-    tab.title = format!("Fixing rust bugs ({short})");
+    app.tab_mut().cwd = "/home/chrisaw/Projects/stuffies-agent".to_owned();
     let screen = screen(&mut app, 100, 20);
-    // the summary may be shortened to fit, but the id must always survive.
-    assert!(screen.contains("Fixing rust"), "{screen}");
-    assert!(screen.contains("(abcdef12"), "{screen}");
+    assert!(screen.contains("stuffies-agent"), "{screen}");
 }
 
 #[test]
-fn applying_a_rename_sets_the_tab_title_with_its_id() {
-    let mut app = App::new("abcdef12-3456-7890", "m");
-    app.apply_rename("abcdef12-3456-7890", "Fixing rust bugs");
-
-    assert_eq!(app.tab().title, "Fixing rust bugs (abcdef12)");
-
-    let screen = screen(&mut app, 120, 20);
-    assert!(screen.contains("Fixing rust bugs"), "{screen}");
-    assert!(screen.contains("(abcdef12)"), "{screen}");
-}
-
-#[test]
-fn a_rename_for_an_unknown_session_is_ignored() {
-    let mut app = App::new("abcdef12-3456", "m");
-    app.apply_rename("other-session-id", "Somewhere else");
-    assert!(
-        app.tab().title.contains("abcdef12"),
-        "{:?}",
-        app.tab().title
+fn a_tab_without_a_directory_falls_back_to_its_session() {
+    let app = App::new("abcdef12-3456-7890", "m");
+    assert_eq!(
+        sa_tui::app::tab_names(&app.tabs),
+        vec!["abcdef12".to_owned()],
+        "a tab that has not been hydrated yet is still identifiable"
     );
 }
 
@@ -1766,10 +1748,13 @@ fn the_strip_keeps_a_tab_for_every_live_session() {
 }
 
 #[test]
-fn a_tab_label_always_keeps_the_session_id() {
+fn a_tab_name_is_the_last_part_of_its_directory() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = "/home/chrisaw/Work/thing".to_owned();
     assert_eq!(
-        sa_tui::app::tab_label("session-abcdef", "fix the parser"),
-        "fix the parser (session-)"
+        sa_tui::app::tab_names(&app.tabs),
+        vec!["thing".to_owned()],
+        "the top level only"
     );
 }
 
@@ -1784,8 +1769,10 @@ fn strip(app: &mut App, width: u16) -> String {
 
 fn many_tabs() -> App {
     let mut app = App::new("s0000001", "m");
+    app.tab_mut().cwd = "/tmp/tab1".to_owned();
     for n in 2..=30 {
         app.add_tab(format!("s{n:07}"), "m");
+        app.tab_mut().cwd = format!("/tmp/tab{n}");
     }
     app
 }
@@ -1796,10 +1783,7 @@ fn the_tab_strip_slides_to_the_active_tab_at_the_end() {
     app.switch_tab(29);
     let row = strip(&mut app, 80);
 
-    assert!(
-        row.contains("30 (s0000030)"),
-        "active tab must be shown:\n{row}"
-    );
+    assert!(row.contains("tab30"), "active tab must be shown:\n{row}");
     assert!(
         row.contains('\u{2039}'),
         "a left marker must say tabs are hidden before it:\n{row}"
@@ -1808,10 +1792,7 @@ fn the_tab_strip_slides_to_the_active_tab_at_the_end() {
         !row.contains('\u{203a}'),
         "nothing is hidden to the right:\n{row}"
     );
-    assert!(
-        !row.contains("1 (s0000001)"),
-        "the first tab scrolled off:\n{row}"
-    );
+    assert!(!row.contains("tab1"), "the first tab scrolled off:\n{row}");
 }
 
 #[test]
@@ -1820,10 +1801,7 @@ fn the_tab_strip_marks_hidden_tabs_on_the_right() {
     app.switch_tab(0);
     let row = strip(&mut app, 80);
 
-    assert!(
-        row.contains("1 (s0000001)"),
-        "active tab must be shown:\n{row}"
-    );
+    assert!(row.contains("tab1"), "active tab must be shown:\n{row}");
     assert!(
         row.contains('\u{203a}'),
         "a right marker must say tabs are hidden after it:\n{row}"
@@ -1840,10 +1818,7 @@ fn the_tab_strip_marks_hidden_tabs_on_both_sides() {
     app.switch_tab(14);
     let row = strip(&mut app, 80);
 
-    assert!(
-        row.contains("15 (s0000015)"),
-        "active tab must be shown:\n{row}"
-    );
+    assert!(row.contains("tab15"), "active tab must be shown:\n{row}");
     assert!(row.contains('\u{2039}'), "hidden to the left:\n{row}");
     assert!(row.contains('\u{203a}'), "hidden to the right:\n{row}");
 }
@@ -1853,7 +1828,7 @@ fn the_active_tab_is_on_screen_at_every_position_and_width() {
     let mut app = many_tabs();
     for active in 0..30 {
         app.switch_tab(active);
-        let needle = format!("{} (s{:07})", active + 1, active + 1);
+        let needle = format!("tab{}", active + 1);
         for width in [40u16, 60, 80, 120] {
             let row = strip(&mut app, width);
             assert!(
@@ -1888,7 +1863,7 @@ fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
     app.switch_tab(29);
     let row = strip(&mut app, 80);
     assert!(
-        row.trim_end().ends_with("30 (s0000030)"),
+        row.trim_end().ends_with("tab30"),
         "the strip must end on the last tab, not leave a gap:\n[{row}]"
     );
 
@@ -1896,7 +1871,7 @@ fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
     app.switch_tab(0);
     let row = strip(&mut app, 80);
     assert!(
-        row.starts_with(" 1 (s0000001)"),
+        row.starts_with(" tab1"),
         "the strip must start on the first tab:\n[{row}]"
     );
 }
@@ -1921,14 +1896,22 @@ fn the_overflow_markers_carry_no_numbers() {
     let row = strip(&mut app, 80);
 
     // a bare marker flush against the chip it borders, so a count can never read as
-    // another tab number.
+    // another tab number. which tabs fit depends on the names, so this checks the shape of
+    // the edge rather than which tab happens to be on it.
+    let trimmed = row.trim_end();
     assert!(
-        row.starts_with("\u{2039}14 (s0000014)"),
-        "the left marker must be bare and flush:\n{row}"
+        trimmed.starts_with('\u{2039}')
+            && trimmed.chars().nth(1).is_some_and(char::is_alphanumeric),
+        "the left marker must be bare and flush against a name:\n{row}"
     );
     assert!(
-        row.trim_end().ends_with("17 (s0000017)\u{203a}"),
-        "the right marker must be bare and flush:\n{row}"
+        trimmed.ends_with('\u{203a}')
+            && trimmed
+                .chars()
+                .rev()
+                .nth(1)
+                .is_some_and(char::is_alphanumeric),
+        "the right marker must be bare and flush against a name:\n{row}"
     );
 }
 
@@ -3375,7 +3358,7 @@ fn a_click_on_a_picker_row_chooses_it() {
 
     let area = screen_area(100, 24);
     // the second row sits one line below the first inside the picker's frame.
-    let Some((inner, _)) = app.picker_text_area(area) else {
+    let Some((inner, _)) = picker_text_area(&app, area) else {
         panic!("the picker has a text area");
     };
     let action = app.on_mouse(
@@ -3664,4 +3647,103 @@ fn sending_ends_the_walk_through_history() {
         None,
         "the composer is not still browsing"
     );
+}
+
+#[test]
+fn a_tab_is_named_by_the_directory_it_works_in() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = "/home/chrisaw".to_owned();
+    assert_eq!(
+        sa_tui::app::tab_names(&app.tabs),
+        vec!["chrisaw".to_owned()]
+    );
+}
+
+#[test]
+fn tabs_sharing_a_directory_are_numbered_until_one_is_left() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = "/home/chrisaw/project".to_owned();
+    app.add_tab("session-second", "m");
+    app.tab_mut().cwd = "/home/chrisaw/project".to_owned();
+
+    assert_eq!(
+        sa_tui::app::tab_names(&app.tabs),
+        vec!["project[1]".to_owned(), "project[2]".to_owned()]
+    );
+
+    // closing one leaves the other as the only tab in that directory: the number goes.
+    app.switch_tab(1);
+    app.close_tab();
+    assert_eq!(
+        sa_tui::app::tab_names(&app.tabs),
+        vec!["project".to_owned()]
+    );
+}
+
+#[test]
+fn a_name_too_long_for_the_strip_scrolls_while_it_is_looked_at() {
+    let long = "/home/chrisaw/a-very-long-directory-name-that-cannot-fit";
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = long.to_owned();
+    let cap = 12;
+
+    // not the tab being looked at yet: the name is whole, and the strip cuts it.
+    assert_eq!(
+        app.tab_name(0, cap, 0),
+        Some("a-very-long-directory-name-that-cannot-fit".to_owned())
+    );
+
+    assert!(app.advance_marquee(cap), "the marquee starts");
+    assert_eq!(app.marquee_tab, Some(0));
+    let first = app.tab_name(0, cap, app.marquee).expect("a window");
+    assert_eq!(
+        first.chars().count(),
+        cap,
+        "the window is the width of the tab"
+    );
+
+    // one step along, the window has moved: the whole name can be read.
+    app.advance_marquee(cap);
+    let second = app.tab_name(0, cap, app.marquee).expect("a window");
+    assert_ne!(
+        first, second,
+        "the name walks past rather than sitting still"
+    );
+}
+
+#[test]
+fn a_name_that_fits_never_scrolls() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = "/home/chrisaw/project".to_owned();
+    assert!(!app.advance_marquee(20), "nothing to scroll");
+    assert_eq!(app.marquee_tab, None);
+    assert_eq!(app.tab_name(0, 20, 0), Some("project".to_owned()));
+}
+
+#[test]
+fn the_pointer_tells_the_strip_which_tab_it_is_over() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = "/tmp/one".to_owned();
+    app.add_tab("session-second", "m");
+    app.tab_mut().cwd = "/tmp/two".to_owned();
+
+    let hits = tab_hits(&app, 100);
+    let (start, end, index) = *hits.iter().find(|(_, _, tab)| *tab == 1).expect("a chip");
+    let column = start + (end - start) / 2;
+    app.on_mouse(
+        screen_area(100, 24),
+        mouse(crossterm::event::MouseEventKind::Moved, column, 0),
+    );
+    assert_eq!(
+        app.hovered_tab,
+        Some(index),
+        "the hover follows the pointer"
+    );
+
+    // off the strip: nothing is hovered, so nothing scrolls.
+    app.on_mouse(
+        screen_area(100, 24),
+        mouse(crossterm::event::MouseEventKind::Moved, 10, 12),
+    );
+    assert_eq!(app.hovered_tab, None);
 }

@@ -517,7 +517,6 @@ impl QueuedKind {
 /// one session's view state.
 pub struct Tab {
     pub session: String,
-    pub title: String,
     /// the directory this tab works in. tools and context follow it.
     pub cwd: String,
     /// whether history has been replayed and the event stream subscribed. a tab that is not
@@ -581,15 +580,9 @@ impl Tab {
     ) -> Self {
         let session = session.into();
         let short: String = session.chars().take(8).collect();
-        let title = title.into();
+        let _ = (title, short);
         Self {
             session,
-            title: if title.is_empty() {
-                // the tab always carries its session id, so tabs are identifiable.
-                format!("({short})")
-            } else {
-                title
-            },
             cwd: String::new(),
             hydrated: false,
             branch: None,
@@ -1175,9 +1168,6 @@ impl Tab {
         if let Some(model) = row["model"].as_str().filter(|model| !model.is_empty()) {
             self.status.model = model.to_owned();
         }
-        if let Some(title) = row["title"].as_str() {
-            self.title = tab_label(&self.session, title);
-        }
         self.touch();
     }
 
@@ -1488,12 +1478,56 @@ fn blend(pixel: [u8; 4]) -> Color {
     )
 }
 
-/// the tab label for a session: the generated title, always keeping the id visible so a
-/// tab stays identifiable after it is renamed.
+/// what a tab is called.
+///
+/// the last component of its working directory, because that is what tells two pieces of
+/// work apart. tabs sharing a directory are numbered while there is more than one of them,
+/// and the numbers go when they are alone again.
 #[must_use]
-pub fn tab_label(session: &str, title: &str) -> String {
-    let short: String = session.chars().take(8).collect();
-    format!("{title} ({short})")
+pub fn tab_names(tabs: &[Tab]) -> Vec<String> {
+    let names: Vec<String> = tabs
+        .iter()
+        .map(|tab| {
+            std::path::Path::new(&tab.cwd)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| tab.session.chars().take(8).collect())
+        })
+        .collect();
+    let mut totals: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for name in &names {
+        *totals.entry(name.as_str()).or_default() += 1;
+    }
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    names
+        .iter()
+        .map(|name| {
+            if totals.get(name.as_str()).copied().unwrap_or(0) > 1 {
+                let slot = seen.entry(name.as_str()).or_default();
+                *slot += 1;
+                format!("{name}[{slot}]")
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
+}
+
+/// a name too long for its tab, shown as a window that walks along it with a gap, so the
+/// whole of it passes by instead of being cut off.
+#[must_use]
+fn scrolled(name: &str, offset: usize, cap: usize) -> String {
+    const GAP: usize = 3;
+    let chars: Vec<char> = name.chars().collect();
+    let cycle = chars.len() + GAP;
+    let start = offset % cycle;
+    (0..cap)
+        .map(|step| {
+            let at = (start + step) % cycle;
+            chars.get(at).copied().unwrap_or(' ')
+        })
+        .collect()
 }
 
 /// the git branch of a directory, for the status bar. absent outside a repository.
@@ -1577,6 +1611,10 @@ pub struct App {
     pub revision: u64,
     /// animation frame for the activity spinner.
     pub spinner: usize,
+    /// the tab the pointer is over, and the marquee that scrolls a name too long to fit.
+    pub hovered_tab: Option<usize>,
+    pub marquee_tab: Option<usize>,
+    pub marquee: usize,
     /// the open picker, if any. keys route to it while it is up.
     pub picker: Option<Picker>,
     /// the question awaiting a yes/no answer, if any. keys route to it while it is up.
@@ -1605,6 +1643,9 @@ impl App {
             active: 0,
             revision: 1,
             spinner: 0,
+            hovered_tab: None,
+            marquee_tab: None,
+            marquee: 0,
             picker: None,
             confirm: None,
             image_picker: None,
@@ -1703,15 +1744,6 @@ impl App {
 
     /// applies a generated session title to the tab that owns it. the id is always kept,
     /// so a tab stays identifiable after it is renamed.
-    pub fn apply_rename(&mut self, session: &str, title: &str) {
-        let label = tab_label(session, title);
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.session == session) {
-            tab.title = label;
-            tab.push(Role::System, format!("title: {title}"));
-        }
-        self.touch();
-    }
-
     /// drops every tab whose session is no longer in `keep`, leaving the same tab active
     /// where it survives. returns whether the active tab survived.
     pub fn retain_tabs(&mut self, keep: &[&str]) -> bool {
@@ -1813,7 +1845,11 @@ impl App {
         if !self.tab().has_content() {
             return Action::CloseTab;
         }
-        self.confirm = Some(format!("close {}?", self.tab().title));
+        let name = tab_names(&self.tabs)
+            .get(self.active)
+            .cloned()
+            .unwrap_or_default();
+        self.confirm = Some(format!("close {name}?"));
         self.touch();
         Action::None
     }
@@ -1892,7 +1928,53 @@ impl App {
         &self,
         area: ratatui::layout::Rect,
     ) -> Option<(ratatui::layout::Rect, usize)> {
-        crate::ui::picker_layout(self, area).map(|(_, inner, offset)| (inner, offset))
+        crate::ui::picker_text_area(self, area)
+    }
+
+    /// the name shown for a tab, scrolled by `offset` when it does not fit `cap` columns.
+    /// only the tab being looked at scrolls, and only when it has to.
+    #[must_use]
+    pub fn tab_name(&self, index: usize, cap: usize, offset: usize) -> Option<String> {
+        let names = tab_names(&self.tabs);
+        let name = names.get(index)?;
+        if name.chars().count() <= cap {
+            return Some(name.clone());
+        }
+        if self.marquee_tab != Some(index) {
+            return Some(name.clone());
+        }
+        Some(scrolled(name, offset, cap))
+    }
+
+    /// advances the marquee, and says whether the strip has to be drawn again.
+    pub fn advance_marquee(&mut self, cap: usize) -> bool {
+        let names = tab_names(&self.tabs);
+        let target = self.hovered_tab.or(Some(self.active));
+        let Some(index) = target.filter(|index| *index < names.len()) else {
+            return false;
+        };
+        if names[index].chars().count() <= cap {
+            // nothing to scroll here: park it so another tab can start from the top.
+            let changed = self.marquee_tab.take().is_some() || self.marquee != 0;
+            self.marquee = 0;
+            return changed;
+        }
+        if self.marquee_tab != Some(index) {
+            self.marquee_tab = Some(index);
+            self.marquee = 0;
+            return true;
+        }
+        self.marquee = self.marquee.wrapping_add(1);
+        true
+    }
+
+    /// the tab under the pointer, if any.
+    pub fn hover(&mut self, tab: Option<usize>) {
+        if self.hovered_tab != tab {
+            self.hovered_tab = tab;
+            self.marquee = 0;
+            self.touch();
+        }
     }
 
     /// puts the queue under the cursor, on its last message.
@@ -1949,6 +2031,14 @@ impl App {
                 }
                 _ => Action::None,
             },
+            MouseEventKind::Moved => {
+                let tab = match hit {
+                    Some(crate::ui::Hit::Tab(index)) => Some(index),
+                    _ => None,
+                };
+                self.hover(tab);
+                Action::None
+            }
             MouseEventKind::ScrollUp if hit == Some(crate::ui::Hit::Transcript) => {
                 self.tab_mut().scroll_by(-WHEEL_STEP);
                 Action::None

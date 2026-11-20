@@ -297,6 +297,12 @@ where
                     app.spinner = app.spinner.wrapping_add(1);
                     app.touch();
                 }
+                // a tab name too long for the strip walks past while it is hovered or
+                // active, slowly enough to read.
+                let room = terminal.size().map_or(0, |size| usize::from(size.width));
+                if app.advance_marquee(ui::tab_label_cap(room)) {
+                    app.touch();
+                }
             }
             Incoming::Resize => app.touch(),
             Incoming::Mouse(mouse) => {
@@ -1615,11 +1621,15 @@ async fn run_command(
                         .take(RESUME_LIMIT)
                         .filter_map(|row| {
                             let id = row["id"].as_str()?;
-                            let title = row["title"].as_str().unwrap_or("(untitled)");
+                            let cwd = row["cwd"].as_str().unwrap_or_default();
+                            let name = std::path::Path::new(cwd).file_name().map_or_else(
+                                || cwd.to_owned(),
+                                |name| name.to_string_lossy().into_owned(),
+                            );
                             let short: String = id.chars().take(8).collect();
                             Some(app::PickerItem {
                                 id: id.to_owned(),
-                                label: format!("{title} ({short})"),
+                                label: format!("{name} ({short})"),
                             })
                         })
                         .collect();
@@ -1717,23 +1727,6 @@ async fn apply_frame(
             let kind = frame["params"]["kind"].as_str().unwrap_or_default();
             if let Some(tab) = app.tab_for(sid) {
                 tab.on_event(kind, &frame["params"]["payload"]);
-            }
-            // the title call is announced, then its result, then applied.
-            if kind == "title.generating" {
-                let payload = &frame["params"]["payload"];
-                let model = payload["model"].as_str().unwrap_or("model");
-                let effort = payload["effort"].as_str().unwrap_or("low");
-                if let Some(tab) = app.tab_for(sid) {
-                    tab.push(
-                        app::Role::System,
-                        format!("generating a session title with {model}:{effort}"),
-                    );
-                }
-            }
-            if kind == "session.renamed" {
-                if let Some(title) = frame["params"]["payload"]["title"].as_str() {
-                    app.apply_rename(sid, title);
-                }
             }
         }
         "sessions.changed" => {

@@ -664,68 +664,32 @@ async fn the_daemon_resolves_the_real_model_from_the_endpoint() {
 }
 
 #[tokio::test]
-async fn a_session_without_a_title_gets_one_generated() {
-    let reply = |text: &str| {
-        vec![
-            Delta::Text(text.to_owned()),
-            Delta::Done {
-                stop_reason: "stop".to_owned(),
-                prompt_tokens: 1,
-                completion_tokens: 1,
-            },
-        ]
-    };
-    // the title call runs first, before the agent turn.
-    let daemon = Harness::start(vec![reply("Fixing rust bugs"), reply("done")]).await;
+async fn a_session_is_named_by_the_directory_it_works_in() {
+    let daemon = Harness::start(Vec::new()).await;
     let mut client = daemon.connect().await;
     let cwd = daemon.root().display().to_string();
-    // no explicit title: the session starts with its default id-derived title.
     let created = call(&mut client, 1, "session.create", json!({"cwd": cwd})).await;
     let session = created["result"]["session_id"]
         .as_str()
         .expect("session id")
         .to_owned();
 
-    call(
-        &mut client,
-        2,
-        "turn.start",
-        json!({"session_id": session, "prompt": "fix the rust bug", "detach": true}),
-    )
-    .await;
-    wait_for_kind(&mut client, &session, "turn.completed").await;
+    let list = call(&mut client, 2, "session.list", json!({})).await;
+    let title = list["result"][0]["title"].as_str().unwrap_or_default();
+    let expected = daemon
+        .root()
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    assert_eq!(title, expected, "the session takes its directory's name");
 
-    // the retitle runs in the background after the turn.
-    let mut title = String::new();
-    for _ in 0..300 {
-        let list = call(&mut client, 9, "session.list", json!({})).await;
-        title = list["result"][0]["title"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        if title == "Fixing rust bugs" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(title, "Fixing rust bugs", "the session must be retitled");
-
+    let _ = session;
     daemon.stop().await;
 }
 
 #[tokio::test]
 async fn a_rename_is_pushed_to_subscribers() {
-    let reply = |text: &str| {
-        vec![
-            Delta::Text(text.to_owned()),
-            Delta::Done {
-                stop_reason: "stop".to_owned(),
-                prompt_tokens: 1,
-                completion_tokens: 1,
-            },
-        ]
-    };
-    let daemon = Harness::start(vec![reply("Fixing rust bugs"), reply("done")]).await;
+    let daemon = Harness::start(Vec::new()).await;
     let mut client = daemon.connect().await;
     let cwd = daemon.root().display().to_string();
 
@@ -745,12 +709,12 @@ async fn a_rename_is_pushed_to_subscribers() {
     call(
         &mut client,
         3,
-        "turn.start",
-        json!({"session_id": session, "prompt": "fix the bug", "detach": true}),
+        "session.rename",
+        json!({"session_id": session, "title": "Fixing rust bugs"}),
     )
     .await;
 
-    // the client must be told, live, that its tab has been renamed.
+    // the client must be told, live, that the session has been renamed.
     let mut title = None;
     for _ in 0..500 {
         let Some(Ok(raw)) = client.next().await else {
@@ -776,9 +740,8 @@ async fn a_rename_is_pushed_to_subscribers() {
 }
 
 #[tokio::test]
-async fn a_stalled_title_call_does_not_block_the_turn() {
-    // an untitled session runs the title call before the agent; a stalled provider there
-    // must not stop the turn from ever starting.
+async fn a_stalled_provider_is_interrupted_by_the_turn_timeout() {
+    // a provider that never answers must not hold the turn open forever.
     let dir = tempfile::tempdir().expect("tempdir");
     let mut cfg = Config::at(dir.path());
     cfg.turn_timeout_secs = 2;
@@ -807,7 +770,6 @@ async fn a_stalled_title_call_does_not_block_the_turn() {
     client.send(hello.to_string()).await.expect("hello");
     let _ = client.next().await.expect("hello response").expect("frame");
 
-    // no explicit title: the title call will run and stall.
     let created = call(
         &mut client,
         1,

@@ -148,11 +148,17 @@ fn tab_text(app: &App, index: usize, cap: usize) -> String {
     } else {
         String::new()
     };
-    fit_label(&format!("{mark}{} {}", index + 1, tab.title), cap)
+    // the tab is named by its directory. a name too long for the strip scrolls while it is
+    // the one being looked at, so the whole of it can be read.
+    let room = cap.saturating_sub(mark.chars().count());
+    let name = app.tab_name(index, room, app.marquee).unwrap_or_default();
+    fit_label(&format!("{mark}{name}"), cap)
 }
 
-/// how wide a label may be, so the active tab always fits beside its markers.
-fn label_cap(room: usize) -> usize {
+/// how wide a label may be, so the active tab always fits beside its markers. the marquee
+/// measures against the same number, or a name would scroll that already fits.
+#[must_use]
+pub fn tab_label_cap(room: usize) -> usize {
     TAB_LABEL_MAX.min(room.saturating_sub(6).max(8))
 }
 
@@ -283,7 +289,7 @@ struct Chip {
 /// tabs are hidden on either side, the way a browser does.
 fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
     let room = usize::from(width);
-    let cap = label_cap(room);
+    let cap = tab_label_cap(room);
     let labels: Vec<String> = (0..app.tabs.len())
         .map(|index| tab_text(app, index, cap))
         .collect();
@@ -689,6 +695,13 @@ pub(crate) fn picker_layout(app: &App, screen: Rect) -> Option<(Rect, Rect, usiz
     let visible = usize::from(inner.height).max(1);
     let offset = picker.selected.saturating_sub(visible.saturating_sub(1));
     Some((rect, inner, offset))
+}
+
+/// the open picker's text area and the index of its first visible row, so a click can be
+/// mapped to an item without repeating the layout.
+#[must_use]
+pub fn picker_text_area(app: &App, screen: Rect) -> Option<(Rect, usize)> {
+    picker_layout(app, screen).map(|(_, inner, offset)| (inner, offset))
 }
 
 /// draws the open picker over the interface.

@@ -214,7 +214,6 @@ pub mod kinds {
     pub const SESSION_CWD: &str = "session.cwd";
     pub const SESSION_RENAMED: &str = "session.renamed";
     pub const SESSION_STATE: &str = "session.state";
-    pub const TITLE_GENERATING: &str = "title.generating";
     pub const TOOL_COMPLETED: &str = "tool.completed";
     pub const TOOL_FAILED: &str = "tool.failed";
     pub const TOOL_REQUESTED: &str = "tool.requested";
