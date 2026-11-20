@@ -594,7 +594,7 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     let hint = if busy {
         " esc interrupt \u{00b7} alt+enter after \u{00b7} alt+up queue "
     } else {
-        " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump "
+        " \u{2191}\u{2193} history \u{00b7} ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump "
     };
     let pad = usize::from(width).saturating_sub(used + hint.chars().count());
     spans.push(Span::raw(" ".repeat(pad)));
@@ -669,7 +669,7 @@ pub fn compact(count: u64) -> String {
 }
 
 /// the open picker's frame, its text area, and which item its first visible row shows.
-fn picker_layout(app: &App, screen: Rect) -> Option<(Rect, Rect, usize)> {
+pub(crate) fn picker_layout(app: &App, screen: Rect) -> Option<(Rect, Rect, usize)> {
     let picker = app.picker.as_ref()?;
     let width = screen
         .width
@@ -689,13 +689,6 @@ fn picker_layout(app: &App, screen: Rect) -> Option<(Rect, Rect, usize)> {
     let visible = usize::from(inner.height).max(1);
     let offset = picker.selected.saturating_sub(visible.saturating_sub(1));
     Some((rect, inner, offset))
-}
-
-/// the open picker's text area and the index of its first visible row, so a click can be
-/// mapped to an item without duplicating the layout.
-#[must_use]
-pub fn picker_text_area(app: &App, screen: Rect) -> Option<(Rect, usize)> {
-    picker_layout(app, screen).map(|(_, inner, offset)| (inner, offset))
 }
 
 /// draws the open picker over the interface.

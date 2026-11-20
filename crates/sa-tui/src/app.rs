@@ -274,9 +274,6 @@ pub const HELP_COMMANDS: &str = "\
 const STALL_GAP: std::time::Duration = std::time::Duration::from_secs(2);
 /// the shortest span a rate is computed over, so a burst cannot divide by near-zero.
 const MIN_SPAN: std::time::Duration = std::time::Duration::from_millis(500);
-/// lines moved per arrow key.
-const SCROLL_STEP: u16 = 3;
-
 /// how long the scrollbar stays up after the last scroll. it is a hint, not furniture.
 const SCROLLBAR_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
 /// lines moved per page key.
@@ -538,6 +535,12 @@ pub struct Tab {
     /// a tool is executing right now. the model is not thinking, it is waiting, so the
     /// in-progress header is hidden.
     pub tool_running: bool,
+    /// prompts this session has already sent, oldest first: what up and down walk.
+    pub history: Vec<String>,
+    /// where in that history the composer is browsing, if it is.
+    pub history_at: Option<usize>,
+    /// what was in the composer before browsing started, restored when browsing ends.
+    history_draft: String,
     /// messages the daemon is holding for the running turn, in delivery order.
     pub queued: Vec<Queued>,
     /// which queued message the operator is on, when the queue has focus.
@@ -615,6 +618,9 @@ impl Tab {
             attachments: Vec::new(),
             scroll_touched: None,
             scroll: 0,
+            history: Vec::new(),
+            history_at: None,
+            history_draft: String::new(),
             queued: Vec::new(),
             queue_focus: None,
             max_scroll: 0,
@@ -952,12 +958,48 @@ impl Tab {
         Action::FollowUp(text)
     }
 
+    /// the previous prompt, saving whatever is in the composer first so it can come back.
+    fn history_previous(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let index = match self.history_at {
+            None => {
+                self.history_draft = self.input_text();
+                self.history.len() - 1
+            }
+            Some(0) => 0,
+            Some(index) => index - 1,
+        };
+        self.history_at = Some(index);
+        let text = self.history[index].clone();
+        self.set_input(&text);
+    }
+
+    /// the next prompt. past the newest one, the composer goes back to what was being typed
+    /// before the operator started walking, which is where they left off.
+    fn history_next(&mut self) {
+        let Some(index) = self.history_at else {
+            return;
+        };
+        if index + 1 < self.history.len() {
+            self.history_at = Some(index + 1);
+            let text = self.history[index + 1].clone();
+            self.set_input(&text);
+            return;
+        }
+        self.history_at = None;
+        let draft = std::mem::take(&mut self.history_draft);
+        self.set_input(&draft);
+    }
+
     fn submit(&mut self) -> Action {
         let text = self.input_text().trim().to_owned();
         if text.is_empty() {
             return Action::None;
         }
         self.set_input("");
+        self.history_at = None;
         self.follow = true;
         self.touch();
         if text.starts_with('/') {
@@ -1265,6 +1307,11 @@ impl Tab {
             }
             "turn.started" => {
                 let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+                // what was sent is what up and down walk, whether this window sent it or
+                // another one did, and whether it is happening now or being replayed.
+                if !prompt.trim().is_empty() {
+                    self.history.push(prompt.to_owned());
+                }
                 // what this turn runs at, so each message it produces carries it.
                 if let Some(model) = payload.get("model").and_then(Value::as_str) {
                     if !model.is_empty() {
@@ -1845,7 +1892,7 @@ impl App {
         &self,
         area: ratatui::layout::Rect,
     ) -> Option<(ratatui::layout::Rect, usize)> {
-        crate::ui::picker_text_area(self, area)
+        crate::ui::picker_layout(self, area).map(|(_, inner, offset)| (inner, offset))
     }
 
     /// puts the queue under the cursor, on its last message.
@@ -2020,18 +2067,28 @@ impl App {
             KeyCode::Char('\n') => self.tab_mut().insert_newline(),
             KeyCode::Enter | KeyCode::Char('\r') if newline => self.tab_mut().insert_newline(),
             KeyCode::Enter | KeyCode::Char('\r') => self.tab_mut().submit(),
+            // up and down walk the prompts this session has sent, the way a shell does. they
+            // move the cursor while a draft is multi-line, and only walk history at its top
+            // and bottom edges, which is where pi draws the same line. the transcript scrolls
+            // on the page keys.
             KeyCode::Up => {
                 let tab = self.tab_mut();
-                tab.follow = false;
-                tab.scroll = tab.scroll.saturating_sub(SCROLL_STEP);
-                tab.scrolled();
+                let (_, line, _) = tab.input_lines();
+                if line > 0 {
+                    tab.edit(key);
+                } else {
+                    tab.history_previous();
+                }
                 Action::None
             }
             KeyCode::Down => {
                 let tab = self.tab_mut();
-                tab.scroll = (tab.scroll + SCROLL_STEP).min(tab.max_scroll);
-                tab.follow = tab.scroll >= tab.max_scroll;
-                tab.scrolled();
+                let (lines, line, _) = tab.input_lines();
+                if line + 1 < lines.len() {
+                    tab.edit(key);
+                } else {
+                    tab.history_next();
+                }
                 Action::None
             }
             KeyCode::PageUp => {

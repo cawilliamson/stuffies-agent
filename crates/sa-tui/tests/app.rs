@@ -532,12 +532,12 @@ fn scroll_clamps_to_the_rendered_transcript() {
     assert!(ceiling > 0, "a long transcript must be scrollable");
 
     for _ in 0..500 {
-        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::PageUp));
     }
     assert_eq!(app.tab().scroll, 0);
 
     for _ in 0..500 {
-        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::PageDown));
     }
     assert_eq!(app.tab().scroll, ceiling);
 }
@@ -873,10 +873,11 @@ fn scrolling_moves_several_lines_per_key() {
     let ceiling = app.tab().max_scroll;
     assert!(ceiling > 3, "need a scrollable transcript");
 
-    app.on_key(key(KeyCode::Up));
+    // the page keys are the scroll keys: up and down belong to the composer's history.
+    app.on_key(key(KeyCode::PageUp));
     assert!(
         app.tab().scroll <= ceiling - 3,
-        "an arrow key must move more than one line"
+        "a page key must move more than one line"
     );
 }
 
@@ -3572,5 +3573,95 @@ fn a_multi_line_queued_message_stays_editable_as_lines() {
     assert_eq!(
         cursor_line, 1,
         "the cursor is at the end, where typing continues"
+    );
+}
+
+fn sent(app: &mut App, prompt: &str) {
+    app.tab_mut().on_event(
+        "turn.started",
+        &json!({"prompt": prompt, "model": "m", "detach": false}),
+    );
+}
+
+#[test]
+fn up_walks_the_prompts_this_session_sent() {
+    let mut app = App::new("session-abcdef", "m");
+    sent(&mut app, "first thing");
+    sent(&mut app, "second thing");
+
+    assert_eq!(app.on_key(key(KeyCode::Up)), Action::None);
+    assert_eq!(app.tab().input_text(), "second thing");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.tab().input_text(), "first thing");
+    // the oldest prompt is the end of the history, not a wrap.
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.tab().input_text(), "first thing");
+}
+
+#[test]
+fn down_restores_what_was_being_typed_before_browsing() {
+    let mut app = App::new("session-abcdef", "m");
+    sent(&mut app, "an old prompt");
+    typed(&mut app, "half typed");
+
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.tab().input_text(), "an old prompt");
+
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.tab().input_text(),
+        "half typed",
+        "the draft comes back, it is not thrown away"
+    );
+}
+
+#[test]
+fn up_and_down_do_not_scroll_the_transcript_any_more() {
+    let mut app = App::new("session-abcdef", "m");
+    sent(&mut app, "a prompt");
+    app.tab_mut().max_scroll = 40;
+    app.tab_mut().scroll = 20;
+
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.tab().scroll, 20, "the chat stays where it was");
+
+    // the page keys are what scroll it now.
+    app.on_key(key(KeyCode::PageUp));
+    assert!(app.tab().scroll < 20, "page up still scrolls the chat");
+}
+
+#[test]
+fn a_multi_line_draft_keeps_the_cursor_keys() {
+    let mut app = App::new("session-abcdef", "m");
+    sent(&mut app, "a prompt");
+    typed(&mut app, "one");
+    app.on_key(shift_enter());
+    typed(&mut app, "two");
+
+    // the cursor is on the second line, so up moves it rather than walking history.
+    app.on_key(key(KeyCode::Up));
+    let (_, line, _) = app.tab().input_lines();
+    assert_eq!(line, 0, "the cursor moved up a line");
+    assert_eq!(app.tab().input_text(), "one\ntwo", "the draft is untouched");
+
+    // at the top edge it walks history, as pi does.
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.tab().input_text(), "a prompt");
+}
+
+#[test]
+fn sending_ends_the_walk_through_history() {
+    let mut app = App::new("session-abcdef", "m");
+    sent(&mut app, "an old prompt");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.tab().input_text(), "an old prompt");
+
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.tab().input_text(), "", "it was sent");
+    assert_eq!(
+        app.tab().history_at,
+        None,
+        "the composer is not still browsing"
     );
 }
