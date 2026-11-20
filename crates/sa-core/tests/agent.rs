@@ -394,11 +394,13 @@ impl EventSink for SteeringSink {
         false
     }
 
-    fn drain_steering(&self) -> Vec<String> {
-        self.pending
-            .lock()
-            .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default()
+    fn take_steering(&self) -> Option<String> {
+        let mut pending = self.pending.lock().ok()?;
+        if pending.is_empty() {
+            None
+        } else {
+            Some(pending.remove(0))
+        }
     }
 }
 
@@ -442,6 +444,68 @@ async fn a_steering_message_reaches_the_next_model_round_trip() {
     assert!(
         carried,
         "the steering message must reach the model: {:?}",
+        user_texts(&seen[1].messages)
+    );
+}
+
+#[tokio::test]
+async fn steering_is_delivered_one_message_per_round_trip() {
+    // a queue of redirects is not one confused prompt: the first lands, the second waits
+    // for the next round-trip, which is pi's one-at-a-time default.
+    let tool_call = |id: &str| {
+        vec![
+            Delta::ToolCall(ToolCall {
+                id: id.to_owned(),
+                name: "read".to_owned(),
+                arguments: json!({"path": "main.rs"}).to_string(),
+            }),
+            Delta::Done {
+                stop_reason: "tool_calls".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+        ]
+    };
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        tool_call("call_1"),
+        tool_call("call_2"),
+        vec![Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        }],
+    ]));
+    let sink = Arc::new(SteeringSink {
+        pending: Mutex::new(vec!["first".to_owned(), "second".to_owned()]),
+    });
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let _ = agent.run_turn(request()).await;
+
+    let seen = provider.seen_requests();
+    assert!(seen.len() >= 3, "two tool calls force three round trips");
+    assert!(
+        user_texts(&seen[0].messages)
+            .iter()
+            .any(|text| text == "first"),
+        "the first message lands on the first round trip"
+    );
+    assert!(
+        !user_texts(&seen[0].messages)
+            .iter()
+            .any(|text| text == "second"),
+        "the second waits its turn: {:?}",
+        user_texts(&seen[0].messages)
+    );
+    assert!(
+        user_texts(&seen[1].messages)
+            .iter()
+            .any(|text| text == "second"),
+        "and lands on the next one: {:?}",
         user_texts(&seen[1].messages)
     );
 }

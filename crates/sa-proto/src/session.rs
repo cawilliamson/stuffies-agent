@@ -175,6 +175,15 @@ pub struct SteerParams {
     pub prompt: String,
 }
 
+/// what the operator has queued for a session that is running a turn.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueueState {
+    /// delivered between model round-trips.
+    pub steering: Vec<String>,
+    /// delivered after the running turn finishes, as a new turn.
+    pub follow_up: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnStartResult {
     pub turn_id: String,
@@ -191,30 +200,32 @@ pub struct TurnStatus {
 
 /// event kind names, so the daemon and clients cannot drift on spelling.
 pub mod kinds {
-    pub const SESSION_CREATED: &str = "session.created";
-    pub const SESSION_RENAMED: &str = "session.renamed";
-    pub const SESSION_STATE: &str = "session.state";
-    pub const SESSION_CWD: &str = "session.cwd";
+    pub const CHECKPOINT: &str = "checkpoint";
+    pub const COMPACTION_APPLIED: &str = "compaction.applied";
     /// the context files the session's working directory provides.
     pub const CONTEXT_LOADED: &str = "context.loaded";
-    pub const TURN_STARTED: &str = "turn.started";
+    pub const ERROR: &str = "error";
+    pub const LLM_COMPLETED: &str = "llm.completed";
+    pub const LLM_DELTA: &str = "llm.delta";
+    pub const LLM_REASONING: &str = "llm.reasoning";
+    pub const MODEL_CHANGED: &str = "model.changed";
+    pub const REVIEW_COMPLETED: &str = "review.completed";
+    pub const SESSION_CREATED: &str = "session.created";
+    pub const SESSION_CWD: &str = "session.cwd";
+    pub const SESSION_RENAMED: &str = "session.renamed";
+    pub const SESSION_STATE: &str = "session.state";
+    pub const TITLE_GENERATING: &str = "title.generating";
+    pub const TOOL_COMPLETED: &str = "tool.completed";
+    pub const TOOL_FAILED: &str = "tool.failed";
+    pub const TOOL_REQUESTED: &str = "tool.requested";
     pub const TURN_COMPLETED: &str = "turn.completed";
     /// the context the model is holding, reported as each round-trip completes.
     pub const TURN_CONTEXT: &str = "turn.context";
     pub const TURN_INTERRUPTED: &str = "turn.interrupted";
+    /// the pending queue changed. carries the complete queue, as pi's `queue_update` does.
+    pub const TURN_QUEUED: &str = "turn.queued";
+    pub const TURN_STARTED: &str = "turn.started";
     pub const TURN_STEERED: &str = "turn.steered";
-    pub const LLM_DELTA: &str = "llm.delta";
-    pub const LLM_REASONING: &str = "llm.reasoning";
-    pub const LLM_COMPLETED: &str = "llm.completed";
-    pub const TOOL_REQUESTED: &str = "tool.requested";
-    pub const TOOL_COMPLETED: &str = "tool.completed";
-    pub const TOOL_FAILED: &str = "tool.failed";
-    pub const MODEL_CHANGED: &str = "model.changed";
-    pub const TITLE_GENERATING: &str = "title.generating";
-    pub const CHECKPOINT: &str = "checkpoint";
-    pub const COMPACTION_APPLIED: &str = "compaction.applied";
-    pub const REVIEW_COMPLETED: &str = "review.completed";
-    pub const ERROR: &str = "error";
 
     /// kinds that terminate a turn.
     pub const TURN_TERMINAL: &[&str] = &[TURN_COMPLETED, TURN_INTERRUPTED];

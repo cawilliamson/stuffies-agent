@@ -113,6 +113,8 @@ impl Dispatcher {
             "session.fork" => Self::session_fork(&params),
             "turn.start" => self.turn_start(conn, &params),
             "turn.steer" => self.turn_steer(&params),
+            "turn.follow_up" => self.turn_follow_up(&params),
+            "turn.dequeue" => self.turn_dequeue(&params),
             "turn.cancel" => self.turn_cancel(&params),
             "turn.status" => self.turn_status(&params),
             "turn.resume" => self.turn_resume(&params),
@@ -279,7 +281,26 @@ impl Dispatcher {
         self.manager
             .steer(&params.session_id, &params.prompt)
             .map_err(crate::manager::ManagerError::into_rpc)?;
-        Ok(json!({"ok": true}))
+        Ok(json!({"disposition": "queued"}))
+    }
+
+    /// a message for after the running turn, rather than inside it.
+    fn turn_follow_up(&self, params: &Value) -> Result<Value, RpcError> {
+        let params: SteerParams = parse(params)?;
+        self.manager
+            .follow_up(&params.session_id, &params.prompt)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!({"disposition": "queued"}))
+    }
+
+    /// takes back everything queued so a client can restore it to the editor.
+    fn turn_dequeue(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let queue = self
+            .manager
+            .dequeue(&session_id)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!(queue))
     }
 
     fn turn_cancel(&self, params: &Value) -> Result<Value, RpcError> {

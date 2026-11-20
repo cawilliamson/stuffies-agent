@@ -82,8 +82,27 @@ struct Subscription {
 struct RunningTurn {
     turn_id: String,
     cancel: Arc<AtomicBool>,
-    /// messages typed while the turn runs, drained by the agent between iterations.
-    steering: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// what the operator queued while a session was running a turn (spec 3.7).
+///
+/// the queue belongs to the session, not to one turn: a follow-up outlives the turn that
+/// was running when it was typed, and continues the session as the next one.
+#[derive(Default)]
+struct Queue {
+    /// delivered between model round-trips, one per round-trip.
+    steering: Vec<String>,
+    /// delivered after the running turn finishes, as a new turn.
+    follow_up: Vec<String>,
+}
+
+impl Queue {
+    fn state(&self) -> sa_proto::session::QueueState {
+        sa_proto::session::QueueState {
+            steering: self.steering.clone(),
+            follow_up: self.follow_up.clone(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -93,6 +112,7 @@ struct Inner {
     conns: HashMap<u64, mpsc::Sender<Value>>,
     subs: HashMap<u64, Subscription>,
     turns: HashMap<String, RunningTurn>,
+    queues: HashMap<String, Queue>,
 }
 
 pub struct Manager {
@@ -611,13 +631,11 @@ impl Manager {
             }),
         )?;
 
-        let steering = Arc::new(std::sync::Mutex::new(Vec::new()));
         self.lock()?.turns.insert(
             session_id.to_owned(),
             RunningTurn {
                 turn_id: turn_id.clone(),
                 cancel: Arc::clone(&cancel),
-                steering: Arc::clone(&steering),
             },
         );
 
@@ -629,7 +647,7 @@ impl Manager {
         tokio::spawn(async move {
             manager
                 .run_turn(
-                    session, turn, prompt, images, row, model, effort, cancel, steering, detach,
+                    session, turn, prompt, images, row, model, effort, cancel, detach,
                 )
                 .await;
         });
@@ -649,7 +667,6 @@ impl Manager {
         model: String,
         effort: Option<String>,
         cancel: Arc<AtomicBool>,
-        steering: Arc<std::sync::Mutex<Vec<String>>>,
         detach: bool,
     ) {
         // highest priority: name an untitled session before any work starts, but never let
@@ -712,6 +729,7 @@ impl Manager {
                     if let Ok(mut inner) = self.inner.lock() {
                         inner.turns.remove(&session_id);
                     }
+                    self.continue_with_follow_up(&session_id, detach);
                     return;
                 }
             }
@@ -721,7 +739,6 @@ impl Manager {
             manager: Arc::clone(&self),
             session_id: session_id.clone(),
             cancel: Arc::clone(&cancel),
-            steering,
         });
         let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_mcp(
             PathBuf::from(&row.cwd),
@@ -794,9 +811,7 @@ impl Manager {
                     "cause": format!("timeout after {}s", self.config.turn_timeout_secs),
                 }),
             );
-            if let Ok(mut inner) = self.inner.lock() {
-                inner.turns.remove(&session_id);
-            }
+            self.continue_with_follow_up(&session_id, detach);
             return;
         };
 
@@ -830,9 +845,8 @@ impl Manager {
             }
         }
 
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.turns.remove(&session_id);
-        }
+        // a queued follow-up continues the session as its next turn (spec 3.7).
+        self.continue_with_follow_up(&session_id, detach);
 
         // retitle inline so the operator watches it happen and sees the result.
         let model = self.default_model();
@@ -841,19 +855,94 @@ impl Manager {
 
     /// hands a message to the turn that is already running, rather than refusing it.
     pub fn steer(&self, session_id: &str, prompt: &str) -> Result<(), ManagerError> {
-        let inner = self.lock()?;
-        let Some(turn) = inner.turns.get(session_id) else {
-            return Err(ManagerError::Rpc(RpcError::new(
-                code::SESSION_NOT_FOUND,
-                format!("session {session_id} has no turn to steer"),
-            )));
+        self.enqueue(session_id, prompt, false)
+    }
+
+    /// queues a message for after the running turn finishes (spec 3.7).
+    pub fn follow_up(&self, session_id: &str, prompt: &str) -> Result<(), ManagerError> {
+        self.enqueue(session_id, prompt, true)
+    }
+
+    fn enqueue(&self, session_id: &str, prompt: &str, follow_up: bool) -> Result<(), ManagerError> {
+        let state = {
+            let mut inner = self.lock()?;
+            if !inner.turns.contains_key(session_id) {
+                return Err(ManagerError::Rpc(RpcError::new(
+                    code::SESSION_NOT_FOUND,
+                    format!("session {session_id} has no turn to steer"),
+                )));
+            }
+            let queue = inner.queues.entry(session_id.to_owned()).or_default();
+            if follow_up {
+                queue.follow_up.push(prompt.to_owned());
+            } else {
+                queue.steering.push(prompt.to_owned());
+            }
+            queue.state()
         };
-        if let Ok(mut queue) = turn.steering.lock() {
-            queue.push(prompt.to_owned());
-        }
-        drop(inner);
-        self.append(session_id, kinds::TURN_STEERED, &json!({"prompt": prompt}))?;
+        self.append(session_id, kinds::TURN_QUEUED, &json!(state))?;
         Ok(())
+    }
+
+    /// takes back everything queued, so a client can put it back in the editor (spec 3.7).
+    pub fn dequeue(&self, session_id: &str) -> Result<sa_proto::session::QueueState, ManagerError> {
+        let state = {
+            let mut inner = self.lock()?;
+            inner
+                .queues
+                .remove(session_id)
+                .map_or_else(sa_proto::session::QueueState::default, |queue| {
+                    queue.state()
+                })
+        };
+        self.append(session_id, kinds::TURN_QUEUED, &json!(state))?;
+        Ok(state)
+    }
+
+    /// one steering message, so a redirect lands between round-trips rather than as a batch.
+    fn take_steering(&self, session_id: &str) -> Option<String> {
+        let (prompt, state) = {
+            let mut inner = self.lock().ok()?;
+            let queue = inner.queues.get_mut(session_id)?;
+            if queue.steering.is_empty() {
+                return None;
+            }
+            let prompt = queue.steering.remove(0);
+            (prompt, queue.state())
+        };
+        // the delivery is the record: a replay puts the message in the transcript at the
+        // point the model actually saw it, not at the point it was typed.
+        let _ = self.append(session_id, kinds::TURN_STEERED, &json!({"prompt": prompt}));
+        let _ = self.append(session_id, kinds::TURN_QUEUED, &json!(state));
+        Some(prompt)
+    }
+
+    /// removes the finished turn and hands back the next queued follow-up (spec 3.7).
+    fn settle_turn(&self, session_id: &str) -> Option<String> {
+        let mut inner = self.lock().ok()?;
+        inner.turns.remove(session_id);
+        let mut next = None;
+        let empty = if let Some(queue) = inner.queues.get_mut(session_id) {
+            if !queue.follow_up.is_empty() {
+                next = Some(queue.follow_up.remove(0));
+            }
+            queue.steering.is_empty() && queue.follow_up.is_empty()
+        } else {
+            false
+        };
+        if empty {
+            inner.queues.remove(session_id);
+        }
+        next
+    }
+
+    /// ends the turn, and runs a queued follow-up as the session's next one.
+    fn continue_with_follow_up(self: &Arc<Self>, session_id: &str, detach: bool) {
+        if let Some(prompt) = self.settle_turn(session_id) {
+            if let Err(err) = self.start_turn(session_id, &prompt, &[], detach, None) {
+                tracing::warn!(%err, %session_id, "queued follow-up could not start");
+            }
+        }
     }
 
     pub fn cancel_turn(&self, session_id: &str) -> Result<(), ManagerError> {
@@ -1231,7 +1320,6 @@ struct TurnSink {
     manager: Arc<Manager>,
     session_id: String,
     cancel: Arc<AtomicBool>,
-    steering: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl EventSink for TurnSink {
@@ -1243,11 +1331,8 @@ impl EventSink for TurnSink {
         self.cancel.load(Ordering::SeqCst)
     }
 
-    fn drain_steering(&self) -> Vec<String> {
-        self.steering
-            .lock()
-            .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default()
+    fn take_steering(&self) -> Option<String> {
+        self.manager.take_steering(&self.session_id)
     }
 }
 

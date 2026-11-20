@@ -39,10 +39,11 @@ pub trait EventSink: Send + Sync {
     fn append(&self, kind: &str, payload: &Value) -> Result<u64, StoreError>;
     fn is_cancelled(&self) -> bool;
 
-    /// messages the operator sent while this turn was running. the loop folds them in
-    /// between model round-trips, so the agent can be redirected without losing its work.
-    fn drain_steering(&self) -> Vec<String> {
-        Vec::new()
+    /// the next message the operator sent while this turn was running, if any. the loop
+    /// folds one in between model round-trips, so the agent can be redirected without
+    /// losing its work.
+    fn take_steering(&self) -> Option<String> {
+        None
     }
 }
 
@@ -165,8 +166,9 @@ impl Agent {
             }
 
             // anything the operator typed while the last round-trip ran becomes the next
-            // instruction, rather than waiting for this turn to finish.
-            for message in self.sink.drain_steering() {
+            // instruction, rather than waiting for this turn to finish. one message per
+            // round-trip: a queue of redirects is not a single confused prompt.
+            if let Some(message) = self.sink.take_steering() {
                 messages.push(message::user(message));
             }
 

@@ -1,0 +1,242 @@
+//! messages queued while a turn runs (spec 4.1).
+#![allow(clippy::expect_used, clippy::panic)]
+
+use std::sync::{Arc, Mutex};
+
+use sa_core::llm::{ChatRequest, Delta, ModelsFuture, Provider, StreamFuture};
+use sa_core::manager::{Manager, ManagerConfig};
+use sa_core::store::Store;
+use sa_proto::session::kinds;
+use tokio::sync::{mpsc, Notify};
+
+/// a provider that holds each stream open until the test releases it, so a turn is
+/// genuinely running while the test queues messages into it.
+struct GatedProvider {
+    /// fired when a stream starts, so the test knows the turn is live.
+    entered: Arc<Notify>,
+    /// fired by the test to let the current stream finish.
+    release: Arc<Notify>,
+    seen: Mutex<Vec<ChatRequest>>,
+}
+
+impl GatedProvider {
+    fn new() -> Self {
+        Self {
+            entered: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Provider for GatedProvider {
+    fn list_models(&self) -> ModelsFuture<'_> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn stream(&self, request: ChatRequest) -> StreamFuture<'_> {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(request);
+        }
+        let entered = Arc::clone(&self.entered);
+        let release = Arc::clone(&self.release);
+        Box::pin(async move {
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(async move {
+                entered.notify_one();
+                release.notified().await;
+                let _ = tx
+                    .send(Delta::Done {
+                        stop_reason: "stop".to_owned(),
+                        prompt_tokens: 1,
+                        completion_tokens: 1,
+                    })
+                    .await;
+            });
+            Ok(rx)
+        })
+    }
+}
+
+fn manager(dir: &std::path::Path, provider: &Arc<GatedProvider>) -> Arc<Manager> {
+    let store = Store::open(&dir.join("sa.db")).expect("store");
+    Arc::new(Manager::new(
+        store,
+        Arc::new(ManagerConfig {
+            host_fingerprint: "test-host".to_owned(),
+            provider: Arc::clone(provider) as Arc<dyn Provider>,
+            max_tokens: None,
+            context_limit: None,
+            reasoning_effort: None,
+            lock_dir: dir.join("locks"),
+            turn_timeout_secs: 30,
+            aux_budget_secs: 5,
+            models: Arc::new(Mutex::new(Vec::new())),
+            mcp: Arc::new(sa_core::mcp::Hub::empty()),
+        }),
+    ))
+}
+
+fn session(manager: &Arc<Manager>, dir: &std::path::Path) -> String {
+    manager
+        .create_session(&dir.display().to_string(), Some("t".to_owned()), "test")
+        .expect("session")
+        .session_id
+}
+
+/// every payload of one event kind, in order.
+fn payloads(manager: &Arc<Manager>, session_id: &str, kind: &str) -> Vec<serde_json::Value> {
+    manager
+        .store()
+        .events_since(session_id, 0, 10_000)
+        .expect("events")
+        .0
+        .into_iter()
+        .filter(|event| event.kind == kind)
+        .map(|event| event.payload)
+        .collect()
+}
+
+async fn start(manager: &Arc<Manager>, provider: &Arc<GatedProvider>, session_id: &str) {
+    manager
+        .start_turn(session_id, "do the thing", &[], false, None)
+        .expect("turn");
+    // the turn is only live once the provider has been entered.
+    provider.entered.notified().await;
+}
+
+#[tokio::test]
+async fn steering_is_refused_when_nothing_is_running() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+
+    assert!(manager.steer(&session_id, "too early").is_err());
+    assert!(manager.follow_up(&session_id, "too early").is_err());
+}
+
+#[tokio::test]
+async fn a_steering_message_is_queued_until_the_turn_takes_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager
+        .steer(&session_id, "stop and run the tests")
+        .expect("steer");
+
+    let queued = payloads(&manager, &session_id, kinds::TURN_QUEUED);
+    let last = queued.last().expect("a queue event");
+    assert_eq!(
+        last["steering"],
+        serde_json::json!(["stop and run the tests"]),
+        "the queue event carries the complete queue"
+    );
+    assert_eq!(last["follow_up"], serde_json::json!([]));
+
+    provider.release.notify_one();
+}
+
+#[tokio::test]
+async fn dequeue_hands_everything_back_and_empties_the_queue() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager.steer(&session_id, "one").expect("steer");
+    manager.follow_up(&session_id, "two").expect("follow up");
+
+    let taken = manager.dequeue(&session_id).expect("dequeue");
+    assert_eq!(taken.steering, vec!["one".to_owned()]);
+    assert_eq!(taken.follow_up, vec!["two".to_owned()]);
+
+    let again = manager.dequeue(&session_id).expect("dequeue");
+    assert!(again.steering.is_empty() && again.follow_up.is_empty());
+
+    let queued = payloads(&manager, &session_id, kinds::TURN_QUEUED);
+    let last = queued.last().expect("a queue event");
+    assert_eq!(
+        last["steering"],
+        serde_json::json!([]),
+        "taking the queue back is recorded, so a reattached client sees it empty"
+    );
+
+    provider.release.notify_one();
+}
+
+#[tokio::test]
+async fn a_follow_up_runs_as_the_next_turn_after_this_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager
+        .follow_up(&session_id, "and then summarise")
+        .expect("follow up");
+
+    // release the first turn; the queued follow-up must start a second one.
+    provider.release.notify_one();
+    provider.entered.notified().await;
+
+    let started = payloads(&manager, &session_id, kinds::TURN_STARTED);
+    assert_eq!(started.len(), 2, "the follow-up starts its own turn");
+    assert_eq!(
+        started[1]["prompt"],
+        serde_json::json!("and then summarise")
+    );
+
+    provider.release.notify_one();
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_still_runs_what_was_queued_for_after_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager
+        .follow_up(&session_id, "carry on")
+        .expect("follow up");
+    manager.cancel_turn(&session_id).expect("cancel");
+    provider.release.notify_one();
+    provider.entered.notified().await;
+
+    let started = payloads(&manager, &session_id, kinds::TURN_STARTED);
+    assert_eq!(
+        started.len(),
+        2,
+        "the queue outlives the turn it was typed in"
+    );
+
+    provider.release.notify_one();
+}
+
+#[tokio::test]
+async fn a_steered_message_reaches_the_model_at_the_point_it_was_taken() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager
+        .steer(&session_id, "actually, read main.rs")
+        .expect("steer");
+    let taken = manager.dequeue(&session_id).expect("dequeue");
+    assert_eq!(taken.steering, vec!["actually, read main.rs".to_owned()]);
+    assert!(
+        payloads(&manager, &session_id, kinds::TURN_STEERED).is_empty(),
+        "taking a message back means it was never delivered"
+    );
+
+    provider.release.notify_one();
+}
