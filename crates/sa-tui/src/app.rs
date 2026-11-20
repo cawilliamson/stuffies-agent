@@ -1,7 +1,7 @@
 //! the tui state machine, independent of any terminal so it can be tested.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
@@ -1953,7 +1953,15 @@ fn body(
     ink: Color,
     markdown: bool,
     edge: Color,
+    italic: bool,
 ) {
+    let slant = |style: Style| {
+        if italic {
+            style.add_modifier(Modifier::ITALIC)
+        } else {
+            style
+        }
+    };
     let room = width.saturating_sub(4);
     if markdown {
         let options = tui_markdown::Options::new(ListingStyle)
@@ -1970,7 +1978,7 @@ fn body(
                     } else {
                         span.style
                     };
-                    Span::styled(span.content.into_owned(), style)
+                    Span::styled(span.content.into_owned(), slant(style))
                 })
                 .collect();
             for row in wrap_spans(&spans, room) {
@@ -1981,7 +1989,10 @@ fn body(
     }
 
     for raw in text.lines() {
-        let spans = [Span::styled(raw.to_owned(), Style::default().fg(ink))];
+        let spans = [Span::styled(
+            raw.to_owned(),
+            slant(Style::default().fg(ink)),
+        )];
         for row in wrap_spans(&spans, room) {
             out.push(framed_line(row, room, edge));
         }
@@ -2008,7 +2019,8 @@ fn wrap_spans(spans: &[Span<'static>], room: usize) -> Vec<Vec<Span<'static>>> {
             cells.push((ch, span.style));
         }
     }
-    if room == 0 {
+    // an empty line is a line: dropping it would close up every paragraph break.
+    if room == 0 || cells.is_empty() {
         return vec![Vec::new()];
     }
 
@@ -2110,6 +2122,11 @@ fn bottom(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
     ]));
 }
 
+/// an empty row inside a frame.
+fn blank(out: &mut Vec<Line<'static>>, width: usize, edge: Color) {
+    out.push(framed_line(Vec::new(), width.saturating_sub(4), edge));
+}
+
 /// a cell of clear space either side, so a bubble sits inside the pane rather than running
 /// into the pane's own edge.
 fn inset(out: Vec<Line<'static>>) -> Vec<Line<'static>> {
@@ -2163,7 +2180,15 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     // only prose the model wrote is markdown. our own notices are laid out by us, and a
     // listing whose lines matter must not be folded into one paragraph.
     let markdown = !matches!(entry.role, Role::System | Role::Tool | Role::ToolOutput);
-    body(&mut out, &entry_body(entry), width, ink, markdown, edge);
+    body(
+        &mut out,
+        &entry_body(entry),
+        width,
+        ink,
+        markdown,
+        edge,
+        false,
+    );
     for thumb in &entry.images {
         body_image(&mut out, thumb, width, edge);
     }
@@ -2192,7 +2217,7 @@ fn framed_tool(
         call.to_owned()
     };
     // a command and its output are literal: no markdown, but ANSI colouring is honoured.
-    body(&mut out, &invocation, width, ink, false, edge);
+    body(&mut out, &invocation, width, ink, false, edge, false);
     divider(&mut out, width, edge);
     body_ansi(&mut out, output, width, out_ink, edge);
     bottom(&mut out, width, edge);
@@ -2214,10 +2239,14 @@ fn framed_split(
     let width = width.saturating_sub(2);
     let mut out = Vec::new();
     top(&mut out, &label, width, edge);
-    body(&mut out, thinking, width, think_ink, true, edge);
+    blank(&mut out, width, edge);
+    body(&mut out, thinking, width, think_ink, true, edge, true);
+    blank(&mut out, width, edge);
     // the rule is part of this frame, so it uses the frame's colour.
     divider(&mut out, width, edge);
-    body(&mut out, message, width, reply_ink, true, edge);
+    blank(&mut out, width, edge);
+    body(&mut out, message, width, reply_ink, true, edge, false);
+    blank(&mut out, width, edge);
     bottom(&mut out, width, edge);
     inset(out)
 }
@@ -2248,7 +2277,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
             let mut thinking = entry.text.clone();
             let mut next = index + 1;
             while next < tab.transcript.len() && tab.transcript[next].role == Role::Thinking {
-                thinking.push('\n');
+                thinking.push_str("\n\n");
                 thinking.push_str(&tab.transcript[next].text);
                 next += 1;
             }

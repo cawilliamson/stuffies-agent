@@ -3038,3 +3038,84 @@ fn a_fenced_code_block_is_drawn_as_code_without_its_fences() {
         "the fence markers are the renderer's decoration, not the message:\n{shown}"
     );
 }
+
+#[test]
+fn reasoning_is_set_apart_from_the_reply_it_produced() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::Thinking, "weighing the options");
+    app.tab_mut().push(Role::Assistant, "here is the answer");
+
+    let rows = rows(&mut app, 100, 24);
+    let row_of = |needle: &str| {
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is not on screen"))
+    };
+    let thinking = row_of("weighing the options");
+    let rule = row_of("\u{251c}");
+    let reply = row_of("here is the answer");
+
+    assert!(thinking < rule && rule < reply, "reasoning comes first");
+    // clear space either side of the rule: the two sections do not run into each other.
+    for row in [rule - 1, rule + 1] {
+        let text: String = rows[row]
+            .chars()
+            .filter(|c| !matches!(c, '\u{2502}' | ' '))
+            .collect();
+        assert!(
+            text.is_empty(),
+            "row {row} should be blank inside the frame: {:?}",
+            rows[row]
+        );
+    }
+}
+
+#[test]
+fn separate_reasoning_blocks_are_a_paragraph_apart() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::Thinking, "first thought");
+    app.tab_mut().push(Role::Thinking, "second thought");
+
+    let rows = rows(&mut app, 100, 24);
+    let first = rows
+        .iter()
+        .position(|row| row.contains("first thought"))
+        .expect("first block");
+    let second = rows
+        .iter()
+        .position(|row| row.contains("second thought"))
+        .expect("second block");
+    assert!(
+        second > first + 1,
+        "the blocks must not be adjacent:\n{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
+fn reasoning_is_italic_so_it_reads_as_aside_from_the_reply() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().push(Role::Thinking, "weighing the options");
+    app.tab_mut().push(Role::Assistant, "here is the answer");
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let italic_on = |needle: &str| -> bool {
+        for y in 0..24 {
+            let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(at) = row.find(needle) {
+                #[allow(clippy::cast_possible_truncation)]
+                let x = at as u16;
+                return buffer[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::ITALIC);
+            }
+        }
+        panic!("{needle} is not on screen");
+    };
+    assert!(italic_on("weighing"), "reasoning is italic");
+    assert!(!italic_on("here is"), "the reply is not");
+}
