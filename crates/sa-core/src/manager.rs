@@ -957,24 +957,35 @@ impl Manager {
 
     /// removes the finished turn and hands back the next queued message (spec 3.7).
     fn settle_turn(&self, session_id: &str) -> Option<String> {
-        let mut inner = self.lock().ok()?;
-        inner.turns.remove(session_id);
-        let mut next = None;
-        let empty = if let Some(queue) = inner.queues.get_mut(session_id) {
-            // anything still queued when the turn ends has not reached the model yet. it
-            // becomes the next turn rather than sitting there forever: steering first,
-            // because it was typed first.
-            if !queue.steering.is_empty() {
-                next = Some(queue.steering.remove(0));
-            } else if !queue.follow_up.is_empty() {
-                next = Some(queue.follow_up.remove(0));
+        let (next, state) = {
+            let mut inner = self.lock().ok()?;
+            inner.turns.remove(session_id);
+            let mut next = None;
+            let (state, empty) = if let Some(queue) = inner.queues.get_mut(session_id) {
+                // anything still queued when the turn ends has not reached the model yet. it
+                // becomes the next turn rather than sitting there forever: steering first,
+                // because it was typed first.
+                if !queue.steering.is_empty() {
+                    next = Some(queue.steering.remove(0));
+                } else if !queue.follow_up.is_empty() {
+                    next = Some(queue.follow_up.remove(0));
+                }
+                let state = queue.state();
+                let empty = queue.steering.is_empty() && queue.follow_up.is_empty();
+                (Some(state), empty)
+            } else {
+                (None, false)
+            };
+            if empty {
+                inner.queues.remove(session_id);
             }
-            queue.steering.is_empty() && queue.follow_up.is_empty()
-        } else {
-            false
+            (next, state)
         };
-        if empty {
-            inner.queues.remove(session_id);
+        // taking the message out is a queue change like any other, and the view only learns
+        // about the queue from this event: without it a delivered message stays on screen as
+        // though it were still waiting.
+        if let Some(state) = state {
+            let _ = self.append(session_id, kinds::TURN_QUEUED, &json!(state));
         }
         next
     }

@@ -333,3 +333,30 @@ async fn a_message_queued_as_the_turn_ends_still_runs() {
 
     provider.release.notify_one();
 }
+
+#[tokio::test]
+async fn delivering_a_queued_message_takes_it_off_the_queue() {
+    // the bug: a message queued after the model's last round-trip was delivered as a new
+    // turn, but the queue event was never appended, so it stayed on screen as though it
+    // were still waiting.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager.steer(&session_id, "count to 5").expect("steer");
+    provider.release.notify_one();
+    provider.entered.notified().await;
+
+    let queued = payloads(&manager, &session_id, kinds::TURN_QUEUED);
+    let last = queued.last().expect("a queue event");
+    assert_eq!(
+        last["steering"],
+        serde_json::json!([]),
+        "the delivered message leaves the queue"
+    );
+    assert_eq!(last["follow_up"], serde_json::json!([]));
+
+    provider.release.notify_one();
+}
