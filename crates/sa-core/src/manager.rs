@@ -955,13 +955,18 @@ impl Manager {
         Some(prompt)
     }
 
-    /// removes the finished turn and hands back the next queued follow-up (spec 3.7).
+    /// removes the finished turn and hands back the next queued message (spec 3.7).
     fn settle_turn(&self, session_id: &str) -> Option<String> {
         let mut inner = self.lock().ok()?;
         inner.turns.remove(session_id);
         let mut next = None;
         let empty = if let Some(queue) = inner.queues.get_mut(session_id) {
-            if !queue.follow_up.is_empty() {
+            // anything still queued when the turn ends has not reached the model yet. it
+            // becomes the next turn rather than sitting there forever: steering first,
+            // because it was typed first.
+            if !queue.steering.is_empty() {
+                next = Some(queue.steering.remove(0));
+            } else if !queue.follow_up.is_empty() {
                 next = Some(queue.follow_up.remove(0));
             }
             queue.steering.is_empty() && queue.follow_up.is_empty()
@@ -974,11 +979,11 @@ impl Manager {
         next
     }
 
-    /// ends the turn, and runs a queued follow-up as the session's next one.
+    /// ends the turn, and runs whatever is still queued as the session's next one.
     fn continue_with_follow_up(self: &Arc<Self>, session_id: &str, detach: bool) {
         if let Some(prompt) = self.settle_turn(session_id) {
             if let Err(err) = self.start_turn(session_id, &prompt, &[], detach, None) {
-                tracing::warn!(%err, %session_id, "queued follow-up could not start");
+                tracing::warn!(%err, %session_id, "queued message could not start a turn");
             }
         }
     }

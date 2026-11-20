@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKe
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use sa_tui::app::{transcript_lines, Action, App, PickerItem, PickerKind, Role, ServedModel};
+use sa_tui::ui::tab_hits;
 use serde_json::json;
 
 const fn key(code: KeyCode) -> KeyEvent {
@@ -3279,7 +3280,7 @@ fn a_click_on_a_tab_switches_to_it() {
     app.switch_tab(0);
 
     // the second chip is somewhere on the strip; find the column it occupies.
-    let hits = sa_tui::ui::tab_hits(&app, 100);
+    let hits = tab_hits(&app, 100);
     let (start, end, index) = *hits
         .iter()
         .find(|(_, _, tab)| *tab == 1)
@@ -3304,7 +3305,7 @@ fn a_middle_click_on_a_tab_closes_it() {
     app.add_tab("session-second", "m");
     app.switch_tab(0);
 
-    let hits = sa_tui::ui::tab_hits(&app, 100);
+    let hits = tab_hits(&app, 100);
     let (start, end, _) = *hits
         .iter()
         .find(|(_, _, tab)| *tab == 1)
@@ -3373,7 +3374,7 @@ fn a_click_on_a_picker_row_chooses_it() {
 
     let area = screen_area(100, 24);
     // the second row sits one line below the first inside the picker's frame.
-    let Some((inner, _)) = sa_tui::ui::picker_text_area(&app, area) else {
+    let Some((inner, _)) = app.picker_text_area(area) else {
         panic!("the picker has a text area");
     };
     let action = app.on_mouse(
@@ -3499,5 +3500,77 @@ fn the_focused_message_is_marked_in_the_panel() {
     assert!(
         marked.contains("second"),
         "the cursor marks the selected message:\n{screen}"
+    );
+}
+
+#[test]
+fn a_multi_line_input_lands_in_the_editor_as_lines() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().set_input("first\nsecond\nthird");
+    let (lines, cursor_line, _) = app.tab().input_lines();
+    assert_eq!(
+        lines,
+        vec!["first".to_owned(), "second".to_owned(), "third".to_owned()],
+        "each newline is its own editable line"
+    );
+    assert_eq!(cursor_line, 2, "the cursor is on the last line");
+}
+
+#[test]
+fn the_queue_takes_its_own_band_rather_than_sitting_on_the_transcript() {
+    let mut app = App::new("session-abcdef", "m");
+    let area = screen_area(100, 30);
+    let before = sa_tui::ui::regions(&app, area);
+    assert_eq!(before.queue.height, 0, "nothing queued, no band");
+
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["one", "two"], &["after"]));
+    let after = sa_tui::ui::regions(&app, area);
+
+    assert!(after.queue.height > 0, "the queue has rows of its own");
+    assert!(
+        after.transcript.height < before.transcript.height,
+        "the transcript gives those rows up instead of being drawn over: {} -> {}",
+        before.transcript.height,
+        after.transcript.height
+    );
+    // the bands stack without overlapping, from the tab strip down to the status bar.
+    assert_eq!(after.tabs.bottom(), after.transcript.y);
+    assert_eq!(after.transcript.bottom(), after.queue.y);
+    assert_eq!(after.queue.bottom(), after.composer.y);
+}
+
+#[test]
+fn editing_a_queued_message_replaces_the_composer_and_leaves_the_queue() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["one", "two"], &[]));
+    typed(&mut app, "half typed");
+    app.focus_queue();
+
+    app.edit_queued("two");
+
+    assert_eq!(
+        app.tab().input_text(),
+        "two",
+        "the message being edited replaces what was typed, rather than being added to it"
+    );
+    assert_eq!(
+        app.tab().queue_focus,
+        None,
+        "enter now sends rather than taking the next message back"
+    );
+}
+
+#[test]
+fn a_multi_line_queued_message_stays_editable_as_lines() {
+    let mut app = App::new("session-abcdef", "m");
+    app.edit_queued("first line\nsecond line");
+    let (lines, cursor_line, _) = app.tab().input_lines();
+    assert_eq!(lines.len(), 2, "both lines are in the editor");
+    assert_eq!(
+        cursor_line, 1,
+        "the cursor is at the end, where typing continues"
     );
 }

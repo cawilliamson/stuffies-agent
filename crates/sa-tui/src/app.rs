@@ -684,6 +684,9 @@ impl Tab {
     pub fn set_input(&mut self, text: &str) {
         self.editor = edtui::EditorState::new(edtui::Lines::from(text));
         self.editor.mode = edtui::EditorMode::Insert;
+        // the cursor belongs where the next character would go: text put here is text the
+        // operator is about to edit or send, not text to prepend to.
+        self.cursor_to_end();
         self.touch();
     }
 
@@ -1824,6 +1827,25 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    /// puts one queued message in the composer, replacing what is there: this is the
+    /// message being edited, not an addition to whatever was already typed. the queue then
+    /// lets go of the cursor, so enter sends instead of taking the next one back.
+    pub fn edit_queued(&mut self, text: &str) {
+        let tab = self.tab_mut();
+        tab.set_input(text);
+        tab.queue_focus = None;
+    }
+
+    /// the open picker's text area and the index of its first visible row, so a click can
+    /// be mapped to an item without the caller repeating the layout.
+    #[must_use]
+    pub fn picker_text_area(
+        &self,
+        area: ratatui::layout::Rect,
+    ) -> Option<(ratatui::layout::Rect, usize)> {
+        crate::ui::picker_text_area(self, area)
     }
 
     /// puts the queue under the cursor, on its last message.

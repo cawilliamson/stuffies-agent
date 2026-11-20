@@ -302,3 +302,34 @@ async fn an_unknown_queue_name_is_refused() {
 
     provider.release.notify_one();
 }
+
+#[tokio::test]
+async fn a_message_queued_as_the_turn_ends_still_runs() {
+    // the model had already finished its answer when the operator typed: the message must
+    // become the next turn rather than sitting in the queue forever.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager
+        .steer(&session_id, "actually, answer this too")
+        .expect("steer");
+
+    provider.release.notify_one();
+    provider.entered.notified().await;
+
+    let started = payloads(&manager, &session_id, kinds::TURN_STARTED);
+    assert_eq!(
+        started.len(),
+        2,
+        "the stranded message starts a turn of its own"
+    );
+    assert_eq!(
+        started[1]["prompt"],
+        serde_json::json!("actually, answer this too")
+    );
+
+    provider.release.notify_one();
+}

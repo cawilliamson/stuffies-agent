@@ -709,7 +709,7 @@ async fn edit_queued(client: &mut Client, app: &mut App, index: usize) {
         .map(|queued| queued.text.clone());
     if drop_queued(client, &sid, kind, local).await {
         if let Some(text) = text {
-            restore_queue(app, &[text]);
+            app.edit_queued(&text);
         }
     }
 }

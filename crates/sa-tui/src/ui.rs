@@ -5,8 +5,8 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::Frame;
 
@@ -365,25 +365,31 @@ pub fn tab_hits(app: &App, width: u16) -> Vec<(u16, u16, usize)> {
     hits
 }
 
-/// the messages waiting for the running turn, one block per queue and under its own
-/// heading, so what is pending is visible rather than only counted.
-///
-/// returns the rows it took, so whatever else sits above the composer can stack above it.
-pub fn queue_panel(frame: &mut Frame<'_>, above: Rect, app: &App) -> u16 {
+/// the rows the queue needs: its frame, a heading per queue, a line per message and a line
+/// of keys. zero when nothing is queued, so the transcript takes the whole band back.
+#[must_use]
+pub fn queue_height(app: &App) -> u16 {
     let tab = app.tab();
     if tab.queued.is_empty() {
         return 0;
     }
-    let lines = queue_lines(tab);
-    let height = u16::try_from(lines.len()).unwrap_or(1).saturating_add(2);
-    let rect = Rect {
-        x: above.x,
-        y: above.y.saturating_sub(height),
-        width: above.width,
-        height,
-    };
+    let headings = [app::QueuedKind::Steering, app::QueuedKind::FollowUp]
+        .iter()
+        .filter(|kind| tab.queued.iter().any(|queued| queued.kind == **kind))
+        .count();
+    u16::try_from(tab.queued.len() + headings)
+        .unwrap_or(1)
+        .saturating_add(2)
+}
 
-    frame.render_widget(Clear, rect);
+/// the messages waiting for the running turn, one list per queue under its own heading.
+///
+/// the cursor is a `ListState`, so ratatui owns the highlight and the scrolling.
+pub fn queue_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let tab = app.tab();
+    if tab.queued.is_empty() || area.height == 0 {
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -391,44 +397,73 @@ pub fn queue_panel(frame: &mut Frame<'_>, above: Rect, app: &App) -> u16 {
         .title(
             Line::from(format!(" {} queued ", tab.queued.len()))
                 .style(Style::default().fg(app::DIM)),
+        )
+        .title_bottom(
+            Line::from(" \u{2191}\u{2193} move \u{00b7} enter edit \u{00b7} del drop \u{00b7} a all \u{00b7} esc close ")
+                .style(Style::default().fg(app::FAINT))
+                .right_aligned(),
         );
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-    frame.render_widget(Paragraph::new(lines), inner);
-    height
-}
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-/// the queue panel's rows: a heading per queue, then its messages in delivery order.
-fn queue_lines(tab: &app::Tab) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    // a section per queue that has anything in it, sized to what it holds.
+    let mut sections: Vec<(app::QueuedKind, Vec<(usize, String)>)> = Vec::new();
     for kind in [app::QueuedKind::Steering, app::QueuedKind::FollowUp] {
-        let mut heading_drawn = false;
-        let mut number = 0;
-        for (index, queued) in tab.queued.iter().enumerate() {
-            if queued.kind != kind {
-                continue;
-            }
-            if !heading_drawn {
-                lines.push(
-                    Line::from(format!(" {} ", kind.label()))
-                        .style(Style::default().fg(app::FAINT)),
-                );
-                heading_drawn = true;
-            }
-            number += 1;
-            let focused = tab.queue_focus == Some(index);
-            let mark = if focused { "\u{25b8} " } else { "  " };
-            let style = if focused {
-                Style::default()
-                    .fg(app::ACCENT)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app::INK)
-            };
-            lines.push(Line::from(format!("{mark}{number}. {}", queued.text)).style(style));
+        let rows: Vec<(usize, String)> = tab
+            .queued
+            .iter()
+            .enumerate()
+            .filter(|(_, queued)| queued.kind == kind)
+            .map(|(index, queued)| (index, queued.text.clone()))
+            .collect();
+        if !rows.is_empty() {
+            sections.push((kind, rows));
         }
     }
-    lines
+    if sections.is_empty() {
+        return;
+    }
+    // a heading row and one row per message, so a section is never taller than its rows and
+    // the heading cannot eat the message it introduces.
+    let mut constraints: Vec<Constraint> = Vec::new();
+    for (_, rows) in &sections {
+        constraints.push(Constraint::Length(1));
+        constraints.push(Constraint::Length(u16::try_from(rows.len()).unwrap_or(1)));
+    }
+    let bands = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    for (section, (kind, rows)) in sections.iter().enumerate() {
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(format!(" {} ", kind.label())).style(Style::default().fg(app::FAINT)),
+            ),
+            bands[section * 2],
+        );
+
+        let items: Vec<ListItem<'static>> = rows
+            .iter()
+            .enumerate()
+            .map(|(number, (_, text))| ListItem::new(Line::from(format!("{}. {text}", number + 1))))
+            .collect();
+        let mut state = ListState::default();
+        // the cursor only belongs to this list when the focused message is one of its rows.
+        if let Some(focus) = tab.queue_focus {
+            if let Some(local) = rows.iter().position(|(index, _)| *index == focus) {
+                state.select(Some(local));
+            }
+        }
+        let list = List::new(items)
+            .highlight_symbol("\u{25b8} ")
+            .highlight_style(
+                Style::default()
+                    .fg(app::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            );
+        frame.render_stateful_widget(list, bands[section * 2 + 1], &mut state);
+    }
 }
 
 /// a compact context meter: filled cells and a percentage, coloured by pressure.
@@ -557,7 +592,7 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     // takes the whole hint rather than sharing it.
     let busy = tab.status.turn_running;
     let hint = if busy {
-        " esc interrupt \u{00b7} alt+enter after \u{00b7} alt+up take back "
+        " esc interrupt \u{00b7} alt+enter after \u{00b7} alt+up queue "
     } else {
         " ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump "
     };
@@ -788,6 +823,8 @@ pub fn attachment_preview(frame: &mut Frame<'_>, app: &mut App) {
 pub struct Regions {
     pub tabs: Rect,
     pub transcript: Rect,
+    /// the queued messages, empty when there are none.
+    pub queue: Rect,
     pub composer: Rect,
     pub status: Rect,
 }
@@ -802,7 +839,10 @@ pub fn regions(app: &App, area: Rect) -> Regions {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            // the transcript gives up the rows the queue needs: a pending message must not
+            // be drawn over the conversation it is pending against.
             Constraint::Min(3),
+            Constraint::Length(queue_height(app)),
             Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
@@ -810,8 +850,9 @@ pub fn regions(app: &App, area: Rect) -> Regions {
     Regions {
         tabs: rows[0],
         transcript: rows[1],
-        composer: rows[2],
-        status: rows[3],
+        queue: rows[2],
+        composer: rows[3],
+        status: rows[4],
     }
 }
 
@@ -880,18 +921,14 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
     if app.tab().status.turn_running {
         activity_bar(frame, screen.composer, app, working_label_cells(app.tab()));
     }
-    // what is queued sits directly above the composer, where the operator is looking.
-    let taken = queue_panel(frame, screen.composer, app);
-    let above = Rect {
-        y: screen.composer.y.saturating_sub(taken),
-        ..screen.composer
-    };
-    // the choices for the argument being typed sit above that.
-    suggestion_list(frame, above, "cwd", app.tab().cwd_suggestions());
+    queue_panel(frame, screen.queue, app);
+    // the choices for the argument being typed sit directly above the composer, where the
+    // operator is looking.
+    suggestion_list(frame, screen.composer, "cwd", app.tab().cwd_suggestions());
     let levels = app.effort_levels(app.tab());
     suggestion_list(
         frame,
-        above,
+        screen.composer,
         "effort",
         app.tab().effort_suggestions(&levels),
     );
