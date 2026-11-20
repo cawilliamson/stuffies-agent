@@ -21,13 +21,19 @@
             cargo-deny
             cargo-machete
             cargo-mutants
+            cargo-outdated
+            clang
             clippy
+            cmake
+            llvmPackages.libclang
             marksman
             python3
             rust-code-analysis
             rustc
             rustfmt
           ];
+          # btls-sys compiles boringssl and bindgen looks for libclang itself.
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
         };
       });
 

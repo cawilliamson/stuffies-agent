@@ -17,32 +17,34 @@ keywords = ["agent", "daemon", "llm", "tui"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/cawilliamson/stuffies-agent"
-rust-version = "1.89"
+rust-version = "1.98"
 version = "0.1.0"
 
 [workspace.dependencies]
-base64 = "0.22"
 ansi-to-tui = "8"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 command-group = { version = "5", features = ["with-tokio"] }
-directories = "6"
-infer = "0.22"
-termtree = "1"
-tui-markdown = "0.3"
 crossterm = { version = "0.29", features = ["event-stream"] }
+directories = "6"
+dom_query = "0.29"
+dom_smoothie = "0.19"
 edtui = "0.11"
 futures-util = { version = "0.3", features = ["sink", "std"] }
-nix = { version = "0.29", features = ["fs", "process", "signal", "socket", "user"] }
-ratatui-image = { version = "12.0.0-rc.3", default-features = false, features = ["crossterm"] }
+htmd = "0.6"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+infer = "0.22"
+nix = { version = "0.29", features = ["fs", "process", "signal", "socket", "user"] }
+percent-encoding = "2"
 ratatui = "0.30"
+ratatui-image = { version = "12.0.0-rc.3", default-features = false, features = ["crossterm"] }
 regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rig-core = { version = "=0.46.0", features = ["reqwest"] }
+rig-rmcp = "=0.46.0"
 rmcp = { version = "=3.11.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 # rmcp speaks reqwest 0.13 while the provider speaks 0.12, so the mcp client names its own.
 rmcp-reqwest = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls"] }
-rig-core = { version = "=0.46.0", features = ["reqwest"] }
-rig-rmcp = "=0.46.0"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "cache"] }
 sa-client = { path = "crates/sa-client", version = "0.1.0" }
 sa-core = { path = "crates/sa-core", version = "0.1.0" }
@@ -52,13 +54,18 @@ sa-tui = { path = "crates/sa-tui", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+termtree = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tui-markdown = "0.3"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+# a real chrome fingerprint: boringssl, ja3/ja4 and http2 settings, not a bare client.
+wreq = { version = "0.16", default-features = false, features = ["brotli", "charset", "cookies", "deflate", "gzip", "json", "query", "tokio-rt", "webpki-roots", "zstd"] }
+wreq-util = { version = "0.2", default-features = false, features = ["emulation", "tokio-rt"] }
 
 [workspace.lints.rust]
 # rust_2018_idioms already covers trivial_casts, trivial_numeric_casts,

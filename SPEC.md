@@ -149,10 +149,13 @@ session.usage    {session_id}                     -> {prompt_tokens, completion_
 Turns:
 
 ```text
-turn.start       {session_id, prompt, detach?}    -> {turn_id, seq}
-turn.resume      {session_id, turn_id}            -> {seq}
 turn.cancel      {session_id, turn_id}            -> {}
+turn.dequeue     {session_id}                     -> {steering[], follow_up[]}
+turn.follow_up   {session_id, prompt}             -> {disposition}
+turn.resume      {session_id, turn_id}            -> {seq}
+turn.start       {session_id, prompt, detach?}    -> {turn_id, seq}
 turn.status      {session_id}                     -> {turn_id?, state, since}
+turn.steer       {session_id, prompt}             -> {disposition}
 ```
 
 Events:
@@ -259,6 +262,30 @@ and drive the same session at once; there is no `session_busy`, no takeover and 
   session and no "attach to the other one": one window, one strip, all of it.
 - `turn.start {detach: true}` remains available for turns driven with no client watching.
 
+### 3.7 Queued messages
+
+A prompt sent while a turn is running is queued, not refused, and not merged into the turn
+that is already running. Two queues exist per session, and both belong to the session
+rather than to the turn that happened to be running when they were filled:
+
+- **steering** is delivered between model round-trips: after the running assistant turn
+  finishes its tool calls, before the next request. One message per round-trip, never a
+  batch, so a queue of redirects does not arrive as one confused prompt.
+- **follow-up** is delivered only when the turn has no more work: it starts a new turn in
+  the same session, and it outlives the turn it was typed in. A cancelled turn does not
+  discard it.
+
+Rules:
+
+- `turn.steer` and `turn.follow_up` require a running turn and answer
+  `disposition: queued`. A message taken back before delivery was never delivered: the
+  transcript records it where the model saw it, not where it was typed.
+- `turn.dequeue` empties both queues and returns their text, so a client can put it back
+  in the editor. This is what escape does before `turn.cancel`: take the queue back, then
+  interrupt.
+- Every change to a queue appends `turn.queued` carrying the complete current queue, so a
+  client that attached mid-turn can render what is pending.
+
 ---
 
 ## 4. Transports
@@ -358,13 +385,15 @@ not reconstructible from events.
 Event kinds:
 
 ```text
-session.created     session.renamed      session.state
-turn.started        turn.completed       turn.interrupted
-llm.delta           llm.reasoning        llm.completed
-tool.requested      tool.completed       tool.failed
-model.changed       checkpoint
-handoff.exported    handoff.imported
-compaction.applied  review.completed     error
+checkpoint          compaction.applied   context.loaded
+error               handoff.exported     handoff.imported
+llm.completed       llm.delta            llm.reasoning
+model.changed       review.completed     session.created
+session.cwd         session.renamed      session.state
+title.generating    tool.completed       tool.failed
+tool.requested      turn.completed       turn.context
+turn.interrupted    turn.queued          turn.started
+turn.steered
 ```
 
 `DECIDED`: adding an event kind is a minor version bump; changing an existing payload's
@@ -390,6 +419,8 @@ turn.started        {v, turn_id, prompt, model, detach, resumed_from?}
 turn.completed      {v, turn_id, finish_reason, usage:{prompt_tokens,
                      completion_tokens, cost_micros?}}
 turn.interrupted    {v, turn_id, cause, pending_call_id?}
+turn.queued         {v, steering[], follow_up[]}
+turn.steered        {v, prompt}
 llm.delta           {v, turn_id, text}
 llm.reasoning       {v, turn_id, text}
 llm.completed       {v, turn_id, stop_reason, usage:{...}, purpose}
@@ -749,8 +780,20 @@ before any tool runs; an unattended turn never starts without one.
 Initial set, all executed in the daemon process with the session's `cwd`:
 
 ```text
-read  write  edit  bash  grep  find  ls
+bash  edit  fetch  find  grep  read  web_search  write
 ```
+
+`web_fetch` and `web_search` are the only tools that leave the machine. They speak through a
+browser-emulated client (chrome's tls hello, http/2 settings, header order and values), so
+a site that fingerprints the connection sees a browser rather than a rust program. What
+that cannot do is run javascript: a page behind an interactive challenge arrives as the
+challenge page, and the model is told what it got.
+
+- `web_fetch {url}` reduces a page to readable markdown and reports the status it was served.
+  Only `http` and `https` are fetched; anything else is an argument error. The body is
+  capped at 4 MiB and marked when cut.
+- `web_search {query, limit?}` returns a numbered list of title, url and snippet, five by
+  default and twenty at most. A query that finds nothing says so rather than failing.
 
 Model Context Protocol servers are the third set. The daemon reads
 `$XDG_CONFIG_HOME/stuffies-agent/mcp.json` in the format every other MCP client uses
@@ -767,7 +810,7 @@ lives, how a tool is named, and when a server is reached.
 The knowledge tools (§11.4) are the second set and arrive at v3.0:
 
 ```text
-knowledge.search  knowledge.read  knowledge.list  knowledge.write  knowledge.remove
+knowledge.list  knowledge.read  knowledge.remove  knowledge.search  knowledge.write
 ```
 
 Rules:
@@ -908,11 +951,11 @@ The agent reaches the store through tools, so every access it makes is already i
 log:
 
 ```text
-knowledge.search  {q, namespaces?, limit?}   read
-knowledge.read    {path}                     read
 knowledge.list    {namespace}                read
-knowledge.write   {path, body}               knowledge_write
+knowledge.read    {path}                     read
 knowledge.remove  {path}                     knowledge_write
+knowledge.search  {q, namespaces?, limit?}   read
+knowledge.write   {path, body}               knowledge_write
 ```
 
 `knowledge.write` refuses a path outside the session's namespaces, refuses to overwrite a

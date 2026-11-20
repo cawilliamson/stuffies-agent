@@ -3,7 +3,13 @@
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# unmaintained, not vulnerable. every entry is transitive: we cannot drop the crate without
+# dropping the dependency that ships it.
+ignore = [
+  "RUSTSEC-2024-0320", # yaml-rust: syntect's syntax definitions, via edtui and tui-markdown
+  "RUSTSEC-2025-0141", # bincode: syntect's compiled-set format, same two dependents
+  "RUSTSEC-2026-0543", # chrono: rmcp's timestamps; nothing else here asks for it
+]
 
 [bans]
 multiple-versions = "warn"
@@ -15,10 +21,13 @@ confidence-threshold = 0.9
 allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
   "BSD-3-Clause",
+  "BSL-1.0",
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
+  "MPL-2.0",
   "Unicode-3.0",
   "Unlicense",
   "Zlib",

@@ -80,13 +80,19 @@ impl ToolRegistry {
             return Ok(text(output));
         }
         match call.name.as_str() {
-            "read" => self.read(&args).await.map(text),
-            "write" => self.write(&args).await.map(text),
+            "bash" => self.bash(&args).await,
             "edit" => self.edit(&args).await.map(text),
-            "ls" => self.ls(&args).await.map(text),
             "find" => self.find(&args).await.map(text),
             "grep" => self.grep(&args).await.map(text),
-            "bash" => self.bash(&args).await,
+            "read" => self.read(&args).await.map(text),
+            "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
+            "web_search" => {
+                let query = required(&args, "query")?;
+                crate::web::search(query, crate::web::limit_from(&args))
+                    .await
+                    .map(text)
+            }
+            "write" => self.write(&args).await.map(text),
             other => Err(ToolError::Unknown(other.to_owned())),
         }
     }
@@ -121,22 +127,6 @@ impl ToolRegistry {
         }
         tokio::fs::write(&path, body.replacen(old, new, 1)).await?;
         Ok(format!("edited {raw}"))
-    }
-
-    async fn ls(&self, args: &Value) -> Result<String, ToolError> {
-        let path = self.resolve(args.get("path").and_then(Value::as_str).unwrap_or("."))?;
-        let mut entries = tokio::fs::read_dir(path).await?;
-        let mut names = Vec::new();
-        while let Some(entry) = entries.next_entry().await? {
-            let suffix = if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
-                "/"
-            } else {
-                ""
-            };
-            names.push(format!("{}{suffix}", entry.file_name().to_string_lossy()));
-        }
-        names.sort();
-        Ok(names.join("\n"))
     }
 
     async fn find(&self, args: &Value) -> Result<String, ToolError> {
@@ -255,24 +245,19 @@ impl ToolExecutor for ToolRegistry {
     fn specs(&self) -> Vec<ToolSpec> {
         let mut tools = vec![
             spec(
-                "read",
-                "Read a file as text.",
-                json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
-            ),
-            spec(
-                "write",
-                "Write a file, creating it or replacing its contents entirely.",
-                json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
+                "bash",
+                &format!(
+                    "Run a shell command with `sh -c` in the workspace. Returns combined stdout \
+                     and stderr plus the exit code. Times out after {COMMAND_TIMEOUT_SECS} seconds. \
+                     Output is capped at {} KiB and marked when cut.",
+                    MAX_TOOL_OUTPUT / 1024
+                ),
+                json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
             ),
             spec(
                 "edit",
                 "Replace exactly one occurrence of `old` with `new`. Fails unless `old` appears exactly once, so include enough surrounding context to be unique.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["path", "old", "new"]}),
-            ),
-            spec(
-                "ls",
-                "List the entries of a directory.",
-                json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             ),
             spec(
                 "find",
@@ -285,14 +270,26 @@ impl ToolExecutor for ToolRegistry {
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
             ),
             spec(
-                "bash",
-                &format!(
-                    "Run a shell command with `sh -c` in the workspace. Returns combined stdout \
-                     and stderr plus the exit code. Times out after {COMMAND_TIMEOUT_SECS} seconds. \
-                     Output is capped at {} KiB and marked when cut.",
-                    MAX_TOOL_OUTPUT / 1024
-                ),
-                json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
+                "read",
+                "Read a file as text.",
+                json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+            ),
+            spec(
+                "web_fetch",
+                "Fetch a web page through an emulated browser and return it as readable \
+                 markdown. Only http and https are fetched; the page is capped at 4 MiB and \
+                 marked when cut.",
+                json!({"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}),
+            ),
+            spec(
+                "web_search",
+                "Search the web and return a numbered list of results. Five by default.",
+                json!({"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]}),
+            ),
+            spec(
+                "write",
+                "Write a file, creating it or replacing its contents entirely.",
+                json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
             ),
         ];
         // every connected server's tools, named so they cannot shadow a built-in.

@@ -15,4 +15,5 @@ pub mod peer;
 pub mod store;
 pub use sa_proto::tokens;
 pub mod tools;
+pub mod web;
 pub mod workspace;

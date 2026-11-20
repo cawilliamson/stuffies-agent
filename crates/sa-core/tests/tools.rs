@@ -110,15 +110,6 @@ async fn edit_refuses_an_ambiguous_match() {
 }
 
 #[tokio::test]
-async fn ls_lists_directory_entries() {
-    let dir = workspace();
-    let reg = registry(dir.path());
-    let out = run(&reg, "ls", json!({"path": "."})).await.expect("ls");
-    assert!(out.contains("main.rs"), "{out}");
-    assert!(out.contains("src/"), "{out}");
-}
-
-#[tokio::test]
 async fn find_matches_names() {
     let dir = workspace();
     let reg = registry(dir.path());
@@ -243,4 +234,36 @@ async fn bash_inherits_variables_beyond_path() {
         .expect("bash");
 
     assert_eq!(out.output.trim(), expected.trim());
+}
+
+#[tokio::test]
+async fn web_fetch_refuses_a_scheme_it_cannot_speak() {
+    // the check runs before any request, so this test needs no network.
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let err = run(&reg, "web_fetch", json!({"url": "ftp://example.com/file"}))
+        .await
+        .expect_err("ftp is not fetched");
+    assert!(err.contains("only http and https"), "{err}");
+}
+
+#[tokio::test]
+async fn web_search_refuses_an_empty_query() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let err = run(&reg, "web_search", json!({"query": "   "}))
+        .await
+        .expect_err("an empty query is an argument error");
+    assert!(err.contains("empty query"), "{err}");
+}
+
+#[tokio::test]
+#[ignore = "network"]
+async fn web_fetch_is_reachable_by_name() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let out = run(&reg, "web_fetch", json!({"url": "https://example.com"}))
+        .await
+        .expect("web_fetch");
+    assert!(out.contains("Example Domain"), "{out}");
 }
