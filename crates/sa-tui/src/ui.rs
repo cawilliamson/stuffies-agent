@@ -365,6 +365,72 @@ pub fn tab_hits(app: &App, width: u16) -> Vec<(u16, u16, usize)> {
     hits
 }
 
+/// the messages waiting for the running turn, one block per queue and under its own
+/// heading, so what is pending is visible rather than only counted.
+///
+/// returns the rows it took, so whatever else sits above the composer can stack above it.
+pub fn queue_panel(frame: &mut Frame<'_>, above: Rect, app: &App) -> u16 {
+    let tab = app.tab();
+    if tab.queued.is_empty() {
+        return 0;
+    }
+    let lines = queue_lines(tab);
+    let height = u16::try_from(lines.len()).unwrap_or(1).saturating_add(2);
+    let rect = Rect {
+        x: above.x,
+        y: above.y.saturating_sub(height),
+        width: above.width,
+        height,
+    };
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(RULE))
+        .title(
+            Line::from(format!(" {} queued ", tab.queued.len()))
+                .style(Style::default().fg(app::DIM)),
+        );
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(lines), inner);
+    height
+}
+
+/// the queue panel's rows: a heading per queue, then its messages in delivery order.
+fn queue_lines(tab: &app::Tab) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for kind in [app::QueuedKind::Steering, app::QueuedKind::FollowUp] {
+        let mut heading_drawn = false;
+        let mut number = 0;
+        for (index, queued) in tab.queued.iter().enumerate() {
+            if queued.kind != kind {
+                continue;
+            }
+            if !heading_drawn {
+                lines.push(
+                    Line::from(format!(" {} ", kind.label()))
+                        .style(Style::default().fg(app::FAINT)),
+                );
+                heading_drawn = true;
+            }
+            number += 1;
+            let focused = tab.queue_focus == Some(index);
+            let mark = if focused { "\u{25b8} " } else { "  " };
+            let style = if focused {
+                Style::default()
+                    .fg(app::ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app::INK)
+            };
+            lines.push(Line::from(format!("{mark}{number}. {}", queued.text)).style(style));
+        }
+    }
+    lines
+}
+
 /// a compact context meter: filled cells and a percentage, coloured by pressure.
 fn context_meter(used: u64, limit: u64) -> (String, Color) {
     const CELLS: usize = 10;
@@ -471,9 +537,9 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     // context pressure, not raw throughput: how much of the window is in use.
     let (meter, ink) = context_meter(tab.status.context_tokens, app.context_limit(tab));
     segments.push((format!(" {meter} "), ink, Color::Rgb(0x2a, 0x2a, 0x2a)));
-    if tab.status.queued > 0 {
+    if !tab.queued.is_empty() {
         segments.push((
-            format!(" \u{f0c9} {} queued ", tab.status.queued),
+            format!(" \u{f0c9} {} queued ", tab.queued.len()),
             Color::Rgb(0x2a, 0x2a, 0x1a),
             Color::Rgb(0x8a, 0x7a, 0x3a),
         ));
@@ -814,13 +880,18 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
     if app.tab().status.turn_running {
         activity_bar(frame, screen.composer, app, working_label_cells(app.tab()));
     }
-    // the choices for the argument being typed sit directly above the composer, where the
-    // operator is looking.
-    suggestion_list(frame, screen.composer, "cwd", app.tab().cwd_suggestions());
+    // what is queued sits directly above the composer, where the operator is looking.
+    let taken = queue_panel(frame, screen.composer, app);
+    let above = Rect {
+        y: screen.composer.y.saturating_sub(taken),
+        ..screen.composer
+    };
+    // the choices for the argument being typed sit above that.
+    suggestion_list(frame, above, "cwd", app.tab().cwd_suggestions());
     let levels = app.effort_levels(app.tab());
     suggestion_list(
         frame,
-        screen.composer,
+        above,
         "effort",
         app.tab().effort_suggestions(&levels),
     );

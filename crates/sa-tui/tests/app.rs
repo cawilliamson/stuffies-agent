@@ -2171,12 +2171,16 @@ fn alt_enter_is_no_longer_a_newline() {
 }
 
 #[test]
-fn alt_up_takes_the_queue_back() {
+fn taking_the_whole_queue_back_is_a_inside_the_queue() {
     let mut app = App::new("session-abcdef", "m");
-    assert_eq!(
-        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
-        Action::Dequeue
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().on_event(
+        "turn.queued",
+        &json!({"steering": ["one"], "follow_up": []}),
     );
+    app.focus_queue();
+
+    assert_eq!(app.on_key(key(KeyCode::Char('a'))), Action::Dequeue);
 }
 
 #[test]
@@ -2186,12 +2190,12 @@ fn a_queue_event_counts_what_is_pending() {
         "turn.queued",
         &json!({"steering": ["a"], "follow_up": ["b"]}),
     );
-    assert_eq!(app.tab().status.queued, 2);
+    assert_eq!(app.tab().queued.len(), 2);
 
     app.tab_mut()
         .on_event("turn.queued", &json!({"steering": [], "follow_up": []}));
     assert_eq!(
-        app.tab().status.queued,
+        app.tab().queued.len(),
         0,
         "an emptied queue is recorded too"
     );
@@ -3382,4 +3386,118 @@ fn a_click_on_a_picker_row_chooses_it() {
     );
     assert_eq!(action, Action::ResumePicked("two".to_owned()));
     assert!(app.picker.is_none(), "choosing closes the picker");
+}
+
+fn queued_event(steering: &[&str], follow_up: &[&str]) -> serde_json::Value {
+    json!({"steering": steering, "follow_up": follow_up})
+}
+
+#[test]
+fn the_queue_is_shown_under_the_heading_it_is_delivered_under() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().on_event(
+        "turn.queued",
+        &queued_event(&["stop and run the tests"], &["then summarise"]),
+    );
+
+    let screen = screen(&mut app, 100, 30);
+    assert!(screen.contains("steering"), "{screen}");
+    assert!(screen.contains("stop and run the tests"), "{screen}");
+    assert!(screen.contains("after this turn"), "{screen}");
+    assert!(screen.contains("then summarise"), "{screen}");
+}
+
+#[test]
+fn alt_up_puts_the_cursor_on_the_queue() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["one", "two"], &[]));
+
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
+        Action::QueueFocus
+    );
+    app.focus_queue();
+    assert_eq!(
+        app.tab().queue_focus,
+        Some(1),
+        "the last message is selected"
+    );
+}
+
+#[test]
+fn enter_takes_one_queued_message_back_for_editing() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["first", "second"], &[]));
+    app.focus_queue();
+    app.on_key(key(KeyCode::Up));
+
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::QueueEdit(0));
+}
+
+#[test]
+fn delete_drops_the_selected_queued_message() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["first"], &["after"]));
+    app.focus_queue();
+
+    // the last item is the follow-up, which is the second queue's index 0.
+    assert_eq!(
+        app.tab().queue_position(app.tab().queued.len() - 1),
+        Some((sa_tui::app::QueuedKind::FollowUp, 0))
+    );
+    assert_eq!(app.on_key(key(KeyCode::Delete)), Action::QueueDrop(1));
+}
+
+#[test]
+fn escape_leaves_the_queue_alone() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["one"], &[]));
+    app.focus_queue();
+
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert_eq!(app.tab().queue_focus, None, "the queue loses the cursor");
+    assert_eq!(app.tab().queued.len(), 1, "and nothing is taken back");
+}
+
+#[test]
+fn an_emptied_queue_takes_the_cursor_with_it() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["one"], &[]));
+    app.focus_queue();
+    assert!(app.tab().queue_focus.is_some());
+
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&[], &[]));
+    assert_eq!(app.tab().queue_focus, None);
+    assert_eq!(app.tab().queued.len(), 0);
+}
+
+#[test]
+fn the_focused_message_is_marked_in_the_panel() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut()
+        .on_event("turn.queued", &queued_event(&["first", "second"], &[]));
+    app.focus_queue();
+
+    let screen = screen(&mut app, 100, 30);
+    let marked = screen
+        .lines()
+        .find(|line| line.contains('\u{25b8}'))
+        .unwrap_or_default();
+    assert!(
+        marked.contains("second"),
+        "the cursor marks the selected message:\n{screen}"
+    );
 }

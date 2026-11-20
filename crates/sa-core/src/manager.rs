@@ -899,6 +899,44 @@ impl Manager {
         Ok(state)
     }
 
+    /// takes one queued message back out, so a client can edit it or drop it (spec 3.7).
+    ///
+    /// `queue` names which of the two the index refers to. an index past the end is not an
+    /// error: a message may have been delivered between the client drawing it and the
+    /// click landing, and the caller only wanted it gone.
+    pub fn drop_queued(
+        &self,
+        session_id: &str,
+        queue: &str,
+        index: usize,
+    ) -> Result<sa_proto::session::QueueState, ManagerError> {
+        // the name is checked before anything is looked up: a wrong one is a client bug,
+        // whether or not this session happens to have anything queued.
+        if !matches!(queue, "steering" | "follow_up") {
+            return Err(ManagerError::Rpc(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("unknown queue: {queue}"),
+            )));
+        }
+        let state = {
+            let mut inner = self.lock()?;
+            let Some(queued) = inner.queues.get_mut(session_id) else {
+                return Ok(sa_proto::session::QueueState::default());
+            };
+            let list = if queue == "steering" {
+                &mut queued.steering
+            } else {
+                &mut queued.follow_up
+            };
+            if index < list.len() {
+                list.remove(index);
+            }
+            queued.state()
+        };
+        self.append(session_id, kinds::TURN_QUEUED, &json!(state))?;
+        Ok(state)
+    }
+
     /// one steering message, so a redirect lands between round-trips rather than as a batch.
     fn take_steering(&self, session_id: &str) -> Option<String> {
         let (prompt, state) = {

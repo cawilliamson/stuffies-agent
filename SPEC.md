@@ -152,6 +152,7 @@ Turns:
 turn.cancel      {session_id, turn_id}            -> {}
 turn.dequeue     {session_id}                     -> {steering[], follow_up[]}
 turn.follow_up   {session_id, prompt}             -> {disposition}
+turn.queue_drop  {session_id, queue, index}       -> {steering[], follow_up[]}
 turn.resume      {session_id, turn_id}            -> {seq}
 turn.start       {session_id, prompt, detach?}    -> {turn_id, seq}
 turn.status      {session_id}                     -> {turn_id?, state, since}
@@ -284,7 +285,18 @@ Rules:
   in the editor. This is what escape does before `turn.cancel`: take the queue back, then
   interrupt.
 - Every change to a queue appends `turn.queued` carrying the complete current queue, so a
-  client that attached mid-turn can render what is pending.
+  client that attached mid-turn can render what is pending. That event is the only way a
+  view learns the queue: nothing is removed optimistically on the client, and a message
+  delivered between a client drawing it and a key landing simply drops nothing.
+- `turn.queue_drop {queue, index}` takes one message back out, which is how a queued
+  message is edited: the client drops it and puts its text back in the composer, where the
+  operator can change it and send it again. `queue` is `steering` or `follow_up`; an index
+  past the end is not an error, and an unknown name is.
+
+The terminal front end shows both queues above the composer under their own headings, with
+the pending count on the status bar. `alt+up` puts the cursor on the queue; up and down
+move, enter takes the selected message back into the composer for editing, delete drops it,
+`a` takes the whole queue back, and escape leaves it alone.
 
 ---
 

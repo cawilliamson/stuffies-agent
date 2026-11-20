@@ -401,6 +401,9 @@ where
             // pi's escape: take the queue back into the editor, then interrupt.
             Action::Cancel => take_back(client, &mut app, true).await,
             Action::Dequeue => take_back(client, &mut app, false).await,
+            Action::QueueFocus => app.focus_queue(),
+            Action::QueueEdit(index) => edit_queued(client, &mut app, index).await,
+            Action::QueueDrop(index) => drop_selected(client, &app, index).await,
             Action::FollowUp(prompt) => {
                 let sid = app.tab().session.clone();
                 match rpc(
@@ -691,6 +694,52 @@ async fn take_back_queue(client: &mut Client, session_id: &str) -> Option<Vec<St
     }
 }
 
+/// takes one queued message back into the editor: dropped on the daemon, then handed to the
+/// composer, where it can be changed and sent again.
+#[allow(clippy::future_not_send)]
+async fn edit_queued(client: &mut Client, app: &mut App, index: usize) {
+    let Some((kind, local)) = app.tab().queue_position(index) else {
+        return;
+    };
+    let sid = app.tab().session.clone();
+    let text = app
+        .tab()
+        .queued
+        .get(index)
+        .map(|queued| queued.text.clone());
+    if drop_queued(client, &sid, kind, local).await {
+        if let Some(text) = text {
+            restore_queue(app, &[text]);
+        }
+    }
+}
+
+/// drops one queued message and nothing else.
+#[allow(clippy::future_not_send)]
+async fn drop_selected(client: &mut Client, app: &App, index: usize) {
+    if let Some((kind, local)) = app.tab().queue_position(index) {
+        let sid = app.tab().session.clone();
+        drop_queued(client, &sid, kind, local).await;
+    }
+}
+
+/// drops one queued message on the daemon. the `turn.queued` event it answers with is what
+/// updates the view, so nothing is removed here optimistically.
+async fn drop_queued(
+    client: &mut Client,
+    session_id: &str,
+    kind: app::QueuedKind,
+    index: usize,
+) -> bool {
+    rpc(
+        client,
+        "turn.queue_drop",
+        json!({"session_id": session_id, "queue": kind.wire(), "index": index}),
+    )
+    .await
+    .is_ok()
+}
+
 /// puts taken-back messages in front of whatever the operator is already typing.
 fn restore_queue(app: &mut App, texts: &[String]) {
     let restored = texts.join("\n\n");
@@ -702,7 +751,7 @@ fn restore_queue(app: &mut App, texts: &[String]) {
     };
     let tab = app.tab_mut();
     tab.set_input(&merged);
-    tab.status.queued = 0;
+    tab.queue_focus = None;
     tab.push(
         app::Role::System,
         format!("took back {} queued message(s)", texts.len()),

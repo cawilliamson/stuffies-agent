@@ -115,6 +115,7 @@ impl Dispatcher {
             "turn.steer" => self.turn_steer(&params),
             "turn.follow_up" => self.turn_follow_up(&params),
             "turn.dequeue" => self.turn_dequeue(&params),
+            "turn.queue_drop" => self.turn_queue_drop(&params),
             "turn.cancel" => self.turn_cancel(&params),
             "turn.status" => self.turn_status(&params),
             "turn.resume" => self.turn_resume(&params),
@@ -291,6 +292,21 @@ impl Dispatcher {
             .follow_up(&params.session_id, &params.prompt)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!({"disposition": "queued"}))
+    }
+
+    /// takes one queued message back out, for editing or discarding.
+    fn turn_queue_drop(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let queue = string_field(params, "queue")?;
+        let index = params
+            .get("index")
+            .and_then(Value::as_u64)
+            .map_or(0, |index| usize::try_from(index).unwrap_or(0));
+        let state = self
+            .manager
+            .drop_queued(&session_id, &queue, index)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!(state))
     }
 
     /// takes back everything queued so a client can restore it to the editor.

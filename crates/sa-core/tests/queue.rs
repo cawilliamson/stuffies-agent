@@ -156,7 +156,8 @@ async fn dequeue_hands_everything_back_and_empties_the_queue() {
     assert_eq!(taken.follow_up, vec!["two".to_owned()]);
 
     let again = manager.dequeue(&session_id).expect("dequeue");
-    assert!(again.steering.is_empty() && again.follow_up.is_empty());
+    assert_eq!(again.steering.len(), 0);
+    assert_eq!(again.follow_up.len(), 0);
 
     let queued = payloads(&manager, &session_id, kinds::TURN_QUEUED);
     let last = queued.last().expect("a queue event");
@@ -233,10 +234,71 @@ async fn a_steered_message_reaches_the_model_at_the_point_it_was_taken() {
         .expect("steer");
     let taken = manager.dequeue(&session_id).expect("dequeue");
     assert_eq!(taken.steering, vec!["actually, read main.rs".to_owned()]);
-    assert!(
-        payloads(&manager, &session_id, kinds::TURN_STEERED).is_empty(),
+    assert_eq!(
+        payloads(&manager, &session_id, kinds::TURN_STEERED).len(),
+        0,
         "taking a message back means it was never delivered"
     );
+
+    provider.release.notify_one();
+}
+
+#[tokio::test]
+async fn one_queued_message_can_be_dropped_by_index() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager.steer(&session_id, "keep").expect("steer");
+    manager.steer(&session_id, "drop me").expect("steer");
+
+    let state = manager
+        .drop_queued(&session_id, "steering", 1)
+        .expect("drop");
+    assert_eq!(state.steering, vec!["keep".to_owned()]);
+    assert_eq!(state.follow_up.len(), 0);
+
+    let queued = payloads(&manager, &session_id, kinds::TURN_QUEUED);
+    let last = queued.last().expect("a queue event");
+    assert_eq!(
+        last["steering"],
+        serde_json::json!(["keep"]),
+        "dropping one is recorded, so every client sees the same queue"
+    );
+
+    provider.release.notify_one();
+}
+
+#[tokio::test]
+async fn dropping_past_the_end_is_not_an_error() {
+    // the message may have been delivered between the client drawing the row and the key
+    // landing; the caller only wanted it gone.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    manager.steer(&session_id, "only").expect("steer");
+    let state = manager
+        .drop_queued(&session_id, "steering", 7)
+        .expect("drop");
+    assert_eq!(state.steering, vec!["only".to_owned()]);
+
+    provider.release.notify_one();
+}
+
+#[tokio::test]
+async fn an_unknown_queue_name_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+    start(&manager, &provider, &session_id).await;
+
+    assert!(manager.drop_queued(&session_id, "later", 0).is_err());
 
     provider.release.notify_one();
 }

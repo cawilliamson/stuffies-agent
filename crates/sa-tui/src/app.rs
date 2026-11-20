@@ -475,11 +475,46 @@ pub struct Status {
     /// estimated tokens in the model's view, and the window it has.
     pub context_tokens: u64,
     pub context_limit: u64,
-    /// how many messages the operator has queued for the running turn.
-    pub queued: usize,
     pub turn_running: bool,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+}
+
+/// a message waiting for the running turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queued {
+    pub kind: QueuedKind,
+    pub text: String,
+}
+
+/// which queue a message is in. the two are delivered at different points, so they are
+/// shown under their own headings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedKind {
+    /// delivered between model round-trips.
+    Steering,
+    /// delivered as the next turn.
+    FollowUp,
+}
+
+impl QueuedKind {
+    /// the name the daemon knows this queue by.
+    #[must_use]
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Steering => "steering",
+            Self::FollowUp => "follow_up",
+        }
+    }
+
+    /// the heading it is shown under.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Steering => "steering",
+            Self::FollowUp => "after this turn",
+        }
+    }
 }
 
 /// one session's view state.
@@ -503,6 +538,10 @@ pub struct Tab {
     /// a tool is executing right now. the model is not thinking, it is waiting, so the
     /// in-progress header is hidden.
     pub tool_running: bool,
+    /// messages the daemon is holding for the running turn, in delivery order.
+    pub queued: Vec<Queued>,
+    /// which queued message the operator is on, when the queue has focus.
+    pub queue_focus: Option<usize>,
     /// images queued for the next prompt.
     pub attachments: Vec<Attachment>,
     pub scroll: u16,
@@ -576,6 +615,8 @@ impl Tab {
             attachments: Vec::new(),
             scroll_touched: None,
             scroll: 0,
+            queued: Vec::new(),
+            queue_focus: None,
             max_scroll: 0,
             follow: true,
             tok_per_sec: 0.0,
@@ -644,6 +685,43 @@ impl Tab {
         self.editor = edtui::EditorState::new(edtui::Lines::from(text));
         self.editor.mode = edtui::EditorMode::Insert;
         self.touch();
+    }
+
+    /// takes the daemon's account of the queue as the view's own.
+    fn apply_queue(&mut self, payload: &Value) {
+        let mut queued = Vec::new();
+        for (kind, key) in [
+            (QueuedKind::Steering, "steering"),
+            (QueuedKind::FollowUp, "follow_up"),
+        ] {
+            for text in payload[key].as_array().into_iter().flatten() {
+                if let Some(text) = text.as_str() {
+                    queued.push(Queued {
+                        kind,
+                        text: text.to_owned(),
+                    });
+                }
+            }
+        }
+        self.queued = queued;
+        // the selection follows the list: a message that left takes the focus with it.
+        self.queue_focus = self
+            .queue_focus
+            .filter(|_| !self.queued.is_empty())
+            .map(|index| index.min(self.queued.len() - 1));
+    }
+
+    /// where a flat queue index sits within its own queue.
+    #[must_use]
+    pub fn queue_position(&self, index: usize) -> Option<(QueuedKind, usize)> {
+        let kind = self.queued.get(index)?.kind;
+        let local = self
+            .queued
+            .iter()
+            .take(index)
+            .filter(|queued| queued.kind == kind)
+            .count();
+        Some((kind, local))
     }
 
     /// steps back one edit. the history is the editor's.
@@ -1164,9 +1242,7 @@ impl Tab {
                 }
             }
             "turn.queued" => {
-                let steering = payload["steering"].as_array().map_or(0, Vec::len);
-                let follow_up = payload["follow_up"].as_array().map_or(0, Vec::len);
-                self.status.queued = steering + follow_up;
+                self.apply_queue(payload);
                 self.touch();
             }
             "turn.steered" => {
@@ -1425,6 +1501,12 @@ pub enum Action {
     FollowUp(String),
     /// take everything queued back into the editor.
     Dequeue,
+    /// put the queue under the operator's cursor.
+    QueueFocus,
+    /// take one queued message back into the editor.
+    QueueEdit(usize),
+    /// drop one queued message.
+    QueueDrop(usize),
     Cancel,
     Quit,
     Command(String),
@@ -1711,6 +1793,48 @@ impl App {
         self.pick_selected()
     }
 
+    /// keys while the queue has focus: move, edit, drop, take everything back.
+    fn on_queue_key(&mut self, key: KeyEvent) -> Action {
+        let tab = self.tab_mut();
+        let count = tab.queued.len();
+        match key.code {
+            KeyCode::Up => {
+                if let Some(index) = tab.queue_focus {
+                    tab.queue_focus = Some(index.saturating_sub(1));
+                }
+                tab.touch();
+                Action::None
+            }
+            KeyCode::Down => {
+                if let Some(index) = tab.queue_focus {
+                    tab.queue_focus = Some((index + 1).min(count.saturating_sub(1)));
+                }
+                tab.touch();
+                Action::None
+            }
+            KeyCode::Enter => tab.queue_focus.map_or(Action::None, Action::QueueEdit),
+            KeyCode::Delete | KeyCode::Backspace => {
+                tab.queue_focus.map_or(Action::None, Action::QueueDrop)
+            }
+            KeyCode::Char('a') => Action::Dequeue,
+            KeyCode::Esc => {
+                tab.queue_focus = None;
+                tab.touch();
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// puts the queue under the cursor, on its last message.
+    pub fn focus_queue(&mut self) {
+        let tab = self.tab_mut();
+        if !tab.queued.is_empty() {
+            tab.queue_focus = Some(tab.queued.len() - 1);
+            tab.touch();
+        }
+    }
+
     fn on_picker_key(&mut self, key: KeyEvent) -> Action {
         let count = self.picker.as_ref().map_or(0, |p| p.items.len());
         match key.code {
@@ -1774,6 +1898,9 @@ impl App {
         }
         if self.picker.is_some() {
             return self.on_picker_key(key);
+        }
+        if self.tab().queue_focus.is_some() {
+            return self.on_queue_key(key);
         }
 
         // the terminal reports the shift key on its own, so its state is known even when it
@@ -1864,7 +1991,7 @@ impl App {
             // alt+enter queues for after this turn; alt+up takes the queue back, as pi
             // binds them.
             KeyCode::Enter | KeyCode::Char('\r') if alt => self.tab_mut().follow_up(),
-            KeyCode::Up if alt => Action::Dequeue,
+            KeyCode::Up if alt => Action::QueueFocus,
             // shift+enter makes a new line; enter alone sends.
             // ctrl+j arrives as a bare newline and needs no terminal protocol, so it is the
             // newline that always works. shift+enter joins it.
