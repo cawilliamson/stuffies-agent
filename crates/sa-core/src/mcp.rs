@@ -8,13 +8,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rig_rmcp::rmcp::model::CallToolRequestParams;
-use rig_rmcp::rmcp::service::ServiceExt;
-use rig_rmcp::rmcp::transport::streamable_http_client::{
+use rig_rmcp::McpConnection;
+use rmcp::model::CallToolRequestParams;
+use rmcp::service::ServiceExt;
+use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
-use rig_rmcp::rmcp::transport::TokioChildProcess;
-use rig_rmcp::McpConnection;
+use rmcp::transport::TokioChildProcess;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -280,14 +280,14 @@ impl Hub {
 }
 
 /// the model sees the text blocks of a result; anything else is carried as json.
-fn render(result: &rig_rmcp::rmcp::model::CallToolResult) -> String {
+fn render(result: &rmcp::model::CallToolResult) -> String {
     let mut out = String::new();
     for block in &result.content {
         if !out.is_empty() {
             out.push('\n');
         }
         match block {
-            rig_rmcp::rmcp::model::ContentBlock::Text(text) => out.push_str(&text.text),
+            rmcp::model::ContentBlock::Text(text) => out.push_str(&text.text),
             other => out.push_str(&serde_json::to_string(other).unwrap_or_default()),
         }
     }

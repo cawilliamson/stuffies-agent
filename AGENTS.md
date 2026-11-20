@@ -22,3 +22,14 @@ and no shim exists to protect a decision that has not shipped.
   rather than maintain it.
 - **no legacy accommodation.** No dual code paths, no deprecated aliases, no migration
   shims. Change the thing and fix the call sites.
+
+## ordering
+
+Alphabetical, everywhere a collection is written down: tool specs, slash commands, help
+text, enum variants, match arms over a fixed set, config keys, imports, `SPEC.md` listings,
+test fixtures. If a list can be sorted without changing behaviour, it is sorted.
+
+The exceptions are the ones where order carries meaning, and they are narrow: a wire
+protocol that defines the sequence, a dependency's own required order, a ranking or a
+time series, and a list the reader is meant to follow step by step. "It reads better this
+way" is not one of them.
