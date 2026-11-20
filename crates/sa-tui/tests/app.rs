@@ -3093,6 +3093,30 @@ fn separate_reasoning_blocks_are_a_paragraph_apart() {
 }
 
 #[test]
+fn a_standalone_thinking_frame_is_italic() {
+    let mut app = App::new("s", "m");
+    app.tab_mut()
+        .push(Role::Thinking, "pondering the shape of it");
+
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let italic = (0..20).any(|y| {
+        let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+        row.contains("pondering")
+            && (0..100).any(|x| {
+                buffer[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::ITALIC)
+                    && !buffer[(x, y)].symbol().trim().is_empty()
+            })
+    });
+    assert!(italic, "reasoning is italic in its own frame too");
+}
+
+#[test]
 fn reasoning_is_italic_so_it_reads_as_aside_from_the_reply() {
     let mut app = App::new("s", "m");
     app.tab_mut().push(Role::Thinking, "weighing the options");

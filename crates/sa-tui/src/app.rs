@@ -2180,6 +2180,8 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     // only prose the model wrote is markdown. our own notices are laid out by us, and a
     // listing whose lines matter must not be folded into one paragraph.
     let markdown = !matches!(entry.role, Role::System | Role::Tool | Role::ToolOutput);
+    // reasoning reads as an aside wherever it appears, in its own frame or above a reply.
+    let italic = entry.role == Role::Thinking;
     body(
         &mut out,
         &entry_body(entry),
@@ -2187,7 +2189,7 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
         ink,
         markdown,
         edge,
-        false,
+        italic,
     );
     for thumb in &entry.images {
         body_image(&mut out, thumb, width, edge);
