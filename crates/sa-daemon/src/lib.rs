@@ -34,13 +34,9 @@ impl Config {
         let runtime_dir = socket::default_runtime_dir();
         // never a relative path: an unset XDG_STATE_HOME must not drop `.sa/` into the
         // daemon's cwd, which is usually a workspace (spec 6.1).
-        let state_dir = directories::BaseDirs::new()
-            .and_then(|dirs| dirs.state_dir().map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("stuffies-agent");
+        let state_dir = state_dir();
         let socket_path = std::env::var_os("SA_SOCKET")
             .map_or_else(|| runtime_dir.join(socket::SOCKET_FILE), PathBuf::from);
-        let state_dir = std::env::var_os("SA_STATE_DIR").map_or(state_dir, PathBuf::from);
         Self {
             db_path: state_dir.join("sa.db"),
             model: std::env::var("SA_MODEL").unwrap_or_default(),
@@ -74,6 +70,24 @@ impl Config {
             state_dir,
         }
     }
+}
+
+/// the daemon's state directory: the session store, the effort cache and the client log.
+///
+/// never a relative path: an unset `XDG_STATE_HOME` must not drop state into whatever
+/// directory the process was started in, which is usually a workspace (spec 6.1).
+/// `SA_STATE_DIR` overrides it, which is what lets a second daemon run beside the first.
+#[must_use]
+pub fn state_dir() -> PathBuf {
+    std::env::var_os("SA_STATE_DIR").map_or_else(
+        || {
+            directories::BaseDirs::new()
+                .and_then(|dirs| dirs.state_dir().map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("stuffies-agent")
+        },
+        PathBuf::from,
+    )
 }
 
 /// stable local identifier, never a hostname or address (spec 5.3).
