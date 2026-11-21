@@ -86,9 +86,19 @@ const fn wants_the_screen(command: Option<&Command>) -> bool {
 fn filter_for(level: &str, screen: bool) -> tracing_subscriber::EnvFilter {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
-    // the markdown renderer warns for every fenced block it cannot name, which is any
-    // fence written without a language: model output is full of them, they render fine,
-    // and there is nothing an operator could do about them.
+    quiet_markdown(filter, screen)
+}
+
+/// keeps the markdown renderer's unnamed-fence warning out of the log.
+///
+/// it warns for every fenced block it cannot name, which is any fence written without a
+/// language: model output is full of them, they render fine, and there is nothing an
+/// operator could do about them. only while the tui owns the screen, because everywhere
+/// else the crate keeps its voice.
+fn quiet_markdown(
+    filter: tracing_subscriber::EnvFilter,
+    screen: bool,
+) -> tracing_subscriber::EnvFilter {
     match (screen, "tui_markdown=error".parse()) {
         (true, Ok(directive)) => filter.add_directive(directive),
         _ => filter,
@@ -246,8 +256,13 @@ mod tests {
     fn the_tui_filter_silences_the_markdown_renderer() {
         // the renderer warns for every fenced block it cannot name, which is any fence
         // written without a language. it renders fine, and the warning is not actionable.
+        // built from a fixed level, so the ambient RUST_LOG of a build sandbox cannot
+        // change what this test is asserting.
         let quiet = tracing_subscriber::fmt()
-            .with_env_filter(filter_for("warn", true))
+            .with_env_filter(quiet_markdown(
+                tracing_subscriber::EnvFilter::new("warn"),
+                true,
+            ))
             .finish();
         tracing::subscriber::with_default(quiet, || {
             assert!(
@@ -258,7 +273,10 @@ mod tests {
 
         // everywhere else the crate keeps its voice.
         let loud = tracing_subscriber::fmt()
-            .with_env_filter(filter_for("warn", false))
+            .with_env_filter(quiet_markdown(
+                tracing_subscriber::EnvFilter::new("warn"),
+                false,
+            ))
             .finish();
         tracing::subscriber::with_default(loud, || {
             assert!(
