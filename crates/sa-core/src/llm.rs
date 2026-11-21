@@ -182,6 +182,9 @@ pub const EFFORT_CANDIDATES: [&str; 8] = [
 /// a value no server knows, used to see what "ignored" looks like.
 const EFFORT_SENTINEL: &str = "sa-probe-unknown-effort";
 
+/// how long a discovery request may take. it is a sentence-long call, not a turn.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// the context window an endpoint advertises for a model, under the shapes seen in the
 /// wild: openrouter nests it, others put it at the top level.
 #[must_use]
@@ -266,6 +269,9 @@ pub trait Provider: Send + Sync {
 /// types, and the `Delta` stream the agent records.
 pub struct OpenAiProvider {
     client: rig_core::providers::openai::OpenAI,
+    /// the same endpoint over plain http, for the two calls rig's typed client cannot make:
+    /// the raw model list and the effort probes. one client, so both share a pool.
+    http: reqwest::Client,
     endpoint: String,
     api_key: String,
 }
@@ -276,8 +282,13 @@ impl OpenAiProvider {
         let api_key = api_key.into();
         let mut config = rig_core::providers::openai::OpenAIConfig::new(api_key.clone());
         config.base_url = endpoint.trim_end_matches('/').to_owned();
+        let http = reqwest::Client::builder()
+            .timeout(PROBE_TIMEOUT)
+            .build()
+            .map_err(|err| LlmError::Http(err.to_string()))?;
         Ok(Self {
             client: config.client(),
+            http,
             endpoint,
             api_key,
         })
@@ -296,17 +307,27 @@ impl OpenAiProvider {
     /// unknown one is being ignored; one that behaves differently is real. this is the only
     /// way to learn them from a server that publishes no list.
     pub async fn discover_efforts(&self, model: &str) -> DiscoveredEfforts {
-        let Some(control) = self.probe_one(model, EFFORT_SENTINEL).await else {
+        use futures_util::future::join_all;
+
+        // every probe goes at once: one at a time costs nine round-trips before the
+        // operator can see the levels, and each is a sentence-long request.
+        let control = self.probe_one(model, EFFORT_SENTINEL);
+        let candidates = EFFORT_CANDIDATES
+            .iter()
+            .map(|candidate| self.probe_one(model, candidate));
+        let mut answered = join_all(std::iter::once(control).chain(candidates)).await;
+
+        let Some(control) = answered.remove(0) else {
             // the probe itself failed: say nothing rather than invent a list.
             return DiscoveredEfforts::default();
         };
-
-        let mut probed = Vec::new();
-        for candidate in EFFORT_CANDIDATES {
-            if let Some(profile) = self.probe_one(model, candidate).await {
-                probed.push((candidate.to_owned(), profile));
-            }
-        }
+        let probed = EFFORT_CANDIDATES
+            .iter()
+            .zip(answered)
+            .filter_map(|(candidate, profile)| {
+                profile.map(|profile| ((*candidate).to_owned(), profile))
+            })
+            .collect();
         group_efforts(control, probed)
     }
 
@@ -321,7 +342,8 @@ impl OpenAiProvider {
             "temperature": 0,
             "reasoning_effort": effort,
         });
-        let response = reqwest::Client::new()
+        let response = self
+            .http
             .post(format!("{}/chat/completions", self.endpoint))
             .bearer_auth(&self.api_key)
             .json(&body)
@@ -351,7 +373,8 @@ impl OpenAiProvider {
     /// drops whatever a given server chose to call them.
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
         let url = format!("{}/models", self.endpoint);
-        let response = reqwest::Client::new()
+        let response = self
+            .http
             .get(&url)
             .bearer_auth(&self.api_key)
             .send()
@@ -590,11 +613,14 @@ impl Provider for OpenAiProvider {
                     }
                 }
 
-                // usage and the stop reason come from the accumulated reply.
+                // usage and the stop reason come from the accumulated reply. the reason is
+                // rig's, so a turn cut by the output budget is recorded as `length` rather
+                // than as a clean stop.
                 let partial = stream.partial();
+                let has_calls = partial.tool_calls().next().is_some();
                 let _ = tx
                     .send(Delta::Done {
-                        stop_reason: "stop".to_owned(),
+                        stop_reason: stop_reason(partial.finish_reason(), has_calls),
                         prompt_tokens: partial.usage.input_tokens.unwrap_or_default(),
                         completion_tokens: partial.usage.output_tokens.unwrap_or_default(),
                     })
@@ -604,6 +630,24 @@ impl Provider for OpenAiProvider {
             Ok(rx)
         })
     }
+}
+
+/// rig's normalised finish reason, as the log records it. a provider that reported nothing
+/// still ended the reply, and a reply carrying calls stopped for them, so the fallback is
+/// the one thing that is certainly true.
+fn stop_reason(reason: Option<rig_core::completion::FinishReason>, has_calls: bool) -> String {
+    use rig_core::completion::FinishReason;
+
+    let named = match reason {
+        Some(FinishReason::Length) => "length",
+        Some(FinishReason::ContentFilter) => "content_filter",
+        Some(FinishReason::ToolCalls) => "tool_calls",
+        Some(FinishReason::Other(other)) => return other,
+        // a stop, an unstated reason, or one this build does not name.
+        _ if has_calls => "tool_calls",
+        _ => "stop",
+    };
+    named.to_owned()
 }
 
 /// stands in when no credentials are configured. the daemon still starts, so session

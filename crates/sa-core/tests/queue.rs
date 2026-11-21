@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use sa_core::llm::{ChatRequest, Delta, ModelsFuture, Provider, StreamFuture};
-use sa_core::manager::{Manager, ManagerConfig};
+use sa_core::manager::{Manager, ManagerConfig, NewTurn};
 use sa_core::store::Store;
 use sa_proto::session::kinds;
 use tokio::sync::{mpsc, Notify};
@@ -66,8 +66,6 @@ fn manager(dir: &std::path::Path, provider: &Arc<GatedProvider>) -> Arc<Manager>
             host_fingerprint: "test-host".to_owned(),
             provider: Arc::clone(provider) as Arc<dyn Provider>,
             max_tokens: None,
-            context_limit: None,
-            reasoning_effort: None,
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
@@ -99,7 +97,7 @@ fn payloads(manager: &Arc<Manager>, session_id: &str, kind: &str) -> Vec<serde_j
 
 async fn start(manager: &Arc<Manager>, provider: &Arc<GatedProvider>, session_id: &str) {
     manager
-        .start_turn(session_id, "do the thing", &[], false, None)
+        .start_turn(&NewTurn::new(session_id, "do the thing"))
         .expect("turn");
     // the turn is only live once the provider has been entered.
     provider.entered.notified().await;

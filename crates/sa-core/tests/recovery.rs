@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use sa_core::llm::{Delta, Provider, ScriptedProvider};
-use sa_core::manager::{Manager, ManagerConfig};
+use sa_core::manager::{Manager, ManagerConfig, NewTurn};
 use sa_core::store::Store;
 use sa_proto::session::SessionState;
 
@@ -17,8 +17,6 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
             host_fingerprint: "test-host".to_owned(),
             provider,
             max_tokens: None,
-            context_limit: None,
-            reasoning_effort: None,
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
@@ -64,7 +62,10 @@ async fn an_interrupted_session_can_take_a_new_turn() {
         .set_session_state(&session, SessionState::Interrupted)
         .expect("interrupt");
 
-    let started = manager.start_turn(&session, "keep going", &[], true, None);
+    let started = manager.start_turn(&NewTurn {
+        detach: true,
+        ..NewTurn::new(&session, "keep going")
+    });
     assert!(
         started.is_ok(),
         "an interrupted session must accept a turn: {:?}",
@@ -94,7 +95,10 @@ async fn a_relocated_session_still_refuses_a_turn() {
         .set_session_state(&session, SessionState::Relocated)
         .expect("relocate");
 
-    let started = manager.start_turn(&session, "nope", &[], true, None);
+    let started = manager.start_turn(&NewTurn {
+        detach: true,
+        ..NewTurn::new(&session, "nope")
+    });
     assert!(started.is_err(), "a relocated session is read-only");
 }
 
@@ -115,7 +119,11 @@ async fn attached_images_do_not_inflate_the_context_estimate() {
         name: Some("shot.png".to_owned()),
     };
     manager
-        .start_turn(&session, "look", &[image], true, None)
+        .start_turn(&NewTurn {
+            detach: true,
+            images: &[image],
+            ..NewTurn::new(&session, "look")
+        })
         .expect("start");
 
     let after = manager.estimate_tokens(&session);

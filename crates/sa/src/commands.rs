@@ -1,6 +1,5 @@
 //! the user-facing commands: run, attach, export, sessions (spec 14, v1.1).
 
-use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Write};
 
 use sa_client::Client;
@@ -10,7 +9,9 @@ type Result<T> = std::result::Result<T, String>;
 
 /// how much of a tool result is shown before it is elided.
 const TOOL_PREVIEW_LINES: usize = 8;
-const TOOL_PREVIEW_CHARS: usize = 1200;
+/// the most characters one previewed line may occupy, so a single long line cannot flood
+/// the terminal.
+const TOOL_PREVIEW_CHARS: usize = 160;
 
 fn socket() -> std::path::PathBuf {
     crate::cli::socket_path()
@@ -39,12 +40,11 @@ fn cwd() -> Result<String> {
 /// renders a session transcript for a terminal.
 #[derive(Default)]
 struct Renderer {
-    tool_names: HashMap<String, String>,
     show_reasoning: bool,
 }
 
 impl Renderer {
-    fn event(&mut self, kind: &str, payload: &Value) {
+    fn event(&self, kind: &str, payload: &Value) {
         match kind {
             "llm.delta" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
@@ -60,8 +60,8 @@ impl Renderer {
                     }
                 }
             }
-            "tool.requested" => self.tool_requested(payload),
-            "tool.completed" => self.tool_completed(payload),
+            "tool.requested" => Self::tool_requested(payload),
+            "tool.completed" => Self::tool_completed(payload),
             "tool.failed" => {
                 let error = payload
                     .get("error")
@@ -96,25 +96,20 @@ impl Renderer {
         }
     }
 
-    fn tool_requested(&mut self, payload: &Value) {
+    fn tool_requested(payload: &Value) {
         let tool = payload
             .get("tool")
             .and_then(Value::as_str)
             .unwrap_or("tool");
-        if let Some(call_id) = payload.get("call_id").and_then(Value::as_str) {
-            self.tool_names.insert(call_id.to_owned(), tool.to_owned());
-        }
         println!(
             "\n  \x1b[36m→ {tool}\x1b[0m {}",
             summarise_args(&payload["args"])
         );
     }
 
-    fn tool_completed(&self, payload: &Value) {
-        let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
-        let tool = self.tool_names.get(call_id).cloned().unwrap_or_default();
+    fn tool_completed(payload: &Value) {
         let output = payload.get("output").and_then(Value::as_str).unwrap_or("");
-        for line in preview(output, &tool) {
+        for line in preview(output) {
             println!("    {line}");
         }
         if payload.get("truncated").and_then(Value::as_bool) == Some(true) {
@@ -144,29 +139,20 @@ fn summarise_args(args: &Value) -> String {
 }
 
 /// the readable window of a tool result.
-fn preview(output: &str, tool: &str) -> Vec<String> {
+fn preview(output: &str) -> Vec<String> {
     if output.trim().is_empty() {
         return vec!["(no output)".to_owned()];
     }
     let mut lines: Vec<String> = output
         .lines()
         .take(TOOL_PREVIEW_LINES)
-        .map(|line| truncate_chars(line, 160))
+        .map(|line| truncate_chars(line, TOOL_PREVIEW_CHARS))
         .collect();
     let total = output.lines().count();
     if total > TOOL_PREVIEW_LINES {
         lines.push(format!(
             "\x1b[2m… {total} lines, showing {TOOL_PREVIEW_LINES}\x1b[0m"
         ));
-    }
-    if let Some(last) = lines.last_mut() {
-        if last.len() > TOOL_PREVIEW_CHARS {
-            *last = truncate_chars(last, TOOL_PREVIEW_CHARS);
-        }
-    }
-    if tool == "bash" {
-        // the exit code is the first line of a bash result and the most useful part.
-        return lines;
     }
     lines
 }
@@ -228,7 +214,7 @@ async fn session_for_cwd(client: &mut Client) -> Result<Option<String>> {
         .map(str::to_owned))
 }
 
-fn render_history(renderer: &mut Renderer, events: &[Value]) {
+fn render_history(renderer: &Renderer, events: &[Value]) {
     for event in events {
         let kind = event["kind"].as_str().unwrap_or_default();
         // history is replayed as a flat transcript, not a live stream.
@@ -390,7 +376,7 @@ pub async fn run_once_with(client: &mut Client, prompt: &str) -> Result<()> {
         .map_err(|e| format!("turn.start failed: {e}"))?;
     let turn_id = started["turn_id"].as_str().unwrap_or_default().to_owned();
 
-    let mut renderer = Renderer::default();
+    let renderer = Renderer::default();
     loop {
         let frame = client
             .next_notification()
@@ -425,7 +411,8 @@ enum Incoming {
 
 fn help() {
     println!(
-        "\x1b[2mcommands: /new /sessions /model <id> /cancel /reasoning /help /exit\n\
+        "\x1b[2mcommands: /cancel /cost /exit /help /model <id> /new /reasoning \
+         /sessions\n\
          ctrl-c cancels the running turn; at an idle prompt it exits.\x1b[0m"
     );
 }
@@ -464,7 +451,7 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
 
     let mut renderer = Renderer::default();
     if let Some(events) = attached["events"].as_array() {
-        render_history(&mut renderer, events);
+        render_history(&renderer, events);
     }
 
     client
@@ -589,7 +576,16 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
                     continue;
                 }
                 if turn_running {
-                    println!("\x1b[2m[busy: /cancel or ctrl-c to stop the turn]\x1b[0m");
+                    // a prompt sent while a turn runs redirects it rather than being
+                    // refused (spec 3.7): the operator is not made to wait.
+                    client
+                        .call(
+                            "turn.steer",
+                            json!({"session_id": session_id, "prompt": text}),
+                        )
+                        .await
+                        .map_err(|e| format!("turn.steer failed: {e}"))?;
+                    println!("\x1b[2m[steering the running turn]\x1b[0m");
                     continue;
                 }
                 client
@@ -635,13 +631,38 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
         }
     }
 
-    let _ = client
-        .call("session.detach", json!({"session_id": session_id}))
-        .await;
     Ok(())
 }
 
 // ---- export -------------------------------------------------------------
+
+/// how many events one replay page asks for.
+const REPLAY_PAGE: usize = 5000;
+
+/// every event of a session, page by page. a long session runs past any single replay
+/// limit, and exporting the first page of it is worse than not exporting it at all.
+async fn replay_all(client: &mut Client, session_id: &str, mut page: Value) -> Result<Vec<Value>> {
+    let mut events: Vec<Value> = Vec::new();
+    let mut from_seq = 0;
+    loop {
+        events.extend(page["events"].as_array().cloned().unwrap_or_default());
+        if page["more"].as_bool() != Some(true) {
+            return Ok(events);
+        }
+        let next = page["next_seq"].as_u64().unwrap_or(from_seq);
+        if next <= from_seq {
+            return Ok(events);
+        }
+        from_seq = next;
+        page = client
+            .call(
+                "events.replay",
+                json!({"session_id": session_id, "from_seq": from_seq, "limit": REPLAY_PAGE}),
+            )
+            .await
+            .map_err(|e| format!("replay failed: {e}"))?;
+    }
+}
 
 pub async fn export(session: Option<String>, format: &str) -> Result<()> {
     let mut client = connect().await?;
@@ -660,11 +681,11 @@ pub async fn export_with(client: &mut Client, session: Option<String>, format: &
     let replay = client
         .call(
             "events.replay",
-            json!({"session_id": session_id, "from_seq": 0, "limit": 5000}),
+            json!({"session_id": session_id, "from_seq": 0, "limit": REPLAY_PAGE}),
         )
         .await
         .map_err(|e| format!("replay failed: {e}"))?;
-    let events = replay["events"].as_array().cloned().unwrap_or_default();
+    let events = replay_all(client, &session_id, replay).await?;
 
     if format == "markdown" {
         println!("# session {session_id}\n");
@@ -761,6 +782,40 @@ mod tests {
         (Client::from_stream(ours), handle)
     }
 
+    /// as [`daemon`], but answers in the order it was given, so a method called twice can
+    /// be answered differently the second time.
+    fn daemon_ordered(
+        replies: Vec<(&'static str, Value)>,
+    ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
+        let (ours, theirs) = UnixStream::pair().expect("socketpair");
+        let handle = tokio::spawn(async move {
+            let (read, mut write) = theirs.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let mut seen = Vec::new();
+            let mut served = 0usize;
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(request) = serde_json::from_str::<Value>(&line) else {
+                    break;
+                };
+                seen.push(request.clone());
+                let result = replies
+                    .get(served)
+                    .map_or_else(|| json!({}), |(_, value)| value.clone());
+                served += 1;
+                let reply = json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
+                if write
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            seen
+        });
+        (Client::from_stream(ours), handle)
+    }
+
     #[test]
     fn tool_arguments_summarise_to_their_most_useful_field() {
         assert_eq!(
@@ -789,42 +844,37 @@ mod tests {
             .map(|n| format!("line {n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let shown = preview(&many, "bash");
+        let shown = preview(&many);
         assert_eq!(shown.len(), TOOL_PREVIEW_LINES + 1);
         assert!(shown.last().expect("tail").contains("20 lines"));
 
-        assert_eq!(preview("", "read"), vec!["(no output)".to_owned()]);
-        assert_eq!(preview("one line", "read"), vec!["one line".to_owned()]);
+        assert_eq!(preview(""), vec!["(no output)".to_owned()]);
+        assert_eq!(preview("one line"), vec!["one line".to_owned()]);
     }
 
     #[test]
-    fn the_renderer_tracks_tool_calls_and_takes_every_event_kind() {
-        let mut renderer = Renderer::default();
-        renderer.event(
-            "tool.requested",
-            &json!({"tool": "bash", "call_id": "c1", "args": {"command": "ls"}}),
-        );
-        assert_eq!(
-            renderer.tool_names.get("c1").map(String::as_str),
-            Some("bash")
-        );
-
+    fn the_renderer_takes_every_event_kind() {
+        let renderer = Renderer::default();
         // every kind must render without panicking, including one it does not know.
         for kind in [
+            "compaction.applied",
+            "llm.completed",
             "llm.delta",
             "llm.reasoning",
+            "not.a.kind",
             "tool.completed",
             "tool.failed",
+            "tool.requested",
             "turn.completed",
             "turn.interrupted",
-            "compaction.applied",
-            "not.a.kind",
         ] {
             renderer.event(
                 kind,
                 &json!({
                     "text": "x",
                     "call_id": "c1",
+                    "tool": "bash",
+                    "args": {"command": "ls"},
                     "output": "out",
                     "cause": "cause",
                     "usage": {"prompt_tokens": 1, "completion_tokens": 2},
@@ -835,12 +885,12 @@ mod tests {
 
     #[test]
     fn history_replay_skips_the_live_deltas() {
-        let mut renderer = Renderer::default();
+        let renderer = Renderer::default();
         let events = vec![
             json!({"kind": "llm.delta", "payload": {"text": "streamed"}}),
             json!({"kind": "turn.completed", "payload": {"usage": {}}}),
         ];
-        render_history(&mut renderer, &events);
+        render_history(&renderer, &events);
     }
 
     #[tokio::test]
@@ -961,6 +1011,46 @@ mod tests {
                 .expect("export by id");
         }
     }
+    #[tokio::test]
+    async fn an_export_reads_every_page_of_a_long_session() {
+        // the regression: export asked for one page of 5000 and ignored `more`, so a long
+        // session was exported truncated with nothing to say it had been.
+        let (mut client, server) = daemon_ordered(vec![
+            (
+                "events.replay",
+                json!({
+                    "events": [{"kind": "turn.started", "payload": {"prompt": "one"}}],
+                    "more": true,
+                    "next_seq": 1,
+                }),
+            ),
+            (
+                "events.replay",
+                json!({
+                    "events": [{"kind": "llm.completed", "payload": {"text": "two"}}],
+                    "more": false,
+                    "next_seq": 2,
+                }),
+            ),
+        ]);
+
+        export_with(&mut client, Some("s1".to_owned()), "jsonl")
+            .await
+            .expect("export");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let replays: Vec<&Value> = seen
+            .iter()
+            .filter(|request| request["method"] == "events.replay")
+            .collect();
+        assert_eq!(replays.len(), 2, "the second page must be fetched");
+        assert_eq!(
+            replays[1]["params"]["from_seq"], 1,
+            "the next page continues from where the last one stopped"
+        );
+    }
+
     #[tokio::test]
     async fn listing_mcp_servers_reports_their_state_and_tools() {
         let list = json!([

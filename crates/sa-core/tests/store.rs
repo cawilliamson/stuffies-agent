@@ -245,3 +245,30 @@ fn concurrent_appends_never_collide_on_seq() {
     expected.sort_unstable();
     assert_eq!(seqs, expected, "seq must be dense and unique");
 }
+
+#[test]
+fn a_replay_window_stops_at_the_seq_it_was_given() {
+    // spec 3.2: events.replay takes a to_seq, so a caller can read a bounded range rather
+    // than everything after a cursor.
+    let store = Store::open_in_memory().expect("store");
+    session(&store, "s1");
+    for n in 0..6 {
+        store
+            .append_event("s1", "llm.delta", &json!({"text": format!("d{n}")}))
+            .expect("append");
+    }
+
+    let (events, more) = store
+        .events_between("s1", 1, Some(4), 100)
+        .expect("replay window");
+    let seqs: Vec<u64> = events.iter().map(|event| event.seq).collect();
+    assert_eq!(seqs, [2, 3, 4], "the window is inclusive of to_seq");
+    assert!(!more);
+
+    // a window smaller than the range still reports there is more of it.
+    let (events, more) = store
+        .events_between("s1", 1, Some(4), 2)
+        .expect("replay window");
+    assert_eq!(events.len(), 2);
+    assert!(more, "a cut window says so");
+}

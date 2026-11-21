@@ -457,6 +457,16 @@ fn git_env(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// a checkpoint's temporary git index, removed however the checkpoint ends: a git command
+/// that fails must not leave the index behind in the temp directory.
+struct TempIndex(PathBuf);
+
+impl Drop for TempIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// creates a checkpoint for an unattended turn.
 pub fn checkpoint(
     workspace: &Path,
@@ -469,15 +479,22 @@ pub fn checkpoint(
 
     // unique per call: two sessions can share a session id prefix across repositories,
     // and tests run in parallel.
-    let index = std::env::temp_dir().join(format!(
+    let index = TempIndex(std::env::temp_dir().join(format!(
         "sa-index-{session_id}-{seq}-{}",
         uuid::Uuid::new_v4()
-    ));
-    let _ = std::fs::remove_file(&index);
+    )));
+    let _ = std::fs::remove_file(&index.0);
 
-    git_env(workspace, &["add", "-A"], Some(("GIT_INDEX_FILE", &index)))?;
-    let tree = git_env(workspace, &["write-tree"], Some(("GIT_INDEX_FILE", &index)))?;
-    let _ = std::fs::remove_file(&index);
+    git_env(
+        workspace,
+        &["add", "-A"],
+        Some(("GIT_INDEX_FILE", &index.0)),
+    )?;
+    let tree = git_env(
+        workspace,
+        &["write-tree"],
+        Some(("GIT_INDEX_FILE", &index.0)),
+    )?;
 
     let message = format!("sa checkpoint {session_id} {seq}");
     let commit = git(
@@ -503,8 +520,16 @@ pub fn prune_checkpoints(
 ) -> Result<(), WorkspaceError> {
     let prefix = format!("refs/sa/checkpoints/{session_id}/");
     let raw = git(workspace, &["for-each-ref", "--format=%(refname)", &prefix])?;
-    let mut refs: Vec<&str> = raw.lines().filter(|l| !l.is_empty()).collect();
-    refs.sort_unstable();
+    // the ref ends in the session's seq, so it is ordered as a number: a lexicographic
+    // sort puts `/10` before `/9` and prunes the newest checkpoint instead of the oldest.
+    let seq_of = |reference: &str| {
+        reference
+            .rsplit('/')
+            .next()
+            .and_then(|seq| seq.parse::<u64>().ok())
+    };
+    let mut refs: Vec<&str> = raw.lines().filter(|line| !line.is_empty()).collect();
+    refs.sort_by_key(|reference| seq_of(reference).unwrap_or_default());
     if refs.len() <= keep {
         return Ok(());
     }
@@ -583,6 +608,37 @@ mod tests {
         )
         .expect("refs");
         assert_eq!(refs.lines().count(), 2, "{refs}");
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest_checkpoints_past_ten() {
+        // the regression: the refs were sorted as text, so `/10` sorted before `/9` and the
+        // newest checkpoint was the first thing pruned.
+        let dir = repo();
+        for seq in 1..=11 {
+            checkpoint(dir.path(), "s1", seq).expect("checkpoint");
+        }
+        prune_checkpoints(dir.path(), "s1", 3).expect("prune");
+        let refs = git(
+            dir.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/sa/checkpoints/s1/",
+            ],
+        )
+        .expect("refs");
+        let mut kept: Vec<&str> = refs.lines().collect();
+        kept.sort_unstable();
+        assert_eq!(
+            kept,
+            [
+                "refs/sa/checkpoints/s1/10",
+                "refs/sa/checkpoints/s1/11",
+                "refs/sa/checkpoints/s1/9"
+            ],
+            "the three most recent checkpoints survive"
+        );
     }
 
     #[test]

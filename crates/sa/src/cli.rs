@@ -20,8 +20,35 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// attach to a session interactively
+    Attach {
+        /// session id; defaults to the most recent session
+        #[arg(long)]
+        session: Option<String>,
+        /// start a fresh session instead of resuming one
+        #[arg(long)]
+        new: bool,
+        /// plain line mode even when stdout is a terminal
+        #[arg(long)]
+        line: bool,
+    },
+    /// show the context and skills that would be injected for a directory
+    Context {
+        /// directory to inspect; defaults to the current one
+        #[arg(long)]
+        dir: Option<String>,
+    },
     /// run the daemon in the foreground
     Daemon,
+    /// dump a session as jsonl or markdown
+    Export {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "markdown")]
+        format: String,
+    },
+    /// list the configured mcp servers, their tools and their state
+    Mcp,
     /// handshake and ping the daemon
     Ping,
     /// relay the daemon socket over stdin/stdout (spec 4.2)
@@ -36,35 +63,8 @@ pub enum Command {
         #[arg(short = 'p', long)]
         prompt: String,
     },
-    /// attach to a session interactively
-    Attach {
-        /// session id; defaults to the most recent session
-        #[arg(long)]
-        session: Option<String>,
-        /// start a fresh session instead of resuming one
-        #[arg(long)]
-        new: bool,
-        /// plain line mode even when stdout is a terminal
-        #[arg(long)]
-        line: bool,
-    },
     /// list sessions
     Sessions,
-    /// list the configured mcp servers, their tools and their state
-    Mcp,
-    /// show the context and skills that would be injected for a directory
-    Context {
-        /// directory to inspect; defaults to the current one
-        #[arg(long)]
-        dir: Option<String>,
-    },
-    /// dump a session as jsonl or markdown
-    Export {
-        #[arg(long)]
-        session: Option<String>,
-        #[arg(long, default_value = "markdown")]
-        format: String,
-    },
 }
 
 /// the daemon socket. `SA_SOCKET` overrides the default so several daemons can coexist.

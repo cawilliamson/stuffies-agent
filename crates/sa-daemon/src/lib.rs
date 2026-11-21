@@ -268,12 +268,6 @@ pub async fn run(
             max_tokens: std::env::var("SA_MAX_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok()),
-            // both are explicit operator overrides for endpoints that say nothing; the
-            // endpoint's own figures win when it advertises them.
-            context_limit: std::env::var("SA_CONTEXT_LIMIT")
-                .ok()
-                .and_then(|v| v.parse().ok()),
-            reasoning_effort: std::env::var("SA_REASONING_EFFORT").ok(),
             models,
             mcp,
             lock_dir: cfg.runtime_dir.join("locks"),

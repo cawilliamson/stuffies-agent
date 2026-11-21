@@ -99,37 +99,39 @@ impl Dispatcher {
         }
 
         let params = req.params.unwrap_or(Value::Null);
+        // alphabetical: this is the protocol surface, and the only way to see whether a
+        // method is handled is to read it as a list.
         match req.method.as_str() {
-            "hello" => Self::hello(conn, Some(params)),
-            "ping" => self.ping(),
-            "session.create" => self.session_create(conn, &params),
-            "session.list" => self.session_list(&params),
-            "session.attach" => self.session_attach(&params),
-            "session.rename" => self.session_rename(&params),
-            "session.cwd" => self.session_cwd(&params),
-            "session.delete" => self.session_delete(&params),
-            "session.restore" => self.session_restore(&params),
-            "session.usage" => self.session_usage(&params),
-            "session.fork" => Self::session_fork(&params),
-            "turn.start" => self.turn_start(conn, &params),
-            "turn.steer" => self.turn_steer(&params),
-            "turn.follow_up" => self.turn_follow_up(&params),
-            "turn.dequeue" => self.turn_dequeue(&params),
-            "turn.queue_drop" => self.turn_queue_drop(&params),
-            "turn.cancel" => self.turn_cancel(&params),
-            "turn.status" => self.turn_status(&params),
-            "turn.resume" => self.turn_resume(&params),
             "events.replay" => self.events_replay(&params),
             "events.subscribe" => self.events_subscribe(conn, &params),
             "events.unsubscribe" => self.events_unsubscribe(&params),
-            "model.list" => self.model_list(),
-            "mcp.list" => self.mcp_list(),
-            "model.select" => self.model_select(&params),
-            "model.effort" => self.model_effort(&params),
-            "handoff.export" | "handoff.import" | "handoff.accept" => Err(RpcError::new(
+            "handoff.accept" | "handoff.export" | "handoff.import" => Err(RpcError::new(
                 code::NOT_IMPLEMENTED,
                 "handoff arrives at v4.0",
             )),
+            "hello" => Self::hello(conn, Some(params)),
+            "mcp.list" => self.mcp_list(),
+            "model.effort" => self.model_effort(&params),
+            "model.list" => self.model_list(),
+            "model.select" => self.model_select(&params),
+            "ping" => self.ping(),
+            "session.attach" => self.session_attach(&params),
+            "session.create" => self.session_create(conn, &params),
+            "session.cwd" => self.session_cwd(&params),
+            "session.delete" => self.session_delete(&params),
+            "session.fork" => Self::session_fork(&params),
+            "session.list" => self.session_list(&params),
+            "session.rename" => self.session_rename(&params),
+            "session.restore" => self.session_restore(&params),
+            "session.usage" => self.session_usage(&params),
+            "turn.cancel" => self.turn_cancel(&params),
+            "turn.dequeue" => self.turn_dequeue(&params),
+            "turn.follow_up" => self.turn_follow_up(&params),
+            "turn.queue_drop" => self.turn_queue_drop(&params),
+            "turn.resume" => self.turn_resume(&params),
+            "turn.start" => self.turn_start(conn, &params),
+            "turn.status" => self.turn_status(&params),
+            "turn.steer" => self.turn_steer(&params),
             other => Err(RpcError::method_not_found(other)),
         }
     }
@@ -266,13 +268,14 @@ impl Dispatcher {
         let params: TurnStartParams = parse(params)?;
         let result = self
             .manager
-            .start_turn(
-                &params.session_id,
-                &params.prompt,
-                &params.images,
-                params.detach,
-                Some(conn.client()),
-            )
+            .start_turn(&crate::manager::NewTurn {
+                session_id: &params.session_id,
+                prompt: &params.prompt,
+                images: &params.images,
+                detach: params.detach,
+                client: Some(conn.client()),
+                resumed_from: None,
+            })
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!(result))
     }
@@ -346,7 +349,7 @@ impl Dispatcher {
         let limit = params.limit.unwrap_or(500).clamp(1, 5000);
         let result = self
             .manager
-            .replay(&params.session_id, params.from_seq, limit)
+            .replay(&params.session_id, params.from_seq, params.to_seq, limit)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!(result))
     }
@@ -424,11 +427,8 @@ impl Dispatcher {
         let effort = string_field(params, "effort")?;
         let model = self
             .manager
-            .store()
-            .get_session(&session_id)
-            .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?
-            .and_then(|row| row.model)
-            .unwrap_or_default();
+            .session_model(&session_id)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
         let levels = self.manager.effort_levels(&model);
         // an endpoint that advertises nothing cannot be second-guessed, so anything goes;
         // one that does advertises is obeyed.
@@ -447,11 +447,26 @@ impl Dispatcher {
     fn model_select(&self, params: &Value) -> Result<Value, RpcError> {
         let session_id = string_field(params, "session_id")?;
         let model = string_field(params, "model")?;
+        // a model the endpoint does not serve is a typo, not a wish: say so rather than
+        // storing a name no turn can use.
+        let served = self.manager.models();
+        if !served.is_empty() && !served.iter().any(|known| known.id == model) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!(
+                    "{model} is not served; the endpoint offers {}",
+                    served
+                        .iter()
+                        .map(|known| known.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
         self.manager
-            .store()
-            .set_session_model(&session_id, &model)
-            .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
-        Ok(json!({}))
+            .set_model(&session_id, &model)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!({"model": model}))
     }
 }
 

@@ -113,14 +113,14 @@ pub const fn busy_frame(spinner: usize) -> &'static str {
     BUSY_FRAMES[spinner % BUSY_FRAMES.len()]
 }
 
-/// shortens a tab label while keeping its trailing `(session)` marker intact, then cuts it
-/// hard so the result never exceeds the budget.
+/// shortens a tab label while keeping its trailing `[n]` marker intact, then cuts it hard
+/// so the result never exceeds the budget.
 fn fit_label(label: &str, max: usize) -> String {
     if label.chars().count() <= max {
         return label.to_owned();
     }
     let tail = label
-        .rfind('(')
+        .rfind('[')
         .map(|at| label[at..].to_owned())
         .unwrap_or_default();
     let room = max.saturating_sub(tail.chars().count() + 1);
@@ -140,19 +140,33 @@ fn fit_label(label: &str, max: usize) -> String {
 /// the widest a single tab label may be, before it is cut to keep its id marker.
 const TAB_LABEL_MAX: usize = 28;
 
-/// one tab's text: the busy spinner, its position, and its title.
-fn tab_text(app: &App, index: usize, cap: usize) -> String {
+/// the cells a tab spends before its name: the busy spinner while it runs, then the number
+/// that says which tab it is.
+fn tab_prefix(app: &App, index: usize) -> String {
     let tab = &app.tabs[index];
     let mark = if tab.status.turn_running {
         format!("{} ", busy_frame(app.spinner))
     } else {
         String::new()
     };
+    format!("{mark}{} ", index + 1)
+}
+
+/// how many cells a tab's name may occupy once the cap and that tab's own prefix are taken
+/// off. the marquee measures against the same number, or a name would scroll that fits.
+#[must_use]
+pub fn tab_name_room(app: &App, index: usize, cap: usize) -> usize {
+    cap.saturating_sub(tab_prefix(app, index).chars().count())
+}
+
+/// one tab's text: the busy spinner, its position, and its name.
+fn tab_text(app: &App, index: usize, cap: usize) -> String {
+    let prefix = tab_prefix(app, index);
     // the tab is named by its directory. a name too long for the strip scrolls while it is
     // the one being looked at, so the whole of it can be read.
-    let room = cap.saturating_sub(mark.chars().count());
+    let room = cap.saturating_sub(prefix.chars().count());
     let name = app.tab_name(index, room, app.marquee).unwrap_or_default();
-    fit_label(&format!("{mark}{name}"), cap)
+    fit_label(&format!("{prefix}{name}"), cap)
 }
 
 /// how wide a label may be, so the active tab always fits beside its markers. the marquee

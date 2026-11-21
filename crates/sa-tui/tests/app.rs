@@ -1871,8 +1871,8 @@ fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
     app.switch_tab(0);
     let row = strip(&mut app, 80);
     assert!(
-        row.starts_with(" tab1"),
-        "the strip must start on the first tab:\n[{row}]"
+        row.starts_with(" 1 tab1"),
+        "the strip must start on the first tab, numbered, at the left edge:\n[{row}]"
     );
 }
 
@@ -3746,4 +3746,54 @@ fn the_pointer_tells_the_strip_which_tab_it_is_over() {
         mouse(crossterm::event::MouseEventKind::Moved, 10, 12),
     );
     assert_eq!(app.hovered_tab, None);
+}
+
+#[test]
+fn a_shortened_tab_name_keeps_the_number_that_tells_two_apart() {
+    // the regression: the marker was looked for as `(session)`, which tab names stopped
+    // using when they became directory names, so shortening a name cut the `[n]` off and
+    // two tabs in one directory drew identically.
+    let long = "/home/chrisaw/a-very-long-directory-name-that-cannot-fit";
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = long.to_owned();
+    app.add_tab("session-second", "m");
+    app.tab_mut().cwd = long.to_owned();
+
+    // wide enough for both tabs, narrow enough that neither name fits whole.
+    let strip = sa_tui::ui::tab_bar(&app, 80)
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert!(
+        strip.contains("[1]") && strip.contains("[2]"),
+        "the number that tells the two apart must survive: {strip:?}"
+    );
+}
+
+#[test]
+fn every_tab_carries_its_number_before_its_name() {
+    // the number says which tab a key or a click will land on, so it belongs in front of
+    // the name rather than after it.
+    let mut app = App::new("s0000001", "m");
+    app.tab_mut().cwd = "/tmp/first".to_owned();
+    app.add_tab("s0000002", "m");
+    app.tab_mut().cwd = "/tmp/second".to_owned();
+
+    let row = strip(&mut app, 80);
+    assert!(
+        row.contains("1 first"),
+        "the first tab is numbered:\n[{row}]"
+    );
+    assert!(row.contains("2 second"), "the second is too:\n[{row}]");
+
+    // the number follows the tab, not its position on screen: a strip scrolled to the end
+    // still numbers the tab by where it sits in the strip.
+    let mut many = many_tabs();
+    many.switch_tab(29);
+    let row = strip(&mut many, 80);
+    assert!(
+        row.contains("30 tab30"),
+        "the thirtieth tab keeps its own number:\n[{row}]"
+    );
 }

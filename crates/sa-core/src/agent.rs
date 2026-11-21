@@ -229,7 +229,17 @@ impl Agent {
                             )?;
                         }
                         done = true;
-                        if stop_reason != "tool_calls" && tool_calls.is_empty() {
+                        // a round that asked for calls stopped for them whatever the
+                        // endpoint called it, and the transcript rebuild reads that back.
+                        let stop_reason = if tool_calls.is_empty() {
+                            stop_reason
+                        } else {
+                            "tool_calls".to_owned()
+                        };
+                        // no calls means nothing left to answer: the turn is over. a
+                        // round that asked for calls but produced none would otherwise
+                        // repeat forever.
+                        if tool_calls.is_empty() {
                             self.sink.append(
                                 kinds::LLM_COMPLETED,
                                 &json!({
@@ -346,6 +356,10 @@ impl Agent {
         // the whole conversation, tool calls and results included. dropping them made every
         // turn start from prose alone, so the model re-read the workspace and drifted from
         // what it had already done.
+        //
+        // one round of calls at a time: each round announces its own calls before their
+        // results, because a result whose call was never announced is an orphan, and rig
+        // drops it on the way to the wire.
         let mut asked: Vec<ToolCall> = Vec::new();
         let mut asked_text = String::new();
         let mut announced = false;
@@ -368,9 +382,11 @@ impl Agent {
                     let calls_tools = event.payload.get("stop_reason").and_then(Value::as_str)
                         == Some("tool_calls");
                     if calls_tools {
-                        // the turn that asked for the calls is emitted with them, once the
-                        // first result arrives, so a call is never left unpaired.
+                        // a new round: the calls that follow are its own, and its turn is
+                        // emitted with them once the first result arrives.
+                        asked.clear();
                         asked_text = text.unwrap_or_default().to_owned();
+                        announced = false;
                     } else if let Some(text) = text {
                         if !text.is_empty() {
                             messages.push(message::assistant(text));

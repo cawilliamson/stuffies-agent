@@ -3,6 +3,7 @@
 //! tools run without asking. the only guard is that a path must resolve inside the
 //! workspace.
 
+use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -17,6 +18,12 @@ pub const MAX_TOOL_OUTPUT: usize = 256 * 1024;
 
 /// default command timeout (spec 9).
 pub const COMMAND_TIMEOUT_SECS: u64 = 600;
+
+/// how many files a search walks before it gives up.
+pub const MAX_WALKED: usize = 5000;
+
+/// how many matches a search returns.
+pub const MAX_MATCHES: usize = 500;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -34,6 +41,9 @@ pub struct ToolRegistry {
     workspace: PathBuf,
     /// the mcp servers this daemon reached, if any. their tools are the model's too.
     mcp: Option<std::sync::Arc<crate::mcp::Hub>>,
+    /// the structural lens for this session, when one is wired in: the read-before-edit
+    /// guard and the workspace's own rules.
+    lens: Option<std::sync::Arc<crate::lens::Lens>>,
 }
 
 impl ToolRegistry {
@@ -42,6 +52,7 @@ impl ToolRegistry {
         Self {
             workspace,
             mcp: None,
+            lens: None,
         }
     }
 
@@ -51,6 +62,22 @@ impl ToolRegistry {
         Self {
             workspace,
             mcp: Some(mcp),
+            lens: None,
+        }
+    }
+
+    /// a registry with the session's lens: the guard that refuses a blind edit, and the
+    /// structural check a written file is run through.
+    #[must_use]
+    pub const fn with_lens(
+        workspace: PathBuf,
+        mcp: std::sync::Arc<crate::mcp::Hub>,
+        lens: std::sync::Arc<crate::lens::Lens>,
+    ) -> Self {
+        Self {
+            workspace,
+            mcp: Some(mcp),
+            lens: Some(lens),
         }
     }
 
@@ -84,6 +111,7 @@ impl ToolRegistry {
             "edit" => self.edit(&args).await.map(text),
             "find" => self.find(&args).await.map(text),
             "grep" => self.grep(&args).await.map(text),
+            "outline" => self.outline(&args).await.map(text),
             "read" => self.read(&args).await.map(text),
             "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
             "web_search" => {
@@ -99,18 +127,85 @@ impl ToolRegistry {
 
     async fn read(&self, args: &Value) -> Result<String, ToolError> {
         let path = self.resolve(required(args, "path")?)?;
-        Ok(tokio::fs::read_to_string(path).await?)
+        let body = tokio::fs::read_to_string(&path).await?;
+        // a read is what licenses an edit, so it is recorded here rather than at the call
+        // site that happened to read.
+        if let Some(lens) = &self.lens {
+            lens.guard.record(&path);
+        }
+        Ok(body)
+    }
+
+    /// the declarations a file makes, so the model reads a range instead of a whole file.
+    async fn outline(&self, args: &Value) -> Result<String, ToolError> {
+        let raw = required(args, "path")?;
+        let path = self.resolve(raw)?;
+        let body = tokio::fs::read_to_string(&path).await?;
+        if let Some(lens) = &self.lens {
+            lens.guard.record(&path);
+        }
+        let symbols = crate::lens::outline(&path, &body);
+        if symbols.is_empty() {
+            return Ok(format!(
+                "{raw}: no declarations ({})",
+                crate::lens::language_of(&path).unwrap_or_else(|| "unparsed".to_owned())
+            ));
+        }
+        let mut out = format!("{raw}: {} declaration(s)\n", symbols.len());
+        for symbol in symbols {
+            let _ = writeln!(
+                out,
+                "{}{} {}-{} {} ({})",
+                "  ".repeat(symbol.depth),
+                symbol.kind,
+                symbol.start,
+                symbol.end,
+                symbol.name,
+                symbol.end - symbol.start + 1
+            );
+        }
+        Ok(out)
+    }
+
+    /// refuses an edit to a file the model has not read, and checks what it wrote.
+    fn guard_edit(&self, path: &Path, raw: &str) -> Result<(), ToolError> {
+        let Some(lens) = &self.lens else {
+            return Ok(());
+        };
+        if lens.guard.may_edit(path) {
+            return Ok(());
+        }
+        Err(ToolError::Args(format!(
+            "{raw} has not been read in this session; read it first so the edit is made to \
+             the text that is really there"
+        )))
+    }
+
+    /// runs the workspace's rules over a file that was just written, and appends what they
+    /// found to the tool's own result.
+    fn check(&self, path: &Path, raw: &str, body: &str) -> String {
+        let Some(lens) = &self.lens else {
+            return String::new();
+        };
+        let findings = lens.rules.scan(path, body);
+        lens.rules.report(raw, &findings)
     }
 
     async fn write(&self, args: &Value) -> Result<String, ToolError> {
         let raw = required(args, "path")?;
         let path = self.resolve(raw)?;
+        self.guard_edit(&path, raw)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         let body = required(args, "content")?;
         tokio::fs::write(&path, body).await?;
-        Ok(format!("wrote {} bytes to {raw}", body.len()))
+        // what was written is what the model has now seen, so the next edit needs no read.
+        if let Some(lens) = &self.lens {
+            lens.guard.record(&path);
+        }
+        let report = self.check(&path, raw, body);
+        Ok(format!("wrote {} bytes to {raw}{report}", body.len()))
     }
 
     async fn edit(&self, args: &Value) -> Result<String, ToolError> {
@@ -118,6 +213,8 @@ impl ToolRegistry {
         let path = self.resolve(raw)?;
         let old = required(args, "old")?;
         let new = required(args, "new")?;
+        // an edit is made to text the model has seen, or it is made to a guess.
+        self.guard_edit(&path, raw)?;
         let body = tokio::fs::read_to_string(&path).await?;
         let count = body.matches(old).count();
         if count != 1 {
@@ -125,8 +222,13 @@ impl ToolRegistry {
                 "{raw}: expected exactly one match, found {count}"
             )));
         }
-        tokio::fs::write(&path, body.replacen(old, new, 1)).await?;
-        Ok(format!("edited {raw}"))
+        let edited = body.replacen(old, new, 1);
+        tokio::fs::write(&path, &edited).await?;
+        if let Some(lens) = &self.lens {
+            lens.guard.record(&path);
+        }
+        let report = self.check(&path, raw, &edited);
+        Ok(format!("edited {raw}{report}"))
     }
 
     async fn find(&self, args: &Value) -> Result<String, ToolError> {
@@ -134,12 +236,8 @@ impl ToolRegistry {
         let root = self.workspace.clone();
         let matches = tokio::task::spawn_blocking(move || {
             let mut out = Vec::new();
-            for entry in walkdir::WalkDir::new(&root)
-                .into_iter()
-                .filter_map(Result::ok)
-                .take(5000)
-            {
-                if !entry.file_type().is_file() {
+            for entry in walk(&root).filter_map(Result::ok).take(MAX_WALKED) {
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                     continue;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -151,6 +249,9 @@ impl ToolRegistry {
                             .display()
                             .to_string(),
                     );
+                    if out.len() >= MAX_MATCHES {
+                        break;
+                    }
                 }
             }
             out.sort();
@@ -168,12 +269,8 @@ impl ToolRegistry {
         let root = self.workspace.clone();
         let hits = tokio::task::spawn_blocking(move || {
             let mut out = Vec::new();
-            for entry in walkdir::WalkDir::new(&root)
-                .into_iter()
-                .filter_map(Result::ok)
-                .take(5000)
-            {
-                if !entry.file_type().is_file() {
+            for entry in walk(&root).filter_map(Result::ok).take(MAX_WALKED) {
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                     continue;
                 }
                 let Ok(body) = std::fs::read_to_string(entry.path()) else {
@@ -188,7 +285,7 @@ impl ToolRegistry {
                             .display()
                             .to_string();
                         out.push(format!("{shown}:{}:{}", number + 1, line.trim_end()));
-                        if out.len() >= 500 {
+                        if out.len() >= MAX_MATCHES {
                             return out;
                         }
                     }
@@ -256,22 +353,34 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "edit",
-                "Replace exactly one occurrence of `old` with `new`. Fails unless `old` appears exactly once, so include enough surrounding context to be unique.",
+                "Replace exactly one occurrence of `old` with `new`. Fails unless `old` appears exactly once, so include enough surrounding context to be unique. The file must have been read in this session first.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["path", "old", "new"]}),
             ),
             spec(
                 "find",
-                "Find files whose name contains the pattern. Returns up to 5000 paths.",
+                &format!(
+                    "Find files whose name contains the pattern. Walks at most {MAX_WALKED} \
+                     entries and returns at most {MAX_MATCHES} paths."
+                ),
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
             ),
             spec(
                 "grep",
-                "Search file contents with a regular expression. Returns up to 5000 matches.",
+                &format!(
+                    "Search file contents with a regular expression. Walks at most {MAX_WALKED} \
+                     files and returns at most {MAX_MATCHES} matches."
+                ),
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
             ),
             spec(
+                "outline",
+                "List the declarations a file makes, with the line range of each. Read a range \
+                 instead of the whole file.",
+                json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+            ),
+            spec(
                 "read",
-                "Read a file as text.",
+                "Read a file as text. Reading a file is what allows it to be edited.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
             ),
             spec(
@@ -288,7 +397,8 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "write",
-                "Write a file, creating it or replacing its contents entirely.",
+                "Write a file, creating it or replacing its contents entirely. An existing file \
+                 must have been read in this session first.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
             ),
         ];
@@ -318,6 +428,18 @@ fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
         description: description.to_owned(),
         parameters,
     }
+}
+
+/// the files a search walks.
+///
+/// the project's own ignore files decide what is searched, so a coding agent sees the
+/// files the developer sees rather than the build output. a dotfile is still source —
+/// `.github/workflows/ci.yml` is searched — but the git directory itself never is.
+fn walk(root: &Path) -> ignore::Walk {
+    ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
 }
 
 fn parse_args(raw: &str) -> Result<Value, ToolError> {

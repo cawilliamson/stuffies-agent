@@ -216,10 +216,13 @@ impl Store {
 
     pub fn set_session_effort(&self, id: &str, effort: &str) -> Result<(), StoreError> {
         let conn = self.conn()?;
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE sessions SET effort = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, effort, now_seconds()],
         )?;
+        if changed == 0 {
+            return Err(StoreError::SessionNotFound(id.to_owned()));
+        }
         Ok(())
     }
 
@@ -237,10 +240,13 @@ impl Store {
 
     pub fn set_session_model(&self, id: &str, model: &str) -> Result<(), StoreError> {
         let conn = self.conn()?;
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE sessions SET model = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, model, now_seconds()],
         )?;
+        if changed == 0 {
+            return Err(StoreError::SessionNotFound(id.to_owned()));
+        }
         Ok(())
     }
 
@@ -291,17 +297,29 @@ impl Store {
         from_seq: u64,
         limit: usize,
     ) -> Result<(Vec<Event>, bool), StoreError> {
+        self.events_between(session_id, from_seq, None, limit)
+    }
+
+    /// the same, bounded above by `to_seq` when the caller asked for a window (spec 3.2).
+    pub fn events_between(
+        &self,
+        session_id: &str,
+        from_seq: u64,
+        to_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<Event>, bool), StoreError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT session_id, seq, kind, payload, created_at
-             FROM events WHERE session_id = ?1 AND seq > ?2
-             ORDER BY seq ASC LIMIT ?3",
+             FROM events WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3
+             ORDER BY seq ASC LIMIT ?4",
         )?;
         let fetch = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
         let rows = stmt.query_map(
             params![
                 session_id,
                 i64::try_from(from_seq).unwrap_or(i64::MAX),
+                to_seq.map_or(i64::MAX, |to| i64::try_from(to).unwrap_or(i64::MAX)),
                 fetch
             ],
             |row| {
@@ -401,13 +419,17 @@ impl Store {
         session_id: &str,
         after_seq: u64,
     ) -> Result<Vec<String>, StoreError> {
+        use sa_proto::session::kinds;
+
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT kind, payload FROM events
-             WHERE session_id = ?1 AND seq > ?2
-               AND kind IN ('tool.requested', 'tool.completed', 'tool.failed')
+             WHERE session_id = ?1 AND seq > ?2 AND kind IN ('{}', '{}', '{}')
              ORDER BY seq ASC",
-        )?;
+            kinds::TOOL_REQUESTED,
+            kinds::TOOL_COMPLETED,
+            kinds::TOOL_FAILED
+        ))?;
         let rows = stmt.query_map(
             params![session_id, i64::try_from(after_seq).unwrap_or(i64::MAX)],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
@@ -422,7 +444,7 @@ impl Store {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if kind == "tool.requested" {
+            if kind == kinds::TOOL_REQUESTED {
                 pending.push(call_id);
             } else if let Some(pos) = pending.iter().position(|id| id == &call_id) {
                 pending.remove(pos);
@@ -433,6 +455,8 @@ impl Store {
 
     /// sessions whose last turn event is a start, not a terminal (spec 5.6).
     pub fn open_turns(&self) -> Result<Vec<OpenTurn>, StoreError> {
+        use sa_proto::session::kinds;
+
         let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT id FROM sessions WHERE state = 'active'")?;
         let ids: Vec<String> = stmt
@@ -443,12 +467,12 @@ impl Store {
 
         let mut out = Vec::new();
         for id in ids {
-            let Some(last) = self
-                .last_event_of_kind(&id, &["turn.started", "turn.completed", "turn.interrupted"])?
-            else {
+            let mut terminals = vec![kinds::TURN_STARTED];
+            terminals.extend_from_slice(kinds::TURN_TERMINAL);
+            let Some(last) = self.last_event_of_kind(&id, &terminals)? else {
                 continue;
             };
-            if last.kind != "turn.started" {
+            if last.kind != kinds::TURN_STARTED {
                 continue;
             }
             let turn_id = last

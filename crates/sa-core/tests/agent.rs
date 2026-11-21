@@ -765,3 +765,142 @@ async fn a_follow_up_turn_sees_what_the_last_one_did() {
         results[0].content
     );
 }
+
+#[tokio::test]
+async fn every_round_of_tool_calls_in_the_history_keeps_its_own_results() {
+    // the regression: the pairing state was never reset between rounds, so the second
+    // round's call was never announced and rig dropped its result as an orphan. the model
+    // then re-read files it had already read.
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![
+        Delta::Text("done".to_owned()),
+        Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        },
+    ]]));
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::new(RecordingSink::default()) as Arc<dyn EventSink>,
+    );
+
+    let mut follow_up = request();
+    follow_up.prompt = "and now the tests".to_owned();
+    follow_up.history = vec![
+        stored(1, "turn.started", json!({"prompt": "read both files"})),
+        stored(
+            2,
+            "llm.completed",
+            json!({"text": "reading the first", "stop_reason": "tool_calls", "purpose": "turn"}),
+        ),
+        stored(
+            3,
+            "tool.requested",
+            json!({"call_id": "call_one", "tool": "read", "args": {"path": "one.rs"}}),
+        ),
+        stored(
+            4,
+            "tool.completed",
+            json!({"call_id": "call_one", "output": "fn one() {}", "exit_code": 0}),
+        ),
+        stored(
+            5,
+            "llm.completed",
+            json!({"text": "reading the second", "stop_reason": "tool_calls", "purpose": "turn"}),
+        ),
+        stored(
+            6,
+            "tool.requested",
+            json!({"call_id": "call_two", "tool": "read", "args": {"path": "two.rs"}}),
+        ),
+        stored(
+            7,
+            "tool.completed",
+            json!({"call_id": "call_two", "output": "fn two() {}", "exit_code": 0}),
+        ),
+        stored(
+            8,
+            "llm.completed",
+            json!({"text": "both read", "stop_reason": "stop", "purpose": "turn"}),
+        ),
+    ];
+
+    agent.run_turn(follow_up).await.expect("turn");
+
+    let seen = provider.seen_requests();
+    let messages = &seen[0].messages;
+    let calls = tool_calls(messages);
+    let ids: Vec<String> = calls.iter().map(|call| call.id.to_string()).collect();
+    assert_eq!(
+        ids,
+        ["call_one", "call_two"],
+        "both rounds must announce their own calls"
+    );
+    let results = tool_results(messages);
+    assert_eq!(
+        results.len(),
+        2,
+        "both results must survive the pairing rules"
+    );
+    assert!(
+        format!("{:?}", results[1].content).contains("fn two() {}"),
+        "the second round's output must reach the model: {:?}",
+        results[1].content
+    );
+}
+
+#[tokio::test]
+async fn a_round_that_reports_tool_calls_but_makes_none_ends_the_turn() {
+    // the regression: a stop reason of tool_calls with no calls in it looped forever,
+    // because the loop only ended when the reason was not tool_calls.
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![
+        Delta::Text("thinking".to_owned()),
+        Delta::Done {
+            stop_reason: "tool_calls".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        },
+    ]]));
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::new(RecordingSink::default()) as Arc<dyn EventSink>,
+    );
+
+    let outcome =
+        tokio::time::timeout(std::time::Duration::from_secs(2), agent.run_turn(request()))
+            .await
+            .expect("a round with no calls must not repeat")
+            .expect("turn");
+
+    assert_eq!(outcome.text, "thinking");
+    assert_eq!(
+        provider.seen_requests().len(),
+        1,
+        "the turn must end rather than ask again"
+    );
+}
+
+#[tokio::test]
+async fn a_truncated_answer_is_recorded_as_the_reason_it_stopped() {
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![
+        Delta::Text("half a sen".to_owned()),
+        Delta::Done {
+            stop_reason: "length".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        },
+    ]]));
+    let sink = Arc::new(RecordingSink::default());
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+    let outcome = agent.run_turn(request()).await.expect("turn");
+    assert_eq!(
+        outcome.finish_reason, "length",
+        "a turn cut by the output budget is not a clean stop"
+    );
+}

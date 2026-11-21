@@ -267,3 +267,145 @@ async fn web_fetch_is_reachable_by_name() {
         .expect("web_fetch");
     assert!(out.contains("Example Domain"), "{out}");
 }
+
+/// a registry with the session lens wired in, as the daemon builds it.
+fn lensed(workspace: &std::path::Path) -> ToolRegistry {
+    ToolRegistry::with_lens(
+        workspace.to_path_buf(),
+        std::sync::Arc::new(sa_core::mcp::Hub::empty()),
+        std::sync::Arc::new(sa_core::lens::Lens::for_workspace(workspace)),
+    )
+}
+
+/// a workspace carrying one structural rule, so a write has something to be checked against.
+fn ruled_workspace() -> tempfile::TempDir {
+    let dir = workspace();
+    std::fs::create_dir_all(dir.path().join("rules")).expect("rules dir");
+    std::fs::write(dir.path().join("sgconfig.yml"), "ruleDirs:\n  - rules\n").expect("sgconfig");
+    std::fs::write(
+        dir.path().join("rules/no-unwrap.yml"),
+        "id: no-unwrap\nlanguage: rust\nseverity: error\nmessage: unwrap panics\nrule:\n  pattern: $X.unwrap()\n",
+    )
+    .expect("rule");
+    dir
+}
+
+#[tokio::test]
+async fn a_blind_edit_is_refused_until_the_file_has_been_read() {
+    // the guard: an edit to text the model has not seen is an edit to a guess.
+    let dir = workspace();
+    let registry = lensed(dir.path());
+
+    let refused = run(
+        &registry,
+        "edit",
+        json!({"path": "main.rs", "old": "fn main() {}", "new": "fn main() { run(); }"}),
+    )
+    .await
+    .expect_err("an unread file may not be edited");
+    assert!(refused.contains("read it first"), "{refused}");
+
+    // reading it is what licenses the edit.
+    run(&registry, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+    run(
+        &registry,
+        "edit",
+        json!({"path": "main.rs", "old": "fn main() {}", "new": "fn main() { run(); }"}),
+    )
+    .await
+    .expect("a read file may be edited");
+}
+
+#[tokio::test]
+async fn a_new_file_needs_no_read_before_it_is_written() {
+    let dir = workspace();
+    let registry = lensed(dir.path());
+    run(
+        &registry,
+        "write",
+        json!({"path": "new.rs", "content": "fn a() {}\n"}),
+    )
+    .await
+    .expect("a file that did not exist could not have been read");
+}
+
+#[tokio::test]
+async fn a_written_file_is_checked_against_the_workspace_rules() {
+    let dir = ruled_workspace();
+    let registry = lensed(dir.path());
+
+    // a clean file says nothing about the lens.
+    let clean = run(
+        &registry,
+        "write",
+        json!({"path": "a.rs", "content": "fn a() {}\n"}),
+    )
+    .await
+    .expect("write");
+    assert!(!clean.contains("lens:"), "{clean}");
+
+    // a finding is carried in the tool result, where the model reads it.
+    let flagged = run(
+        &registry,
+        "write",
+        json!({"path": "b.rs", "content": "fn b() {\n    let x = y.unwrap();\n}\n"}),
+    )
+    .await
+    .expect("write");
+    assert!(flagged.contains("lens: 1 finding"), "{flagged}");
+    assert!(flagged.contains("b.rs:2:"), "the line is named: {flagged}");
+    assert!(flagged.contains("unwrap panics"), "{flagged}");
+    assert!(
+        flagged.contains("error"),
+        "the severity is named: {flagged}"
+    );
+}
+
+#[tokio::test]
+async fn the_outline_lists_a_files_declarations_with_their_ranges() {
+    let dir = workspace();
+    let registry = lensed(dir.path());
+    let listed = run(&registry, "outline", json!({"path": "src/lib.rs"}))
+        .await
+        .expect("outline");
+    assert!(listed.contains("hello"), "{listed}");
+    assert!(listed.contains("function_item 1-1"), "{listed}");
+}
+
+#[tokio::test]
+async fn a_search_respects_the_projects_own_ignore_files() {
+    // the regression: a plain directory walk searched the build output and the git
+    // directory, so a grep returned noise from artifacts rather than the source.
+    let dir = workspace();
+    std::fs::create_dir_all(dir.path().join(".git")).expect("git dir");
+    std::fs::write(dir.path().join(".git/HEAD"), "needle\n").expect("write");
+    std::fs::write(dir.path().join(".gitignore"), "build/\n").expect("gitignore");
+    std::fs::create_dir_all(dir.path().join("build")).expect("build dir");
+    std::fs::write(dir.path().join("build/generated.rs"), "needle\n").expect("write");
+    std::fs::write(dir.path().join("kept.rs"), "needle\n").expect("write");
+
+    let registry = registry(dir.path());
+    let hits = run(&registry, "grep", json!({"pattern": "needle"}))
+        .await
+        .expect("grep");
+
+    assert!(hits.contains("kept.rs"), "the source is searched: {hits}");
+    assert!(
+        !hits.contains("build/generated.rs"),
+        "ignored build output is not searched: {hits}"
+    );
+    assert!(
+        !hits.contains(".git/"),
+        "the git directory is not searched: {hits}"
+    );
+
+    let found = run(&registry, "find", json!({"pattern": "generated"}))
+        .await
+        .expect("find");
+    assert!(
+        found.is_empty(),
+        "a find does not report an ignored file: {found}"
+    );
+}

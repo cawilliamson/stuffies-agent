@@ -1,15 +1,15 @@
 //! session manager: the only writer of session state (spec 2.4).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sa_proto::error::{code, RpcError};
 use sa_proto::session::kinds;
 use sa_proto::session::{
-    AttachResult, CreateSessionResult, Event, ReplayResult, SessionState, SessionSummary,
-    TurnStartResult, TurnStatus, Usage,
+    AttachResult, CreateSessionResult, ReplayResult, SessionState, SessionSummary, TurnStartResult,
+    TurnStatus, Usage,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -58,10 +58,6 @@ pub struct ManagerConfig {
     pub host_fingerprint: String,
     pub provider: Arc<dyn Provider>,
     pub max_tokens: Option<u64>,
-    /// an operator override for the context window, for endpoints that advertise none.
-    pub context_limit: Option<u64>,
-    /// the effort to use when a session has not chosen one.
-    pub reasoning_effort: Option<String>,
     pub lock_dir: PathBuf,
     pub turn_timeout_secs: u64,
     /// how long an auxiliary model call (title, compaction) may take before it is abandoned.
@@ -82,6 +78,9 @@ struct Subscription {
 struct RunningTurn {
     turn_id: String,
     cancel: Arc<AtomicBool>,
+    /// when the turn started, so a status query can say how long it has been running
+    /// rather than reporting the moment it was asked.
+    since: i64,
 }
 
 /// what the operator queued while a session was running a turn (spec 3.7).
@@ -115,10 +114,41 @@ struct Inner {
     queues: HashMap<String, Queue>,
 }
 
+/// what a caller asks a turn to be.
+#[derive(Debug, Clone, Copy)]
+pub struct NewTurn<'a> {
+    pub session_id: &'a str,
+    pub prompt: &'a str,
+    pub images: &'a [sa_proto::session::ImageAttachment],
+    pub detach: bool,
+    /// the client that asked, when one did.
+    pub client: Option<&'a str>,
+    /// the interrupted turn this one carries on from, when it does (spec 5.6).
+    pub resumed_from: Option<&'a str>,
+}
+
+impl<'a> NewTurn<'a> {
+    /// a turn asked for by a client, with no interruption behind it.
+    #[must_use]
+    pub const fn new(session_id: &'a str, prompt: &'a str) -> Self {
+        Self {
+            session_id,
+            prompt,
+            images: &[],
+            detach: false,
+            client: None,
+            resumed_from: None,
+        }
+    }
+}
+
 pub struct Manager {
     store: Store,
     config: Arc<ManagerConfig>,
     inner: Mutex<Inner>,
+    /// one lens per session: the read-before-edit guard and the workspace's rules. kept
+    /// here rather than per turn, so a file read in one turn licenses an edit in the next.
+    lenses: Mutex<HashMap<String, Arc<crate::lens::Lens>>>,
 }
 
 impl Manager {
@@ -128,6 +158,28 @@ impl Manager {
             store,
             config,
             inner: Mutex::new(Inner::default()),
+            lenses: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// the lens for a session, built on first use from the workspace it works in.
+    fn lens_for(&self, session_id: &str, workspace: &Path) -> Arc<crate::lens::Lens> {
+        let mut lenses = match self.lenses.lock() {
+            Ok(lenses) => lenses,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        Arc::clone(
+            lenses
+                .entry(session_id.to_owned())
+                .or_insert_with(|| Arc::new(crate::lens::Lens::for_workspace(workspace))),
+        )
+    }
+
+    /// forgets a session's lens, so its rules are reloaded for the directory it now works
+    /// in. the guard goes with them: a file is read again before it is edited.
+    fn forget_lens(&self, session_id: &str) {
+        if let Ok(mut lenses) = self.lenses.lock() {
+            lenses.remove(session_id);
         }
     }
 
@@ -182,25 +234,25 @@ impl Manager {
         }
     }
 
-    fn notify_event(&self, session_id: &str, event: &Event) {
+    fn notify_event(&self, session_id: &str, seq: u64, kind: &str, payload: &Value) {
         let Ok(inner) = self.inner.lock() else { return };
         for sub in inner.subs.values() {
             if sub.session_id != session_id {
                 continue;
             }
-            if sub.exclude_kinds.iter().any(|k| k == &event.kind) {
+            if sub.exclude_kinds.iter().any(|excluded| excluded == kind) {
                 continue;
             }
-            let payload = json!({
-                "session_id": event.session_id,
-                "seq": event.seq,
-                "kind": event.kind,
-                "payload": event.payload,
+            let event = json!({
+                "session_id": session_id,
+                "seq": seq,
+                "kind": kind,
+                "payload": payload,
             });
             Self::push(
                 &inner,
                 sub.conn,
-                json!({"jsonrpc": "2.0", "method": "event", "params": payload}),
+                json!({"jsonrpc": "2.0", "method": "event", "params": event}),
             );
         }
     }
@@ -208,15 +260,17 @@ impl Manager {
     // ---- events -----------------------------------------------------
 
     pub fn append(&self, session_id: &str, kind: &str, payload: &Value) -> Result<u64, StoreError> {
-        let seq = self.store.append_event(session_id, kind, payload)?;
-        if let Ok((events, _)) = self
-            .store
-            .events_since(session_id, seq.saturating_sub(1), 1)
-        {
-            if let Some(event) = events.first() {
-                self.notify_event(session_id, event);
-            }
+        // every payload carries its own version (spec 5.2), so a reader can refuse one it
+        // does not understand rather than guess at it. it is set here, the one write path,
+        // so no caller can forget it.
+        let mut payload = payload.clone();
+        if let Value::Object(map) = &mut payload {
+            map.entry("v").or_insert(json!(1));
         }
+        let seq = self.store.append_event(session_id, kind, &payload)?;
+        // what was just written is what is pushed: re-reading it from the store is a second
+        // query per event, and every streamed delta is an event.
+        self.notify_event(session_id, seq, kind, &payload);
         Ok(seq)
     }
 
@@ -288,22 +342,31 @@ impl Manager {
     /// the model turns use when a session has not selected one. empty when not yet known.
     #[must_use]
     pub fn default_model(&self) -> String {
-        self.models()
-            .first()
-            .map(|model| model.id.clone())
+        self.served_model(|_| true)
+            .map(|model| model.id)
             .unwrap_or_default()
     }
 
-    /// the context window for a model: an explicit override wins, then what the endpoint
-    /// advertised. `None` means unknown, and nothing downstream pretends otherwise.
+    /// what the endpoint said about one model. one lock, one lookup: every caller below
+    /// asks the same question, and none of them needs the whole catalog.
+    fn served_model(
+        &self,
+        which: impl Fn(&crate::llm::ModelInfo) -> bool,
+    ) -> Option<crate::llm::ModelInfo> {
+        self.config
+            .models
+            .lock()
+            .ok()?
+            .iter()
+            .find(|model| which(model))
+            .cloned()
+    }
+
+    /// the context window for a model, as the endpoint advertised it. `None` means unknown,
+    /// and nothing downstream pretends otherwise.
     #[must_use]
     pub fn context_limit(&self, model: &str) -> Option<u64> {
-        if let Some(limit) = self.config.context_limit {
-            return Some(limit);
-        }
-        self.models()
-            .iter()
-            .find(|known| known.id == model)
+        self.served_model(|known| known.id == model)
             .and_then(|known| known.context_limit)
     }
 
@@ -313,15 +376,12 @@ impl Manager {
         self.config.mcp.status()
     }
 
-    /// the effort a session should start on: the level the server itself defaults to, or
-    /// the operator's override. none when neither is known.
+    /// the effort a session should start on: the level the server itself defaults to. none
+    /// when the endpoint did not say, which leaves the server's own behaviour alone.
     #[must_use]
     pub fn default_effort_for(&self, model: &str) -> Option<String> {
-        self.models()
-            .iter()
-            .find(|known| known.id == model)
-            .and_then(|known| known.default_effort.clone())
-            .or_else(|| self.config.reasoning_effort.clone())
+        self.served_model(|known| known.id == model)
+            .and_then(|known| known.default_effort)
     }
 
     /// the least effort this model offers, for the calls that only need a sentence: a title
@@ -335,10 +395,8 @@ impl Manager {
     /// means the endpoint advertises none, and none is sent.
     #[must_use]
     pub fn effort_levels(&self, model: &str) -> Vec<String> {
-        self.models()
-            .iter()
-            .find(|known| known.id == model)
-            .map(|known| known.effort_levels.clone())
+        self.served_model(|known| known.id == model)
+            .map(|known| known.effort_levels)
             .unwrap_or_default()
     }
 
@@ -359,13 +417,46 @@ impl Manager {
 
     /// changes a session's reasoning effort, recording it in the log.
     pub fn set_effort(&self, id: &str, effort: &str) -> Result<(), ManagerError> {
+        let from = self.session_field(id, |row| row.effort.clone())?;
         self.store.set_session_effort(id, effort)?;
         self.append(
             id,
             kinds::MODEL_CHANGED,
-            &json!({"field": "effort", "to": effort}),
+            &json!({"from": from, "to": effort}),
         )?;
         Ok(())
+    }
+
+    /// changes which model a session runs on, recording it in the log so a replayed
+    /// transcript says which model produced which message.
+    pub fn set_model(&self, id: &str, model: &str) -> Result<(), ManagerError> {
+        let from = self.session_field(id, |row| row.model.clone())?;
+        self.store.set_session_model(id, model)?;
+        self.append(
+            id,
+            kinds::MODEL_CHANGED,
+            &json!({"from": from, "to": model}),
+        )?;
+        Ok(())
+    }
+
+    /// one field of a session's row, or an error naming the session that is not there.
+    fn session_field<T>(
+        &self,
+        id: &str,
+        field: impl FnOnce(&SessionRow) -> T,
+    ) -> Result<T, ManagerError> {
+        let row = self
+            .store
+            .get_session(id)?
+            .ok_or_else(|| ManagerError::Rpc(not_found(id)))?;
+        Ok(field(&row))
+    }
+
+    /// the model a session runs on, or the daemon's default when it has not chosen one.
+    pub fn session_model(&self, id: &str) -> Result<String, ManagerError> {
+        self.session_field(id, |row| row.model.clone())
+            .map(|model| model.unwrap_or_else(|| self.default_model()))
     }
 
     pub fn list_sessions(
@@ -398,7 +489,9 @@ impl Manager {
         let path = canonical.display().to_string();
         self.store.set_session_cwd(id, &path)?;
         self.append(id, kinds::SESSION_CWD, &json!({"cwd": path}))?;
-        // the directory changed, so what applies to it changed too.
+        // the directory changed, so what applies to it changed too: the context, and the
+        // rules the lens checks a written file against.
+        self.forget_lens(id);
         let _ = self.announce_context(id, &path);
         Ok(path)
     }
@@ -480,7 +573,8 @@ impl Manager {
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
-            cost_micros: Some(0),
+            // the endpoint prices nothing, so nothing is claimed: absent, not zero.
+            cost_micros: None,
         };
         for event in events {
             if event.kind != kinds::LLM_COMPLETED {
@@ -525,9 +619,12 @@ impl Manager {
         &self,
         session_id: &str,
         from_seq: u64,
+        to_seq: Option<u64>,
         limit: usize,
     ) -> Result<ReplayResult, ManagerError> {
-        let (events, more) = self.store.events_since(session_id, from_seq, limit)?;
+        let (events, more) = self
+            .store
+            .events_between(session_id, from_seq, to_seq, limit)?;
         let next_seq = events.last().map_or(from_seq, |e| e.seq);
         Ok(ReplayResult {
             events,
@@ -566,12 +663,12 @@ impl Manager {
 
     pub fn start_turn(
         self: &Arc<Self>,
-        session_id: &str,
-        prompt: &str,
-        images: &[sa_proto::session::ImageAttachment],
-        detach: bool,
-        attached_client: Option<&str>,
+        request: &NewTurn<'_>,
     ) -> Result<TurnStartResult, ManagerError> {
+        let session_id = request.session_id;
+        let prompt = request.prompt;
+        let images = request.images;
+        let detach = request.detach;
         let Some(row) = self.store.get_session(session_id)? else {
             return Err(ManagerError::Rpc(not_found(session_id)));
         };
@@ -594,50 +691,64 @@ impl Manager {
                 ),
             )));
         }
+
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let cancel = Arc::new(AtomicBool::new(false));
+        // the slot is taken under the same lock as the check: a check and an insert in two
+        // lock windows let two turns both find the session idle and both start.
         {
-            let inner = self.lock()?;
+            let mut inner = self.lock()?;
             if inner.turns.contains_key(session_id) {
                 return Err(ManagerError::Rpc(RpcError::new(
                     code::SESSION_BUSY,
                     format!("session {session_id} already has a turn in flight"),
                 )));
             }
+            inner.turns.insert(
+                session_id.to_owned(),
+                RunningTurn {
+                    turn_id: turn_id.clone(),
+                    cancel: Arc::clone(&cancel),
+                    since: crate::store::now_seconds(),
+                },
+            );
         }
 
-        let turn_id = uuid::Uuid::new_v4().to_string();
-        let cancel = Arc::new(AtomicBool::new(false));
         // the model and effort this turn runs at, decided once so the log records what
         // actually produced each message rather than what the session is set to now.
         let model = row.model.clone().unwrap_or_else(|| self.default_model());
-        let effort = self.reasoning_effort(
-            &model,
-            row.effort
-                .as_deref()
-                .or(self.config.reasoning_effort.as_deref()),
-        );
-        let seq = self.append(
-            session_id,
-            kinds::TURN_STARTED,
-            &json!({
+        let effort = self.reasoning_effort(&model, row.effort.as_deref());
+        let started = self.append(session_id, kinds::TURN_STARTED, &{
+            // absent rather than null when they do not apply: a field that is not set
+            // should not be in the log at all.
+            let mut payload = json!({
                 "turn_id": turn_id,
                 "prompt": prompt,
-                // kept in the log so the transcript can show the picture inline, and so a
-                // replayed session reads the same as the live one.
+                // kept in the log so the transcript can show the picture inline, and so
+                // a replayed session reads the same as the live one.
                 "images": images,
                 "model": model,
                 "effort": effort,
                 "detach": detach,
-                "client": attached_client,
-            }),
-        )?;
-
-        self.lock()?.turns.insert(
-            session_id.to_owned(),
-            RunningTurn {
-                turn_id: turn_id.clone(),
-                cancel: Arc::clone(&cancel),
-            },
-        );
+            });
+            if let Some(client) = request.client {
+                payload["client"] = json!(client);
+            }
+            if let Some(resumed_from) = request.resumed_from {
+                payload["resumed_from"] = json!(resumed_from);
+            }
+            payload
+        });
+        let seq = match started {
+            Ok(seq) => seq,
+            Err(err) => {
+                // the slot was taken before the log had the turn in it: give it back.
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.turns.remove(session_id);
+                }
+                return Err(ManagerError::Store(err));
+            }
+        };
 
         let manager = Arc::clone(self);
         let session = session_id.to_owned();
@@ -728,9 +839,10 @@ impl Manager {
             session_id: session_id.clone(),
             cancel: Arc::clone(&cancel),
         });
-        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_mcp(
+        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_lens(
             PathBuf::from(&row.cwd),
             Arc::clone(&self.config.mcp),
+            self.lens_for(&session_id, &workspace),
         ));
 
         // compaction is checked before the turn, and only ever appends (spec 10.4).
@@ -977,7 +1089,11 @@ impl Manager {
     /// ends the turn, and runs whatever is still queued as the session's next one.
     fn continue_with_follow_up(self: &Arc<Self>, session_id: &str, detach: bool) {
         if let Some(prompt) = self.settle_turn(session_id) {
-            if let Err(err) = self.start_turn(session_id, &prompt, &[], detach, None) {
+            let turn = NewTurn {
+                detach,
+                ..NewTurn::new(session_id, &prompt)
+            };
+            if let Err(err) = self.start_turn(&turn) {
                 tracing::warn!(%err, %session_id, "queued message could not start a turn");
             }
         }
@@ -993,14 +1109,18 @@ impl Manager {
     }
 
     pub fn turn_status(&self, session_id: &str) -> TurnStatus {
-        let turn_id = self
-            .lock()
-            .ok()
-            .and_then(|inner| inner.turns.get(session_id).map(|t| t.turn_id.clone()));
+        let running = self.lock().ok().and_then(|inner| {
+            inner
+                .turns
+                .get(session_id)
+                .map(|turn| (turn.turn_id.clone(), turn.since))
+        });
         TurnStatus {
-            state: if turn_id.is_some() { "running" } else { "idle" }.to_owned(),
-            since: crate::store::now_seconds(),
-            turn_id,
+            state: if running.is_some() { "running" } else { "idle" }.to_owned(),
+            since: running
+                .as_ref()
+                .map_or_else(crate::store::now_seconds, |(_, since)| *since),
+            turn_id: running.map(|(turn_id, _)| turn_id),
         }
     }
 
@@ -1025,28 +1145,26 @@ impl Manager {
     }
 
     /// estimates the token cost of the log, used only where a provider figure does not
-    /// exist yet. four characters per token, no tokeniser dependency.
+    /// exist yet.
     #[must_use]
     pub fn estimate_tokens(&self, session_id: &str) -> u64 {
         let Ok((events, _)) = self.store.events_since(session_id, 0, 100_000) else {
             return 0;
         };
-        let chars: u64 = events
-            .iter()
-            .map(|e| {
-                let mut len = e.payload.to_string().len() as u64;
-                // attached pictures live in the log so the transcript can draw them, but
-                // the model's view carries only the prompt: counting base64 would show a
-                // few screenshots as most of the window.
-                if let Some(images) = e.payload.get("images").and_then(Value::as_array) {
-                    for image in images {
-                        len = len.saturating_sub(image.to_string().len() as u64);
-                    }
+        let mut tokens = 0_u64;
+        for event in &events {
+            // attached pictures live in the log so the transcript can draw them, but the
+            // model's view carries only the prompt: counting base64 would show a few
+            // screenshots as most of the window.
+            let mut payload = event.payload.clone();
+            if let Value::Object(map) = &mut payload {
+                if map.get("images").is_some_and(Value::is_array) {
+                    map.insert("images".to_owned(), Value::Array(Vec::new()));
                 }
-                len
-            })
-            .sum();
-        chars / CHARS_PER_TOKEN
+            }
+            tokens += crate::tokens::estimate_rounded(&payload.to_string());
+        }
+        tokens
     }
 
     /// summarises the oldest turns when the session approaches the context limit (spec 10.4).
@@ -1200,7 +1318,13 @@ impl Manager {
 
         self.store
             .set_session_state(session_id, SessionState::Active)?;
-        self.start_turn(session_id, &prompt, &[], true, Some(&resumed_from))
+        // an interrupted turn is redriven by the daemon, not by the client that was watching
+        // it, so the log records where it resumed from and no client.
+        self.start_turn(&NewTurn {
+            detach: true,
+            resumed_from: Some(&resumed_from),
+            ..NewTurn::new(session_id, &prompt)
+        })
     }
 
     // ---- recovery ----------------------------------------------------

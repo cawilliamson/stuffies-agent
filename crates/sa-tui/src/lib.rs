@@ -299,8 +299,8 @@ where
                 }
                 // a tab name too long for the strip walks past while it is hovered or
                 // active, slowly enough to read.
-                let room = terminal.size().map_or(0, |size| usize::from(size.width));
-                if app.advance_marquee(ui::tab_label_cap(room)) {
+                let width = terminal.size().map_or(0, |size| usize::from(size.width));
+                if tick_marquee(&mut app, width) {
                     app.touch();
                 }
             }
@@ -371,24 +371,7 @@ where
                     }
                 }
             }
-            Action::EffortPicked(level) => {
-                let sid = app.tab().session.clone();
-                match rpc(
-                    client,
-                    "model.effort",
-                    json!({"session_id": sid, "effort": level}),
-                )
-                .await
-                {
-                    Ok(_) => {
-                        app.tab_mut().status.effort = level.clone();
-                        app.touch();
-                        app.tab_mut()
-                            .push(app::Role::System, format!("effort: {level}"));
-                    }
-                    Err(err) => app.tab_mut().push(app::Role::Error, err),
-                }
-            }
+            Action::EffortPicked(level) => set_effort(client, &mut app, &level).await,
             Action::CloseTab => {
                 let cwd = tab_cwd(&app);
                 if let Some(closed) = app.close_tab() {
@@ -458,6 +441,19 @@ where
         let _ = std::io::stdout().flush();
     }
     Ok(())
+}
+
+/// advances the strip's marquee for the tab the operator is looking at, and says whether
+/// the strip has to be drawn again.
+fn tick_marquee(app: &mut App, width: usize) -> bool {
+    let cap = ui::tab_label_cap(width);
+    let Some(index) = app.marquee_target() else {
+        return false;
+    };
+    // the number and the spinner sit in front of the name, so the marquee measures what
+    // the name really has rather than the whole label.
+    let room = ui::tab_name_room(app, index, cap);
+    app.advance_marquee(room)
 }
 
 /// the model the daemon will use when a session has not chosen one.
@@ -1462,108 +1458,6 @@ async fn run_command(
         .map_or((command, ""), |(head, tail)| (head, tail.trim()));
     let sid = app.tab().session.clone();
     match name {
-        "/exit" | "/quit" => return Ok(true),
-        "/help" => {
-            app.tab_mut().push(app::Role::System, app::HELP_COMMANDS);
-        }
-        "/new" => {
-            let cwd = tab_cwd(app);
-            match create_session(client, &cwd).await {
-                Ok(id) => {
-                    if let Err(err) = sync_tabs(client, app, fallback_model, &cwd).await {
-                        app.tab_mut().push(app::Role::Error, err);
-                    } else if let Some(index) = app.tabs.iter().position(|tab| tab.session == id) {
-                        app.switch_tab(index);
-                    }
-                }
-                Err(err) => app.tab_mut().push(app::Role::Error, err),
-            }
-        }
-        "/mcp" => match rpc(client, "mcp.list", json!({})).await {
-            Ok(list) => {
-                let rows = list.as_array().cloned().unwrap_or_default();
-                if rows.is_empty() {
-                    app.tab_mut()
-                        .push(app::Role::System, "no mcp servers configured");
-                }
-                for row in rows {
-                    let name = row["name"].as_str().unwrap_or("?");
-                    let text = row["error"].as_str().map_or_else(
-                        || {
-                            let tools = row["tools"]
-                                .as_array()
-                                .map(|tools| {
-                                    tools
-                                        .iter()
-                                        .filter_map(|tool| tool.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                })
-                                .unwrap_or_default();
-                            format!("{name}: {tools}")
-                        },
-                        |error| format!("{name}: {error}"),
-                    );
-                    app.tab_mut().push(app::Role::System, text);
-                }
-            }
-            Err(err) => app.tab_mut().push(app::Role::Error, err),
-        },
-        "/effort" if arg.is_empty() => {
-            // the catalog is read at startup, before the daemon's background
-            // probe has finished, so refresh it when there is nothing to offer.
-            if app.effort_levels(app.tab()).is_empty() {
-                app.served = model_catalog(client).await.into_iter().collect();
-            }
-            // the endpoint's own values, not a list this build invented.
-            let model = app.tab().status.model.clone();
-            let current = app.tab().status.effort.clone();
-            let levels = app.effort_levels(app.tab());
-            if levels.is_empty() {
-                app.tab_mut().push(
-                    app::Role::System,
-                    format!("{model}: the endpoint advertises no effort levels"),
-                );
-            } else {
-                let items = levels
-                    .into_iter()
-                    .map(|level| app::PickerItem {
-                        label: if level == current {
-                            format!("{level} (current)")
-                        } else {
-                            level.clone()
-                        },
-                        id: level,
-                    })
-                    .collect();
-                app.open_picker(app::PickerKind::Effort, format!("{model} effort"), items);
-            }
-        }
-        "/effort" => match rpc(
-            client,
-            "model.effort",
-            json!({"session_id": sid, "effort": arg}),
-        )
-        .await
-        {
-            Ok(_) => {
-                app.tab_mut().status.effort = arg.to_owned();
-                app.touch();
-                app.tab_mut()
-                    .push(app::Role::System, format!("effort: {arg}"));
-            }
-            Err(err) => app.tab_mut().push(app::Role::Error, err),
-        },
-        "/model" if !arg.is_empty() => {
-            let _ = rpc(
-                client,
-                "model.select",
-                json!({"session_id": sid, "model": arg}),
-            )
-            .await;
-            app.tab_mut().status.model = arg.to_owned();
-            app.touch();
-        }
         "/cancel" => {
             let _ = rpc(client, "turn.cancel", json!({"session_id": sid})).await;
         }
@@ -1596,6 +1490,85 @@ async fn run_command(
                 .tab_mut()
                 .push(app::Role::Error, format!("not a directory: {arg}")),
         },
+        "/effort" if arg.is_empty() => {
+            // the catalog is read at startup, before the daemon's background
+            // probe has finished, so refresh it when there is nothing to offer.
+            if app.effort_levels(app.tab()).is_empty() {
+                app.served = model_catalog(client).await.into_iter().collect();
+            }
+            // the endpoint's own values, not a list this build invented.
+            let model = app.tab().status.model.clone();
+            let current = app.tab().status.effort.clone();
+            let levels = app.effort_levels(app.tab());
+            if levels.is_empty() {
+                app.tab_mut().push(
+                    app::Role::System,
+                    format!("{model}: the endpoint advertises no effort levels"),
+                );
+            } else {
+                let items = levels
+                    .into_iter()
+                    .map(|level| app::PickerItem {
+                        label: if level == current {
+                            format!("{level} (current)")
+                        } else {
+                            level.clone()
+                        },
+                        id: level,
+                    })
+                    .collect();
+                app.open_picker(app::PickerKind::Effort, format!("{model} effort"), items);
+            }
+        }
+        "/effort" => set_effort(client, app, arg).await,
+        "/exit" | "/quit" => return Ok(true),
+        "/help" => {
+            app.tab_mut().push(app::Role::System, app::HELP_COMMANDS);
+        }
+        "/mcp" => match rpc(client, "mcp.list", json!({})).await {
+            Ok(list) => {
+                let rows = list.as_array().cloned().unwrap_or_default();
+                if rows.is_empty() {
+                    app.tab_mut()
+                        .push(app::Role::System, "no mcp servers configured");
+                }
+                for row in rows {
+                    let name = row["name"].as_str().unwrap_or("?");
+                    let text = row["error"].as_str().map_or_else(
+                        || {
+                            let tools = row["tools"]
+                                .as_array()
+                                .map(|tools| {
+                                    tools
+                                        .iter()
+                                        .filter_map(|tool| tool.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                })
+                                .unwrap_or_default();
+                            format!("{name}: {tools}")
+                        },
+                        |error| format!("{name}: {error}"),
+                    );
+                    app.tab_mut().push(app::Role::System, text);
+                }
+            }
+            Err(err) => app.tab_mut().push(app::Role::Error, err),
+        },
+        "/model" if !arg.is_empty() => set_model(client, app, arg).await,
+        "/new" => {
+            let cwd = tab_cwd(app);
+            match create_session(client, &cwd).await {
+                Ok(id) => {
+                    if let Err(err) = sync_tabs(client, app, fallback_model, &cwd).await {
+                        app.tab_mut().push(app::Role::Error, err);
+                    } else if let Some(index) = app.tabs.iter().position(|tab| tab.session == id) {
+                        app.switch_tab(index);
+                    }
+                }
+                Err(err) => app.tab_mut().push(app::Role::Error, err),
+            }
+        }
         "/resume" => {
             // every live session is already a tab, so what is worth bringing
             // back is a session that was closed while working in this directory.
@@ -1648,6 +1621,51 @@ async fn run_command(
             .push(app::Role::System, "unknown command, /help"),
     }
     Ok(false)
+}
+
+/// sets the session's reasoning effort on the daemon, and says so in the transcript. the
+/// view only follows a change the daemon accepted, so it never shows a level a turn will
+/// not use.
+#[allow(clippy::future_not_send)]
+async fn set_effort(client: &mut Client, app: &mut App, level: &str) {
+    let sid = app.tab().session.clone();
+    match rpc(
+        client,
+        "model.effort",
+        json!({"session_id": sid, "effort": level}),
+    )
+    .await
+    {
+        Ok(_) => {
+            app.tab_mut().status.effort = level.to_owned();
+            app.touch();
+            app.tab_mut()
+                .push(app::Role::System, format!("effort: {level}"));
+        }
+        Err(err) => app.tab_mut().push(app::Role::Error, err),
+    }
+}
+
+/// points the session at another model. a model the daemon refuses leaves the view on the
+/// one it is really using.
+#[allow(clippy::future_not_send)]
+async fn set_model(client: &mut Client, app: &mut App, model: &str) {
+    let sid = app.tab().session.clone();
+    match rpc(
+        client,
+        "model.select",
+        json!({"session_id": sid, "model": model}),
+    )
+    .await
+    {
+        Ok(_) => {
+            app.tab_mut().status.model = model.to_owned();
+            app.touch();
+            app.tab_mut()
+                .push(app::Role::System, format!("model: {model}"));
+        }
+        Err(err) => app.tab_mut().push(app::Role::Error, err),
+    }
 }
 
 /// sends a prompt: steers the running turn if there is one, otherwise starts a new

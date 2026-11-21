@@ -573,16 +573,9 @@ pub struct Tab {
 
 impl Tab {
     #[must_use]
-    pub fn new(
-        session: impl Into<String>,
-        title: impl Into<String>,
-        model: impl Into<String>,
-    ) -> Self {
-        let session = session.into();
-        let short: String = session.chars().take(8).collect();
-        let _ = (title, short);
+    pub fn new(session: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            session,
+            session: session.into(),
             cwd: String::new(),
             hydrated: false,
             branch: None,
@@ -1189,6 +1182,17 @@ impl Tab {
 
     fn apply_event(&mut self, kind: &str, payload: &Value, now: std::time::Instant, live: bool) {
         match kind {
+            "compaction.applied" => self.push(Role::System, "context compacted"),
+            "context.loaded" => {
+                let cwd = payload["cwd"].as_str().unwrap_or_default();
+                let groups = payload["groups"].as_array().cloned().unwrap_or_default();
+                self.push(Role::System, context_summary(cwd, &groups));
+            }
+            "llm.completed" => {
+                if live {
+                    self.end_stream(now);
+                }
+            }
             "llm.delta" => {
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
                 if live {
@@ -1205,24 +1209,11 @@ impl Tab {
                 }
                 self.append_stream_as(Role::Thinking, text);
             }
-            "llm.completed" => {
-                if live {
-                    self.end_stream(now);
+            "session.cwd" => {
+                if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+                    self.cwd = cwd.to_owned();
+                    self.touch();
                 }
-            }
-            "tool.requested" => {
-                if live {
-                    self.end_stream(now);
-                }
-                let tool = payload
-                    .get("tool")
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool");
-                let args = summarise(&payload["args"]);
-                let mut entry = Entry::new(Role::Tool, args);
-                entry.tool = Some(tool.to_owned());
-                self.tool_running = true;
-                self.push_entry(entry);
             }
             "tool.completed" => {
                 let output = payload.get("output").and_then(Value::as_str).unwrap_or("");
@@ -1243,6 +1234,20 @@ impl Tab {
                     .unwrap_or("failed");
                 self.push(Role::Error, error.to_owned());
             }
+            "tool.requested" => {
+                if live {
+                    self.end_stream(now);
+                }
+                let tool = payload
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                let args = summarise(&payload["args"]);
+                let mut entry = Entry::new(Role::Tool, args);
+                entry.tool = Some(tool.to_owned());
+                self.tool_running = true;
+                self.push_entry(entry);
+            }
             "turn.completed" => {
                 self.status.turn_running = false;
                 self.tool_running = false;
@@ -1251,6 +1256,7 @@ impl Tab {
                 if live {
                     self.finish_message(now, reported);
                 }
+                self.note_truncation(payload);
                 self.status.prompt_tokens +=
                     payload["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
                 self.status.completion_tokens +=
@@ -1265,24 +1271,10 @@ impl Tab {
                 }
                 self.touch();
             }
-            "context.loaded" => {
-                let cwd = payload["cwd"].as_str().unwrap_or_default();
-                let groups = payload["groups"].as_array().cloned().unwrap_or_default();
-                self.push(Role::System, context_summary(cwd, &groups));
-            }
             "turn.context" => {
                 if let Some(tokens) = payload["tokens"].as_u64() {
                     self.status.context_tokens = tokens;
                     self.touch();
-                }
-            }
-            "turn.queued" => {
-                self.apply_queue(payload);
-                self.touch();
-            }
-            "turn.steered" => {
-                if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
-                    self.push(Role::User, prompt.to_owned());
                 }
             }
             "turn.interrupted" => {
@@ -1294,6 +1286,10 @@ impl Tab {
                 }
                 let cause = payload.get("cause").and_then(Value::as_str).unwrap_or("");
                 self.push(Role::Error, format!("interrupted: {cause}"));
+            }
+            "turn.queued" => {
+                self.apply_queue(payload);
+                self.touch();
             }
             "turn.started" => {
                 let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
@@ -1342,15 +1338,30 @@ impl Tab {
                 }
                 self.touch();
             }
-            "compaction.applied" => self.push(Role::System, "context compacted"),
-            "session.cwd" => {
-                if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
-                    self.cwd = cwd.to_owned();
-                    self.touch();
+            "turn.steered" => {
+                if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
+                    self.push(Role::User, prompt.to_owned());
                 }
             }
             _ => {}
         }
+    }
+
+    /// a turn the endpoint cut short is not a clean answer: say so, or an empty or
+    /// half-finished reply reads as the whole of it.
+    fn note_truncation(&mut self, payload: &Value) {
+        let Some(reason) = payload["finish_reason"]
+            .as_str()
+            .filter(|reason| matches!(*reason, "length" | "content_filter"))
+        else {
+            return;
+        };
+        let why = if reason == "length" {
+            "the output budget ran out"
+        } else {
+            "the endpoint filtered the reply"
+        };
+        self.push(Role::System, format!("turn ended early: {why}"));
     }
 
     fn append_stream_as(&mut self, role: Role, text: &str) {
@@ -1637,7 +1648,7 @@ pub struct App {
 impl App {
     #[must_use]
     pub fn new(session: impl Into<String>, model: impl Into<String>) -> Self {
-        let tab = Tab::new(session, String::new(), model);
+        let tab = Tab::new(session, model);
         Self {
             tabs: vec![tab],
             active: 0,
@@ -1724,7 +1735,7 @@ impl App {
     }
 
     pub fn add_tab(&mut self, session: impl Into<String>, model: impl Into<String>) -> usize {
-        self.tabs.push(Tab::new(session, String::new(), model));
+        self.tabs.push(Tab::new(session, model));
         self.active = self.tabs.len() - 1;
         self.touch();
         self.active
@@ -1762,7 +1773,7 @@ impl App {
     /// replaces the active tab with a fresh one, keeping the strip non-empty.
     pub fn replace_active(&mut self, session: impl Into<String>, model: impl Into<String>) {
         let index = self.active.min(self.tabs.len().saturating_sub(1));
-        self.tabs[index] = Tab::new(session, String::new(), model);
+        self.tabs[index] = Tab::new(session, model);
         self.touch();
     }
 
@@ -1946,14 +1957,23 @@ impl App {
         Some(scrolled(name, offset, cap))
     }
 
-    /// advances the marquee, and says whether the strip has to be drawn again.
-    pub fn advance_marquee(&mut self, cap: usize) -> bool {
+    /// the tab the marquee follows: the one under the pointer, or the active one.
+    #[must_use]
+    pub fn marquee_target(&self) -> Option<usize> {
+        self.hovered_tab
+            .or(Some(self.active))
+            .filter(|index| *index < self.tabs.len())
+    }
+
+    /// advances the marquee, and says whether the strip has to be drawn again. `room` is how
+    /// many cells the target tab's name may occupy, which the strip decides: the number and
+    /// the spinner in front of it are not the name's space.
+    pub fn advance_marquee(&mut self, room: usize) -> bool {
         let names = tab_names(&self.tabs);
-        let target = self.hovered_tab.or(Some(self.active));
-        let Some(index) = target.filter(|index| *index < names.len()) else {
+        let Some(index) = self.marquee_target() else {
             return false;
         };
-        if names[index].chars().count() <= cap {
+        if names[index].chars().count() <= room {
             // nothing to scroll here: park it so another tab can start from the top.
             let changed = self.marquee_tab.take().is_some() || self.marquee != 0;
             self.marquee = 0;
@@ -2109,11 +2129,6 @@ impl App {
                     self.tab_mut().undo();
                     Action::None
                 }
-                // emacs mode binds ctrl+u to undo; the terminal convention is kill-to-start.
-                KeyCode::Char('u') => {
-                    self.tab_mut().edit(key);
-                    Action::None
-                }
                 KeyCode::Char('w' | 'W') => self.request_close(),
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
@@ -2123,8 +2138,9 @@ impl App {
                 KeyCode::Enter | KeyCode::Char('\n' | '\r' | 'j') => {
                     self.tab_mut().insert_newline()
                 }
+                // everything else, including ctrl+u, is the editor's: its own key map
+                // already binds ctrl+u to kill-to-line-start.
                 _ => {
-                    let _ = shift;
                     self.tab_mut().edit(key);
                     Action::None
                 }
@@ -2260,10 +2276,6 @@ pub fn role_style(role: Role, model: &str) -> (String, Color, Color) {
 }
 
 /// drops the inline markdown markers so text can be measured.
-#[must_use]
-pub fn plain(text: &str) -> String {
-    text.replace("**", "").replace(['*', '`'], "")
-}
 /// cuts styled spans to a visible width.
 fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usize) {
     let mut out: Vec<Span<'static>> = Vec::new();
@@ -2776,41 +2788,15 @@ fn cwd_arg(text: &str) -> Option<&str> {
 /// `~/Dow` becomes `~/Downloads/` rather than an absolute path. `dirs_only` is for the
 /// arguments that can only name a directory.
 fn complete_token(token: &str, dirs_only: bool) -> Option<String> {
-    let (shown_dir, prefix) = token
-        .rfind('/')
-        .map_or(("", token), |index| (&token[..=index], &token[index + 1..]));
-    let lookup = if shown_dir.is_empty() {
-        std::path::PathBuf::from(".")
-    } else {
-        std::path::PathBuf::from(expand_home(shown_dir))
-    };
-
-    let mut matches: Vec<String> = std::fs::read_dir(&lookup)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.starts_with(prefix) {
-                return None;
-            }
-            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
-            if dirs_only && !is_dir {
-                return None;
-            }
-            Some(if is_dir { format!("{name}/") } else { name })
-        })
-        .collect();
-    matches.sort();
-
-    match matches.len() {
+    let found = Completion::read(token, dirs_only)?;
+    match found.names.len() {
         0 => None,
-        1 => Some(format!("{shown_dir}{}", matches[0])),
+        1 => Some(found.typed(found.names.first()?)),
         _ => {
             // more than one: extend to the longest shared prefix, which is what the
             // operator expects from a second tab press.
-            let shared = longest_common_prefix(&matches);
-            (shared.chars().count() > prefix.chars().count())
-                .then(|| format!("{shown_dir}{shared}"))
+            let shared = longest_common_prefix(&found.names);
+            (shared.chars().count() > found.prefix.chars().count()).then(|| found.typed(&shared))
         }
     }
 }
@@ -2844,32 +2830,63 @@ const CWD_SUGGESTION_LIMIT: usize = 8;
 /// offers `~/Projects/`, not an absolute path.
 #[must_use]
 fn dir_matches(token: &str) -> Vec<String> {
-    let (shown_dir, prefix) = token
-        .rfind('/')
-        .map_or(("", token), |index| (&token[..=index], &token[index + 1..]));
-    let lookup = if shown_dir.is_empty() {
-        std::path::PathBuf::from(".")
-    } else {
-        std::path::PathBuf::from(expand_home(shown_dir))
-    };
-    let mut matches: Vec<String> = std::fs::read_dir(&lookup)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            name.starts_with(prefix)
-                .then(|| format!("{shown_dir}{name}/"))
-        })
-        .collect();
-    matches.sort();
-    matches
+    Completion::read(token, true)
+        .map(|found| found.names.iter().map(|name| found.typed(name)).collect())
+        .unwrap_or_default()
 }
 
 /// the completion for a directory argument, which never offers a file.
 fn complete_dir_token(token: &str) -> Option<String> {
     complete_token(token, true)
+}
+
+/// a path token being completed: the directory part as the operator typed it, the name
+/// prefix they are part way through, and the entries under that directory that match it.
+struct Completion {
+    shown_dir: String,
+    prefix: String,
+    names: Vec<String>,
+}
+
+impl Completion {
+    /// reads the directory a token names. a directory carries its trailing slash so the
+    /// next completion continues into it. `None` when the directory cannot be read.
+    fn read(token: &str, dirs_only: bool) -> Option<Self> {
+        let (shown_dir, prefix) = token
+            .rfind('/')
+            .map_or(("", token), |index| (&token[..=index], &token[index + 1..]));
+        let lookup = if shown_dir.is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            std::path::PathBuf::from(expand_home(shown_dir))
+        };
+        let mut names: Vec<String> = std::fs::read_dir(&lookup)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.starts_with(prefix) {
+                    return None;
+                }
+                let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+                if dirs_only && !is_dir {
+                    return None;
+                }
+                Some(if is_dir { format!("{name}/") } else { name })
+            })
+            .collect();
+        names.sort();
+        Some(Self {
+            shown_dir: shown_dir.to_owned(),
+            prefix: prefix.to_owned(),
+            names,
+        })
+    }
+
+    /// one match, as the operator would type it.
+    fn typed(&self, name: &str) -> String {
+        format!("{}{name}", self.shown_dir)
+    }
 }
 
 fn longest_common_prefix(values: &[String]) -> String {

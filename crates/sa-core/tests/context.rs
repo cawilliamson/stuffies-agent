@@ -9,11 +9,7 @@ use sa_core::manager::{Manager, ManagerConfig};
 use sa_core::store::Store;
 use serde_json::json;
 
-fn manager_with(
-    dir: &std::path::Path,
-    models: Vec<ModelInfo>,
-    effort: Option<&str>,
-) -> Arc<Manager> {
+fn manager_with(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
     let store = Store::open(&dir.join("sa.db")).expect("store");
     let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(Vec::<Vec<Delta>>::new()));
     Arc::new(Manager::new(
@@ -22,8 +18,6 @@ fn manager_with(
             host_fingerprint: "test-host".to_owned(),
             provider,
             max_tokens: None,
-            context_limit: None,
-            reasoning_effort: effort.map(str::to_owned),
             lock_dir: dir.join("locks"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
@@ -34,7 +28,15 @@ fn manager_with(
 }
 
 fn manager(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
-    manager_with(dir, models, None)
+    manager_with(dir, models)
+}
+
+/// the same model, with the level its endpoint defaults to.
+fn model_defaulting_to(id: &str, effort: &str) -> ModelInfo {
+    ModelInfo {
+        default_effort: Some(effort.to_owned()),
+        ..model(id, None, &[])
+    }
 }
 
 fn model(id: &str, context_limit: Option<u64>, efforts: &[&str]) -> ModelInfo {
@@ -145,7 +147,7 @@ fn only_an_advertised_effort_is_ever_sent() {
 #[test]
 fn a_session_reports_the_effort_a_turn_will_use() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let manager = manager_with(dir.path(), vec![model("m", None, &[])], Some("medium"));
+    let manager = manager(dir.path(), vec![model_defaulting_to("m", "medium")]);
 
     let created = manager
         .create_session(dir.path().to_str().expect("utf8"), None, "test")
