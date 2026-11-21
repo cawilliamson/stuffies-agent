@@ -60,6 +60,49 @@ pub struct ToolOutcome {
 pub trait ToolExecutor: Send + Sync {
     fn specs(&self) -> Vec<ToolSpec>;
     fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>>;
+
+    /// the same call, reporting output as it arrives.
+    ///
+    /// a tool that says nothing until it is finished is the default: only a tool that runs
+    /// a process has anything to report before the end.
+    fn execute_streaming<'a>(
+        &'a self,
+        call: ToolCall,
+        _sink: &'a dyn OutputSink,
+    ) -> BoxFuture<'a, Result<ToolOutcome, String>> {
+        self.execute(call)
+    }
+}
+
+/// where a tool's output goes while the tool is still running, so the operator sees a long
+/// command working rather than a blank frame until it ends.
+pub trait OutputSink: Send + Sync {
+    fn output(&self, call_id: &str, chunk: &str);
+}
+
+/// a sink that keeps nothing, for a call nobody is watching live.
+pub struct NoOutput;
+
+impl OutputSink for NoOutput {
+    fn output(&self, _call_id: &str, _chunk: &str) {}
+}
+
+/// the sink a turn writes a tool's live output to: the session's event log, so a client
+/// that attaches mid-command sees it too.
+struct ToolStream<'a> {
+    sink: &'a dyn EventSink,
+    turn_id: &'a str,
+}
+
+impl OutputSink for ToolStream<'_> {
+    fn output(&self, call_id: &str, chunk: &str) {
+        // a dropped chunk costs a line of the live view, never the recorded output: the
+        // tool's result is appended whole when it finishes.
+        let _ = self.sink.append(
+            kinds::TOOL_DELTA,
+            &json!({"turn_id": self.turn_id, "call_id": call_id, "text": chunk}),
+        );
+    }
 }
 
 pub struct EmptyTools;
@@ -87,6 +130,8 @@ pub struct TurnRequest {
     pub context: Option<String>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
+    /// continue the final assistant message instead of answering a new prompt.
+    pub continue_final: bool,
     /// images attached to this prompt.
     pub images: Vec<sa_proto::session::ImageAttachment>,
 }
@@ -180,6 +225,7 @@ impl Agent {
                     tools: self.tools.specs(),
                     max_tokens: request.max_tokens,
                     reasoning_effort: request.reasoning_effort.clone(),
+                    continue_final: request.continue_final,
                 }))
                 .await
             else {
@@ -191,7 +237,31 @@ impl Agent {
             let mut tool_calls = Vec::new();
             let mut done = false;
 
-            while let Some(delta) = self.next_delta(&mut rx).await? {
+            loop {
+                let delta = match self.next_delta(&mut rx).await {
+                    Ok(Some(delta)) => delta,
+                    Ok(None) => break,
+                    Err(err) => {
+                        // a cancelled stream produced what it produced: record it, or the
+                        // turn that carries on has nothing to carry on from.
+                        if !text.is_empty() {
+                            self.sink.append(
+                                kinds::LLM_COMPLETED,
+                                &json!({
+                                    "turn_id": request.turn_id,
+                                    "stop_reason": "cancelled",
+                                    "text": text,
+                                    "purpose": "turn",
+                                    "usage": {
+                                        "prompt_tokens": usage.prompt_tokens,
+                                        "completion_tokens": usage.completion_tokens,
+                                    },
+                                }),
+                            )?;
+                        }
+                        return Err(err);
+                    }
+                };
                 match delta {
                     Delta::Text(chunk) => {
                         text.push_str(&chunk);
@@ -299,7 +369,13 @@ impl Agent {
                 let started = std::time::Instant::now();
                 // a cancelled turn drops the tool future, and a process tool is killed on
                 // drop, so escape stops a running command rather than waiting it out.
-                let Some(executed) = self.until_cancelled(self.tools.execute(call.clone())).await
+                let stream = ToolStream {
+                    sink: self.sink.as_ref(),
+                    turn_id: &request.turn_id,
+                };
+                let Some(executed) = self
+                    .until_cancelled(self.tools.execute_streaming(call.clone(), &stream))
+                    .await
                 else {
                     return Err(AgentError::Cancelled);
                 };
@@ -429,11 +505,15 @@ impl Agent {
             }
         }
 
-        messages.push(if request.images.is_empty() {
-            message::user(request.prompt.clone())
-        } else {
-            message::user_with_images(request.prompt.clone(), &request.images)
-        });
+        // a continued answer ends the conversation: a prompt would start a new one instead
+        // of carrying on the message that was interrupted.
+        if !request.continue_final {
+            messages.push(if request.images.is_empty() {
+                message::user(request.prompt.clone())
+            } else {
+                message::user_with_images(request.prompt.clone(), &request.images)
+            });
+        }
 
         // rig owns the pairing rules: an interrupted turn leaves a call nothing answered,
         // and repairing that here is what keeps the endpoint from rejecting the history.

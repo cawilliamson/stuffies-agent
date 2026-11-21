@@ -62,6 +62,7 @@ fn request() -> TurnRequest {
         max_tokens: None,
         reasoning_effort: None,
         images: Vec::new(),
+        continue_final: false,
     }
 }
 
@@ -902,5 +903,129 @@ async fn a_truncated_answer_is_recorded_as_the_reason_it_stopped() {
     assert_eq!(
         outcome.finish_reason, "length",
         "a turn cut by the output budget is not a clean stop"
+    );
+}
+
+#[tokio::test]
+async fn a_continued_turn_carries_on_the_answer_that_was_cut_off() {
+    // a bare dot resumes: the conversation ends on the answer being continued, and no
+    // prompt is put in front of the model.
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![
+        Delta::Text("ku".to_owned()),
+        Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+        },
+    ]]));
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::new(RecordingSink::default()) as Arc<dyn EventSink>,
+    );
+
+    let mut request = request();
+    request.prompt = ".".to_owned();
+    request.continue_final = true;
+    request.history = vec![
+        stored(1, "turn.started", json!({"prompt": "write a haiku"})),
+        stored(
+            2,
+            "llm.completed",
+            json!({"text": "an old pond", "stop_reason": "cancelled", "purpose": "turn"}),
+        ),
+    ];
+
+    agent.run_turn(request).await.expect("turn");
+
+    let seen = provider.seen_requests();
+    assert_eq!(seen.len(), 1);
+    assert!(
+        seen[0].continue_final,
+        "the request asks the endpoint to continue the last message"
+    );
+    let messages = &seen[0].messages;
+    assert!(
+        !user_texts(messages).iter().any(|text| text == "."),
+        "a bare dot is not sent to the model: {:?}",
+        user_texts(messages)
+    );
+    assert!(
+        matches!(
+            messages.last(),
+            Some(rig_core::completion::Message::Assistant(_))
+        ),
+        "the conversation ends on the answer being continued"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_records_what_it_had_written() {
+    // without this the next turn has nothing to carry on from: the partial answer would
+    // exist only as deltas, which no transcript rebuild reads.
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct CancelAfterFirst {
+        written: AtomicBool,
+        events: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl EventSink for CancelAfterFirst {
+        fn append(&self, kind: &str, payload: &Value) -> Result<u64, StoreError> {
+            if kind == "llm.delta" {
+                self.written.store(true, Ordering::SeqCst);
+            }
+            self.events
+                .lock()
+                .map_err(|_| StoreError::Lock)?
+                .push((kind.to_owned(), payload.clone()));
+            Ok(0)
+        }
+
+        fn is_cancelled(&self) -> bool {
+            self.written.load(Ordering::SeqCst)
+        }
+    }
+
+    /// a stream that says one thing and then never closes, as a stalled endpoint does.
+    struct HangingProvider;
+
+    impl Provider for HangingProvider {
+        fn stream(&self, _request: ChatRequest) -> sa_core::llm::StreamFuture<'_> {
+            Box::pin(async {
+                let (tx, rx) = tokio::sync::mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(Delta::Text("an old".to_owned())).await;
+                    std::future::pending::<()>().await;
+                });
+                Ok(rx)
+            })
+        }
+    }
+
+    let sink = Arc::new(CancelAfterFirst {
+        written: AtomicBool::new(false),
+        events: Mutex::new(Vec::new()),
+    });
+    let agent = Agent::new(
+        Arc::new(HangingProvider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+
+    let cancelled = agent.run_turn(request()).await;
+    assert!(
+        matches!(cancelled, Err(AgentError::Cancelled)),
+        "the turn was cancelled"
+    );
+
+    let events = sink.events.lock().expect("events");
+    let completed = events
+        .iter()
+        .find(|(kind, payload)| kind == "llm.completed" && payload["stop_reason"] == "cancelled")
+        .expect("the partial answer is recorded as a completed message");
+    assert_eq!(
+        completed.1["text"], "an old",
+        "with the text it had written"
     );
 }

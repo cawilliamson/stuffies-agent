@@ -102,10 +102,12 @@ pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-/// the busy marker: a quarter-filled circle turning clockwise, the way macos draws work in
-/// progress. a terminal cannot rotate a glyph, so the rotation is four glyphs: upper left,
-/// upper right, lower right, lower left.
-const BUSY_FRAMES: [&str; 4] = ["\u{25f4}", "\u{25f7}", "\u{25f6}", "\u{25f5}"];
+/// the busy marker: a braille cycle, which reads as work in progress without a solid glyph
+/// blinking on and off.
+const BUSY_FRAMES: [&str; 10] = [
+    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2807}", "\u{280f}",
+];
 
 /// the frame of that marker for the current tick.
 #[must_use]
@@ -611,11 +613,21 @@ pub fn status_bar(app: &App, width: u16) -> Line<'static> {
     // the hint is contextual: while a turn runs, interrupting is the only useful key, so it
     // takes the whole hint rather than sharing it.
     let busy = tab.status.turn_running;
-    let hint = if busy {
-        " esc interrupt \u{00b7} alt+enter after \u{00b7} alt+up queue "
+    let mut hint = String::from(if busy {
+        " esc interrupt \u{00b7} alt+enter after \u{00b7} alt+up queue"
     } else {
-        " \u{2191}\u{2193} history \u{00b7} ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump "
-    };
+        " \u{2191}\u{2193} history \u{00b7} ctrl+t new \u{00b7} ctrl+w close \u{00b7} ctrl+1..9 jump"
+    });
+    // the shortcut is only offered while there is a tail to open, so it never claims a key
+    // that would do nothing.
+    if tab
+        .transcript
+        .iter()
+        .any(|entry| entry.role == app::Role::ToolOutput && !entry.expanded)
+    {
+        hint.push_str(" \u{00b7} ctrl+x expand");
+    }
+    hint.push(' ');
     let pad = usize::from(width).saturating_sub(used + hint.chars().count());
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled(hint, Style::default().fg(app::FAINT)));
@@ -883,10 +895,30 @@ pub enum Hit {
     Tab(usize),
     /// the picker item at this index.
     Picker(usize),
+    /// the scrollbar column, which can be grabbed and dragged.
+    Scrollbar,
     /// the transcript, which scrolls.
     Transcript,
     Composer,
     Status,
+}
+
+/// the column the scrollbar occupies, when there is anything to scroll.
+///
+/// the bar is drawn against the transcript's inner edge, so the column a click can grab is
+/// the last column inside the frame.
+#[must_use]
+pub fn scrollbar_track(app: &App, area: Rect) -> Option<Rect> {
+    let screen = regions(app, area);
+    let inner = Block::default()
+        .borders(Borders::ALL)
+        .inner(screen.transcript);
+    (app.tab().max_scroll > 0 && inner.width > 1).then(|| Rect {
+        x: inner.x + inner.width - 1,
+        y: inner.y,
+        width: 1,
+        height: inner.height,
+    })
 }
 
 /// the thing under a point, if it is anything a click can act on.
@@ -903,6 +935,11 @@ pub fn hit(app: &App, area: Rect, column: u16, row: u16) -> Option<Hit> {
         }
         let index = usize::from(row.saturating_sub(inner.y)).saturating_add(offset);
         return Some(Hit::Picker(index));
+    }
+    // the bar sits inside the transcript's frame, so it is tested before the pane it is
+    // drawn on: a drag on it must scroll, not just land on the transcript.
+    if scrollbar_track(app, area).is_some_and(|track| track.contains(point)) {
+        return Some(Hit::Scrollbar);
     }
     let screen = regions(app, area);
     if screen.tabs.contains(point) {

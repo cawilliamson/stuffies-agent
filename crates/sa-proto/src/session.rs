@@ -163,6 +163,10 @@ pub struct TurnStartParams {
     pub prompt: String,
     #[serde(default)]
     pub detach: bool,
+    /// continue the last assistant message instead of answering a new prompt, so an
+    /// interrupted answer is carried on rather than started again.
+    #[serde(default)]
+    pub continue_final: bool,
     /// images the operator attached to this prompt.
     #[serde(default)]
     pub images: Vec<ImageAttachment>,
@@ -215,6 +219,8 @@ pub mod kinds {
     pub const SESSION_RENAMED: &str = "session.renamed";
     pub const SESSION_STATE: &str = "session.state";
     pub const TOOL_COMPLETED: &str = "tool.completed";
+    /// a chunk of a tool's output, as it arrives.
+    pub const TOOL_DELTA: &str = "tool.delta";
     pub const TOOL_FAILED: &str = "tool.failed";
     pub const TOOL_REQUESTED: &str = "tool.requested";
     pub const TURN_COMPLETED: &str = "turn.completed";

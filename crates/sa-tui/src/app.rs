@@ -433,6 +433,9 @@ pub struct Entry {
     pub model: Option<String>,
     /// the reasoning effort that produced it, when the turn set one.
     pub effort: Option<String>,
+    /// for tool output: whether the operator has asked for every line. collapsed, only the
+    /// tail is drawn, because the end of a command is what says how it went.
+    pub expanded: bool,
 }
 
 impl Entry {
@@ -445,6 +448,7 @@ impl Entry {
             images: Vec::new(),
             model: None,
             effort: None,
+            expanded: false,
         }
     }
 }
@@ -644,6 +648,23 @@ impl Tab {
         if self.follow {
             self.scroll = self.max_scroll;
         }
+        self.content_rev = self.content_rev.wrapping_add(1);
+        self.cache = None;
+        self.touch();
+    }
+
+    /// expands or collapses the most recent tool output, so every line of a long command
+    /// is one key away rather than lost to the tail.
+    pub fn toggle_expand(&mut self) {
+        let Some(entry) = self
+            .transcript
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.role == Role::ToolOutput)
+        else {
+            return;
+        };
+        entry.expanded = !entry.expanded;
         self.content_rev = self.content_rev.wrapping_add(1);
         self.cache = None;
         self.touch();
@@ -1221,10 +1242,16 @@ impl Tab {
                     .get("exit_code")
                     .and_then(Value::as_i64)
                     .and_then(|c| i32::try_from(c).ok());
-                let mut entry = Entry::new(Role::ToolOutput, output);
-                entry.exit_code = exit_code;
                 self.tool_running = false;
-                self.push_entry(entry);
+                self.finish_tool_output(output, exit_code);
+            }
+            "tool.delta" => {
+                // the command is still running: this is what it has said so far.
+                let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
+                if !text.is_empty() {
+                    self.tool_running = true;
+                    self.append_stream_as(Role::ToolOutput, text);
+                }
             }
             "tool.failed" => {
                 self.tool_running = false;
@@ -1308,6 +1335,10 @@ impl Tab {
                     self.status.effort = effort.to_owned();
                 }
                 let images = thumbnails(&payload["images"]);
+                // a bare dot carries on the interrupted answer: it is not a message to the
+                // model, so it is not drawn as one.
+                let continues =
+                    payload.get("continue_final").and_then(Value::as_bool) == Some(true);
                 if self.transcript.last().map(|e| e.role) == Some(Role::User) {
                     // a steer or a resubmit already put the prompt up; the pictures belong
                     // on that same message rather than a second one.
@@ -1318,7 +1349,7 @@ impl Tab {
                         self.content_rev = self.content_rev.wrapping_add(1);
                         self.cache = None;
                     }
-                } else if !prompt.is_empty() || !images.is_empty() {
+                } else if (!prompt.is_empty() && !continues) || !images.is_empty() {
                     self.push(Role::User, prompt.to_owned());
                     if let Some(entry) = self.transcript.last_mut() {
                         entry.images = images;
@@ -1347,6 +1378,30 @@ impl Tab {
         }
     }
 
+    /// the finished result of a tool.
+    ///
+    /// a streamed output is already on screen: the record replaces it, because the live
+    /// view is best effort and this is what the daemon stored.
+    fn finish_tool_output(&mut self, output: &str, exit_code: Option<i32>) {
+        let streamed = self
+            .transcript
+            .last()
+            .is_some_and(|entry| entry.role == Role::ToolOutput);
+        if streamed {
+            if let Some(entry) = self.transcript.last_mut() {
+                entry.text = output.to_owned();
+                entry.exit_code = exit_code;
+            }
+            self.content_rev = self.content_rev.wrapping_add(1);
+            self.cache = None;
+            self.touch();
+            return;
+        }
+        let mut entry = Entry::new(Role::ToolOutput, output);
+        entry.exit_code = exit_code;
+        self.push_entry(entry);
+    }
+
     /// a turn the endpoint cut short is not a clean answer: say so, or an empty or
     /// half-finished reply reads as the whole of it.
     fn note_truncation(&mut self, payload: &Value) {
@@ -1365,8 +1420,11 @@ impl Tab {
     }
 
     fn append_stream_as(&mut self, role: Role, text: &str) {
+        // a streamed delta belongs to the message being streamed, whatever the delta ends
+        // with. splitting on a trailing newline turned every line of a code block into its
+        // own entry, and entries are drawn apart from one another.
         match self.transcript.last_mut() {
-            Some(entry) if entry.role == role && !entry.text.ends_with('\n') => {
+            Some(entry) if entry.role == role => {
                 entry.text.push_str(text);
             }
             _ => {
@@ -1643,6 +1701,9 @@ pub struct App {
     /// what the endpoint says about each model it serves. a model absent here has no
     /// known window or effort list, and is not given guessed ones.
     pub served: std::collections::HashMap<String, ServedModel>,
+    /// the scrollbar is being dragged: the thumb follows the pointer until the button is
+    /// released, the way a real scrollbar does.
+    pub dragging: bool,
 }
 
 impl App {
@@ -1663,7 +1724,22 @@ impl App {
             shift_held: false,
             ctrl_held: false,
             served: std::collections::HashMap::new(),
+            dragging: false,
         }
+    }
+
+    /// scrolls the transcript to where the pointer is on the scrollbar.
+    fn scroll_to(&mut self, area: ratatui::layout::Rect, row: u16) {
+        let Some(track) = crate::ui::scrollbar_track(self, area) else {
+            return;
+        };
+        let span = track.height.saturating_sub(1).max(1);
+        let offset = row.saturating_sub(track.y).min(span);
+        let tab = self.tab_mut();
+        let scroll = u32::from(offset) * u32::from(tab.max_scroll) / u32::from(span);
+        tab.scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+        tab.follow = tab.scroll >= tab.max_scroll;
+        tab.scrolled();
     }
 
     pub fn touch(&mut self) {
@@ -2041,8 +2117,23 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => match hit {
                 Some(crate::ui::Hit::Tab(index)) => Action::SwitchTab(index),
                 Some(crate::ui::Hit::Picker(index)) => self.pick_at(index),
+                // a press on the bar grabs it where it was pressed, and holding drags it.
+                Some(crate::ui::Hit::Scrollbar) => {
+                    self.dragging = true;
+                    self.scroll_to(area, mouse.row);
+                    Action::None
+                }
                 _ => Action::None,
             },
+            // the thumb follows the pointer until the button is released.
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
+                self.scroll_to(area, mouse.row);
+                Action::None
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.dragging = false;
+                Action::None
+            }
             // a middle click closes the tab it lands on, as a browser does.
             MouseEventKind::Down(MouseButton::Middle) => match hit {
                 Some(crate::ui::Hit::Tab(index)) => {
@@ -2052,6 +2143,10 @@ impl App {
                 _ => Action::None,
             },
             MouseEventKind::Moved => {
+                // hovering the bar keeps it up, so it can be grabbed at all.
+                if hit == Some(crate::ui::Hit::Scrollbar) {
+                    self.tab_mut().scrolled();
+                }
                 let tab = match hit {
                     Some(crate::ui::Hit::Tab(index)) => Some(index),
                     _ => None,
@@ -2130,6 +2225,11 @@ impl App {
                     Action::None
                 }
                 KeyCode::Char('w' | 'W') => self.request_close(),
+                // every line of the tool output, or only its tail.
+                KeyCode::Char('x') => {
+                    self.tab_mut().toggle_expand();
+                    Action::None
+                }
                 KeyCode::Char(digit @ '1'..='9') => {
                     Action::SwitchTab(digit as usize - '1' as usize)
                 }
@@ -2596,6 +2696,7 @@ fn framed_tool(
     call: &str,
     output: &str,
     exit_code: Option<i32>,
+    expanded: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
     let (_, edge, ink) = role_style(Role::Tool, "");
@@ -2613,9 +2714,40 @@ fn framed_tool(
     // a command and its output are literal: no markdown, but ANSI colouring is honoured.
     body(&mut out, &invocation, width, ink, false, edge, false);
     divider(&mut out, width, edge);
-    body_ansi(&mut out, output, width, out_ink, edge);
+    // collapsed, the tail is what says how the command went; ctrl+x shows the rest.
+    let (shown, hidden) = if expanded {
+        (output.to_owned(), 0)
+    } else {
+        tail(output)
+    };
+    if hidden > 0 {
+        body(
+            &mut out,
+            &format!("\u{2026} {hidden} earlier line(s) \u{00b7} ctrl+x to expand"),
+            width,
+            out_ink,
+            false,
+            edge,
+            false,
+        );
+    }
+    body_ansi(&mut out, &shown, width, out_ink, edge);
     bottom(&mut out, width, edge);
     inset(out)
+}
+
+/// the lines a collapsed tool output shows, and how many it left out.
+///
+/// the tail, because the end of a command is what says how it went; the beginning is what
+/// the operator scrolls back for when they want it, one key away.
+fn tail(output: &str) -> (String, usize) {
+    const SHOWN: usize = 5;
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.len() <= SHOWN {
+        return (output.to_owned(), 0);
+    }
+    let hidden = lines.len() - SHOWN;
+    (lines[hidden..].join("\n"), hidden)
 }
 
 /// renders a turn's reasoning and its reply as one frame split by a rule, rather than two
@@ -2706,6 +2838,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
                     &entry.text,
                     &result.text,
                     result.exit_code,
+                    result.expanded,
                     inner,
                 ));
                 index += 2;

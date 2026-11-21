@@ -18,6 +18,7 @@ async fn the_provider_streams_an_answer() {
             tools: Vec::new(),
             max_tokens: Some(64),
             reasoning_effort: None,
+            continue_final: false,
         })
         .await
         .expect("stream");
@@ -69,6 +70,7 @@ async fn a_tool_call_and_its_result_round_trip() {
                 tools: tools.clone(),
                 max_tokens: Some(256),
                 reasoning_effort: None,
+                continue_final: false,
             })
             .await
             .expect("stream");
@@ -108,6 +110,7 @@ async fn a_tool_call_and_its_result_round_trip() {
             tools,
             max_tokens: Some(256),
             reasoning_effort: None,
+            continue_final: false,
         })
         .await
         .expect("stream");

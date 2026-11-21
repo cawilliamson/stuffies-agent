@@ -125,6 +125,8 @@ pub struct NewTurn<'a> {
     pub client: Option<&'a str>,
     /// the interrupted turn this one carries on from, when it does (spec 5.6).
     pub resumed_from: Option<&'a str>,
+    /// continue the last assistant message rather than answering a new prompt.
+    pub continue_final: bool,
 }
 
 impl<'a> NewTurn<'a> {
@@ -138,6 +140,7 @@ impl<'a> NewTurn<'a> {
             detach: false,
             client: None,
             resumed_from: None,
+            continue_final: false,
         }
     }
 }
@@ -737,6 +740,9 @@ impl Manager {
             if let Some(resumed_from) = request.resumed_from {
                 payload["resumed_from"] = json!(resumed_from);
             }
+            if request.continue_final {
+                payload["continue_final"] = json!(true);
+            }
             payload
         });
         let seq = match started {
@@ -755,10 +761,21 @@ impl Manager {
         let prompt = prompt.to_owned();
         let images = images.to_vec();
         let turn = turn_id.clone();
+        // copied out of the request: the task outlives the borrow it arrived on.
+        let continue_final = request.continue_final;
         tokio::spawn(async move {
             manager
                 .run_turn(
-                    session, turn, prompt, images, row, model, effort, cancel, detach,
+                    session,
+                    turn,
+                    prompt,
+                    images,
+                    row,
+                    model,
+                    effort,
+                    cancel,
+                    detach,
+                    continue_final,
                 )
                 .await;
         });
@@ -779,6 +796,7 @@ impl Manager {
         effort: Option<String>,
         cancel: Arc<AtomicBool>,
         detach: bool,
+        continue_final: bool,
     ) {
         let budget = std::time::Duration::from_secs(self.config.aux_budget_secs.max(1));
 
@@ -894,6 +912,7 @@ impl Manager {
             max_tokens: self.config.max_tokens,
             // the value recorded with the turn, so the log and the request agree.
             reasoning_effort: effort,
+            continue_final,
         };
 
         // a stalled model stream must not hang the session forever (spec 14, v1.1).
@@ -1234,6 +1253,7 @@ impl Manager {
                 max_tokens: Some(1024),
                 // summarising is reading, not solving: the least effort the model offers.
                 reasoning_effort: self.cheapest_effort(model),
+                continue_final: false,
             })
             .await?;
 

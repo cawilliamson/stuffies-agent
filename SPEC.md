@@ -860,6 +860,14 @@ grammars share; a container's members are listed beneath it, a function's locals
 
 Rules:
 
+- `read` renders each line as `hhhhhh|content`, six hex characters of the line's own
+  sha256, and `edit` addresses a line by that hash. A hash no line carries, or one that
+  several identical lines carry with no `line` to choose between them, is refused rather
+  than guessed: the message names the hash and says to re-read. A line number that
+  disagrees with the hash loses to the hash, because a number goes stale the moment
+  anything above it shifts while the text does not. Text copied back with its `hhhhhh|`
+  prefix still matches, because the prefix is addressing rather than content. The raw form
+  is `read {hashline: false}`.
 - `grep` and `find` search what the project's own ignore files include: a path a
   `.gitignore` excludes, and the git directory itself, are not searched, so a result is
   source rather than build output. A dotfile is still source.

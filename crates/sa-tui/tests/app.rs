@@ -951,7 +951,7 @@ fn a_busy_tab_shows_a_spinner() {
     assert!(
         screen
             .chars()
-            .any(|c| ('\u{25f4}'..='\u{25f7}').contains(&c)),
+            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
         "expected a busy marker on the tab:\n{screen}"
     );
 }
@@ -964,7 +964,7 @@ fn an_idle_tab_has_no_spinner() {
     assert!(
         !screen
             .chars()
-            .any(|c| ('\u{25f4}'..='\u{25f7}').contains(&c)),
+            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
         "no spinner when idle:\n{screen}"
     );
 }
@@ -988,7 +988,9 @@ fn a_tab_without_a_directory_falls_back_to_its_session() {
 }
 
 #[test]
-fn long_tool_output_is_not_truncated() {
+fn a_long_tool_output_shows_its_tail_and_opens_on_ctrl_x() {
+    // the command's end is what says how it went, so a collapsed output shows that and
+    // offers the rest rather than spending the transcript on forty lines of noise.
     let mut app = App::new("s", "m");
     let output: String = (0..40)
         .map(|n| format!("line {n}"))
@@ -1001,13 +1003,33 @@ fn long_tool_output_is_not_truncated() {
     app.tab_mut()
         .on_event("tool.completed", &json!({"output": output, "exit_code": 0}));
 
-    // every line must survive, not just the first dozen.
-    let screen = screen(&mut app, 100, 60);
-    assert!(screen.contains("line 0"), "{screen}");
+    let collapsed = screen(&mut app, 100, 60);
     assert!(
-        screen.contains("line 39"),
-        "the tail must survive:\n{screen}"
+        collapsed.contains("line 39"),
+        "the tail is what a collapsed output shows:\n{collapsed}"
     );
+    assert!(
+        !collapsed.contains("line 0\n"),
+        "the earlier lines are folded away:\n{collapsed}"
+    );
+    assert!(
+        collapsed.contains("35 earlier line(s)"),
+        "the fold says how much it hid:\n{collapsed}"
+    );
+    assert!(
+        collapsed.contains("ctrl+x"),
+        "and the key that opens it is on screen:\n{collapsed}"
+    );
+
+    // ctrl+x opens every line of it.
+    let action = app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('x'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+    assert_eq!(action, sa_tui::app::Action::None);
+    let opened = screen(&mut app, 100, 60);
+    assert!(opened.contains("line 0"), "every line is shown:\n{opened}");
+    assert!(opened.contains("line 39"), "{opened}");
 }
 
 #[test]
@@ -3230,14 +3252,25 @@ fn the_working_header_carries_the_spinner() {
 }
 
 #[test]
-fn the_spinner_is_a_ring_that_turns() {
-    // the quarter turns: four positions, no repeats, and it wraps.
-    let frames: Vec<&str> = (0..4).map(sa_tui::ui::busy_frame).collect();
+fn the_spinner_is_a_braille_cycle_that_turns() {
+    // the cycle turns: every position distinct, one cell wide, and it wraps.
+    let frames: Vec<&str> = (0..10).map(sa_tui::ui::busy_frame).collect();
     let mut unique = frames.clone();
     unique.sort_unstable();
     unique.dedup();
-    assert_eq!(unique.len(), 4, "every frame is distinct: {frames:?}");
-    assert_eq!(sa_tui::ui::busy_frame(4), frames[0], "it wraps");
+    assert_eq!(unique.len(), 10, "every frame is distinct: {frames:?}");
+    for frame in &frames {
+        assert_eq!(
+            frame.chars().count(),
+            1,
+            "one cell, or the tab strip shifts: {frame:?}"
+        );
+        assert!(
+            ('\u{2800}'..='\u{28ff}').contains(&frame.chars().next().expect("a glyph")),
+            "a braille cell: {frame:?}"
+        );
+    }
+    assert_eq!(sa_tui::ui::busy_frame(10), frames[0], "it wraps");
 }
 
 const fn mouse(
@@ -3795,5 +3828,134 @@ fn every_tab_carries_its_number_before_its_name() {
     assert!(
         row.contains("30 tab30"),
         "the thirtieth tab keeps its own number:\n[{row}]"
+    );
+}
+
+#[test]
+fn reasoning_arriving_a_line_at_a_time_does_not_double_space_the_code() {
+    // the regression: a reasoning delta ending in a newline started a new transcript
+    // entry, and consecutive entries are joined with a blank line, so a code block inside
+    // a thinking block gained two blank lines before every one of its lines.
+    let mut app = App::new("s", "m");
+    for chunk in ["```rust\n", "let a = 1;\n", "let b = 2;\n", "```\n"] {
+        app.tab_mut()
+            .on_event("llm.reasoning", &json!({"text": chunk}));
+    }
+
+    let rows = rows(&mut app, 80, 30);
+    let at = |needle: &str| {
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is not on screen:\n{}", rows.join("\n")))
+    };
+    let first = at("let a = 1;");
+    let second = at("let b = 2;");
+    assert_eq!(
+        second,
+        first + 1,
+        "consecutive code lines must be consecutive rows:\n{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
+fn a_running_command_shows_its_output_as_it_arrives() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "make"}}),
+    );
+    app.tab_mut()
+        .on_event("tool.delta", &json!({"text": "building target\n"}));
+
+    let screen = screen(&mut app, 100, 40);
+    assert!(
+        screen.contains("building target"),
+        "a command's output appears while it runs:\n{screen}"
+    );
+}
+
+#[test]
+fn the_finished_result_replaces_what_was_streamed() {
+    // the live view is best effort; the record is what the daemon stored. the two must not
+    // both be drawn.
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "bash", "args": {"command": "seq 2"}}),
+    );
+    app.tab_mut()
+        .on_event("tool.delta", &json!({"text": "one\n"}));
+    app.tab_mut().on_event(
+        "tool.completed",
+        &json!({"output": "one\ntwo\n", "exit_code": 0}),
+    );
+
+    let outputs = app
+        .tab()
+        .transcript
+        .iter()
+        .filter(|entry| entry.role == Role::ToolOutput)
+        .count();
+    assert_eq!(outputs, 1, "one output entry, not a streamed one beside it");
+    assert_eq!(
+        app.tab().transcript.last().expect("the output").text,
+        "one\ntwo\n",
+        "the record replaces the live view"
+    );
+}
+
+#[test]
+fn hovering_the_scrollbar_reveals_it_and_a_drag_scrolls() {
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().max_scroll = 100;
+    app.tab_mut().scroll = 0;
+    let area = screen_area(100, 24);
+
+    let track = sa_tui::ui::scrollbar_track(&app, area)
+        .expect("the bar exists once there is something to scroll");
+
+    // hovering the column keeps the bar up, so it can be grabbed at all.
+    app.on_mouse(area, mouse(MouseEventKind::Moved, track.x, track.y + 2));
+    assert!(
+        app.tab().scroll_touched.is_some(),
+        "hovering reveals the scrollbar"
+    );
+
+    // a press grabs it, and the thumb follows the pointer while the button is held.
+    app.on_mouse(
+        area,
+        mouse(MouseEventKind::Down(MouseButton::Left), track.x, track.y),
+    );
+    assert!(app.dragging, "the press grabs the bar");
+    assert_eq!(app.tab().scroll, 0, "the top of the track is the top");
+
+    let bottom = track.y + track.height - 1;
+    app.on_mouse(
+        area,
+        mouse(MouseEventKind::Drag(MouseButton::Left), track.x, bottom),
+    );
+    assert_eq!(
+        app.tab().scroll,
+        app.tab().max_scroll,
+        "dragging to the bottom scrolls to the bottom"
+    );
+
+    app.on_mouse(
+        area,
+        mouse(MouseEventKind::Up(MouseButton::Left), track.x, bottom),
+    );
+    assert!(!app.dragging, "releasing lets go of the bar");
+}
+
+#[test]
+fn the_scrollbar_only_exists_when_there_is_something_to_scroll() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().max_scroll = 0;
+    assert!(
+        sa_tui::ui::scrollbar_track(&app, screen_area(100, 24)).is_none(),
+        "a transcript that fits has no bar to grab"
     );
 }

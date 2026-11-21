@@ -43,10 +43,22 @@ async fn run(
 async fn read_returns_file_contents() {
     let dir = workspace();
     let reg = registry(dir.path());
-    let out = run(&reg, "read", json!({"path": "main.rs"}))
+
+    // the default form is addressable: every line carries the hash that names it.
+    let hashed = run(&reg, "read", json!({"path": "main.rs"}))
         .await
         .expect("read");
-    assert_eq!(out, "fn main() {}\n");
+    let line = hashed.lines().next().expect("a line");
+    let (hash, content) = line.split_once('|').expect("hash|content");
+    assert_eq!(hash.len(), 6, "a six character hash: {line:?}");
+    assert!(hash.bytes().all(|b| b.is_ascii_hexdigit()), "{line:?}");
+    assert_eq!(content, "fn main() {}", "the text is untouched");
+
+    // and the raw form is one flag away.
+    let raw = run(&reg, "read", json!({"path": "main.rs", "hashline": false}))
+        .await
+        .expect("read");
+    assert_eq!(raw, "fn main() {}\n");
 }
 
 #[tokio::test]
@@ -408,4 +420,133 @@ async fn a_search_respects_the_projects_own_ignore_files() {
         found.is_empty(),
         "a find does not report an ignored file: {found}"
     );
+}
+
+#[tokio::test]
+async fn a_running_command_reports_its_output_as_it_arrives() {
+    // the live view: a build says what it is doing while it does it, rather than looking
+    // like a hung command until it ends.
+    use std::sync::Mutex;
+
+    struct Record(Mutex<Vec<String>>);
+
+    impl sa_core::agent::OutputSink for Record {
+        fn output(&self, call_id: &str, chunk: &str) {
+            assert_eq!(call_id, "c1", "a chunk names the call it belongs to");
+            if let Ok(mut seen) = self.0.lock() {
+                seen.push(chunk.to_owned());
+            }
+        }
+    }
+
+    let dir = workspace();
+    let registry = registry(dir.path());
+    let sink = Record(Mutex::new(Vec::new()));
+    let outcome = registry
+        .execute_streaming(
+            call("bash", &json!({"command": "echo one; echo two"})),
+            &sink,
+        )
+        .await
+        .expect("run");
+
+    assert!(outcome.output.contains("one"), "{outcome:?}");
+    assert!(outcome.output.contains("two"), "{outcome:?}");
+    let seen = sink.0.lock().expect("lock");
+    assert!(
+        !seen.is_empty(),
+        "the output must be reported before the command ends"
+    );
+    assert!(
+        seen.concat().contains("one"),
+        "the live chunks carry the output: {seen:?}"
+    );
+}
+
+/// the hash a rendered read gives a line, so an edit can name it.
+fn hash_for(rendered: &str, needle: &str) -> String {
+    rendered
+        .lines()
+        .find(|line| line.ends_with(needle))
+        .and_then(|line| line.split_once('|'))
+        .map_or_else(
+            || panic!("{needle} is not in the read output"),
+            |(hash, _)| hash.to_owned(),
+        )
+}
+
+#[tokio::test]
+async fn an_edit_can_name_a_line_by_the_hash_read_gave_it() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let rendered = run(&reg, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+    let hash = hash_for(&rendered, "fn main() {}");
+
+    let out = run(
+        &reg,
+        "edit",
+        json!({"path": "main.rs", "edits": [{"hash": hash, "content": "fn main() { run(); }"}]}),
+    )
+    .await
+    .expect("edit by hash");
+    assert!(out.contains("edited main.rs"), "{out}");
+
+    let written = std::fs::read_to_string(dir.path().join("main.rs")).expect("read back");
+    assert_eq!(written, "fn main() { run(); }\n");
+}
+
+#[tokio::test]
+async fn an_edit_by_hash_refuses_a_line_that_changed_underneath_it() {
+    // the whole point: a hash that no longer matches is refused rather than overwriting
+    // text the model has not seen.
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let rendered = run(&reg, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+    let stale = hash_for(&rendered, "fn main() {}");
+
+    // something else edits the file first.
+    std::fs::write(dir.path().join("main.rs"), "fn main() { other(); }\n").expect("write");
+
+    let refused = run(
+        &reg,
+        "edit",
+        json!({"path": "main.rs", "edits": [{"hash": stale, "content": "fn main() {}"}]}),
+    )
+    .await
+    .expect_err("a stale hash must be refused");
+    assert!(refused.contains(&stale), "it names the hash: {refused}");
+    assert!(
+        refused.contains("re-read"),
+        "and says what to do: {refused}"
+    );
+
+    // the file is untouched.
+    let written = std::fs::read_to_string(dir.path().join("main.rs")).expect("read back");
+    assert_eq!(written, "fn main() { other(); }\n");
+}
+
+#[tokio::test]
+async fn hashed_text_copied_into_old_still_edits() {
+    // a model that pastes the whole `hhhhhh|line` back must not be punished for it.
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let rendered = run(&reg, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+    let line = rendered.lines().next().expect("a line").to_owned();
+
+    run(
+        &reg,
+        "edit",
+        json!({"path": "main.rs", "old": line, "new": "fn main() { run(); }"}),
+    )
+    .await
+    .expect("the hash prefix is addressing, not content");
+
+    let written = std::fs::read_to_string(dir.path().join("main.rs")).expect("read back");
+    assert_eq!(written, "fn main() { run(); }\n");
 }

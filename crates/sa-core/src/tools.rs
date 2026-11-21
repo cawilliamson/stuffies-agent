@@ -107,7 +107,10 @@ impl ToolRegistry {
             return Ok(text(output));
         }
         match call.name.as_str() {
-            "bash" => self.bash(&args).await,
+            "bash" => {
+                self.bash_streaming(&args, &call.id, &crate::agent::NoOutput)
+                    .await
+            }
             "edit" => self.edit(&args).await.map(text),
             "find" => self.find(&args).await.map(text),
             "grep" => self.grep(&args).await.map(text),
@@ -133,7 +136,16 @@ impl ToolRegistry {
         if let Some(lens) = &self.lens {
             lens.guard.record(&path);
         }
-        Ok(body)
+        // the hashed form is what makes a line addressable; the raw text is one flag away.
+        let hashed = args
+            .get("hashline")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        Ok(if hashed {
+            crate::hashline::render(&body)
+        } else {
+            body
+        })
     }
 
     /// the declarations a file makes, so the model reads a range instead of a whole file.
@@ -211,18 +223,27 @@ impl ToolRegistry {
     async fn edit(&self, args: &Value) -> Result<String, ToolError> {
         let raw = required(args, "path")?;
         let path = self.resolve(raw)?;
-        let old = required(args, "old")?;
-        let new = required(args, "new")?;
         // an edit is made to text the model has seen, or it is made to a guess.
         self.guard_edit(&path, raw)?;
         let body = tokio::fs::read_to_string(&path).await?;
-        let count = body.matches(old).count();
-        if count != 1 {
-            return Err(ToolError::Args(format!(
-                "{raw}: expected exactly one match, found {count}"
-            )));
-        }
-        let edited = body.replacen(old, new, 1);
+        // the hashline form: each edit names the line by the hash of its own text.
+        let edited = if let Some(Value::Array(items)) = args.get("edits") {
+            let edits = parse_hashline_edits(items)?;
+            crate::hashline::apply(&body, &edits).map_err(ToolError::Args)?
+        } else {
+            let old = required(args, "old")?;
+            let new = required(args, "new")?;
+            // a model that copied the hashed line back still matches the file: the prefix
+            // is addressing, not content.
+            let old = crate::hashline::strip_hashed(old);
+            let count = body.matches(old.as_str()).count();
+            if count != 1 {
+                return Err(ToolError::Args(format!(
+                    "{raw}: expected exactly one match, found {count}"
+                )));
+            }
+            body.replacen(old.as_str(), new, 1)
+        };
         tokio::fs::write(&path, &edited).await?;
         if let Some(lens) = &self.lens {
             lens.guard.record(&path);
@@ -298,7 +319,16 @@ impl ToolRegistry {
         Ok(hits.join("\n"))
     }
 
-    async fn bash(&self, args: &Value) -> Result<ToolOutcome, ToolError> {
+    /// runs a command in its own process group, reporting its output as it arrives.
+    ///
+    /// the group is what gets killed, so a `sleep 100 &` cannot outlive the shell that
+    /// started it, and a cancelled turn takes the whole tree with it.
+    async fn bash_streaming(
+        &self,
+        args: &Value,
+        call_id: &str,
+        sink: &dyn crate::agent::OutputSink,
+    ) -> Result<ToolOutcome, ToolError> {
         let command = required(args, "command")?.to_owned();
 
         let mut process = tokio::process::Command::new("sh");
@@ -313,27 +343,48 @@ impl ToolRegistry {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        // the command runs in its own process group, and the group is what gets killed:
-        // a `sleep 100 &` would otherwise outlive the shell that started it.
-        let child = process
+        let mut child = process
             .group_spawn()
             .map_err(|e| ToolError::Args(e.to_string()))?;
         let mut killer = KillGroup(child.id().and_then(|id| i32::try_from(id).ok()));
 
-        let output = tokio::time::timeout(
+        // both streams are read as they arrive: a build says what it is doing while it
+        // does it, and waiting for the end makes a slow command look like a hung one.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+        {
+            let inner = child.inner();
+            if let Some(stdout) = inner.stdout.take() {
+                tokio::spawn(pump(stdout, tx.clone()));
+            }
+            if let Some(stderr) = inner.stderr.take() {
+                tokio::spawn(pump(stderr, tx.clone()));
+            }
+        }
+        drop(tx);
+
+        let collected = async {
+            let mut bytes: Vec<u8> = Vec::new();
+            while let Some(chunk) = rx.recv().await {
+                // the live view is best effort: a chunk that splits a character shows a
+                // replacement for an instant. the recorded output is decoded whole below.
+                sink.output(call_id, &String::from_utf8_lossy(&chunk));
+                bytes.extend_from_slice(&chunk);
+            }
+            let status = child.wait().await?;
+            Ok::<_, std::io::Error>((String::from_utf8_lossy(&bytes).into_owned(), status))
+        };
+
+        let (output, status) = tokio::time::timeout(
             std::time::Duration::from_secs(COMMAND_TIMEOUT_SECS),
-            child.wait_with_output(),
+            collected,
         )
         .await
         .map_err(|_| ToolError::Args(format!("timed out after {COMMAND_TIMEOUT_SECS}s")))??;
         killer.disarm();
 
-        // one combined stream, as a terminal would show it: no section headers.
-        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-        combined.push_str(&String::from_utf8_lossy(&output.stderr));
         Ok(ToolOutcome {
-            output: combined,
-            exit_code: output.status.code(),
+            output,
+            exit_code: status.code(),
         })
     }
 }
@@ -353,8 +404,12 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "edit",
-                "Replace exactly one occurrence of `old` with `new`. Fails unless `old` appears exactly once, so include enough surrounding context to be unique. The file must have been read in this session first.",
-                json!({"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["path", "old", "new"]}),
+                "Replace lines by the hash they carry: `edits: [{hash, content}]`, where hash \
+                 is the `hhhhhh` prefix read returned. The hash names the text itself, so a \
+                 line that has moved is still found and a line that has changed is refused. \
+                 Add `line` to choose between identical lines. `old`/`new` also work. The \
+                 file must have been read in this session first.",
+                json!({"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object"}}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["path"]}),
             ),
             spec(
                 "find",
@@ -380,8 +435,10 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "read",
-                "Read a file as text. Reading a file is what allows it to be edited.",
-                json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+                "Read a file as text, each line prefixed with `hhhhhh|`: the hash names that \
+                 line for `edit`. Pass `hashline: false` for the raw text. Reading a file is \
+                 what allows it to be edited.",
+                json!({"type": "object", "properties": {"path": {"type": "string"}, "hashline": {"type": "boolean"}}, "required": ["path"]}),
             ),
             spec(
                 "web_fetch",
@@ -412,6 +469,24 @@ impl ToolExecutor for ToolRegistry {
     fn execute(&self, call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
         Box::pin(async move { self.call(&call).await.map_err(|e| e.to_string()) })
     }
+
+    fn execute_streaming<'a>(
+        &'a self,
+        call: ToolCall,
+        sink: &'a dyn crate::agent::OutputSink,
+    ) -> BoxFuture<'a, Result<ToolOutcome, String>> {
+        Box::pin(async move {
+            // only a tool that runs a process has anything to say before it finishes.
+            if call.name == "bash" {
+                let args = parse_args(&call.arguments).map_err(|e| e.to_string())?;
+                return self
+                    .bash_streaming(&args, &call.id, sink)
+                    .await
+                    .map_err(|e| e.to_string());
+            }
+            self.call(&call).await.map_err(|e| e.to_string())
+        })
+    }
 }
 
 /// wraps plain text output as a tool outcome.
@@ -430,6 +505,26 @@ fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     }
 }
 
+/// reads one of a child's streams into the live sink until the stream closes.
+async fn pump<R>(mut reader: R, tx: tokio::sync::mpsc::Sender<Vec<u8>>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let mut buf = vec![0_u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => {
+                if tx.send(buf[..read].to_vec()).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// the files a search walks.
 ///
 /// the project's own ignore files decide what is searched, so a coding agent sees the
@@ -440,6 +535,43 @@ fn walk(root: &Path) -> ignore::Walk {
         .hidden(false)
         .filter_entry(|entry| entry.file_name() != ".git")
         .build()
+}
+
+/// one hashline edit, read as leniently as the model writes it.
+///
+/// a model gets this wrong often enough that the shapes it is likely to reach for are all
+/// accepted: the hash with its separator still attached, `new` for the replacement, and
+/// `line_number` for the hint. anything genuinely missing is named.
+fn parse_hashline_edits(items: &[Value]) -> Result<Vec<crate::hashline::Edit>, ToolError> {
+    let mut edits = Vec::with_capacity(items.len());
+    for item in items {
+        let raw = item
+            .get("hash")
+            .or_else(|| item.get("line_hash"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::Args("each edit needs a hash".to_owned()))?;
+        // `hhhhhh|content` copied whole still names the line.
+        let hash = raw.split('|').next().unwrap_or(raw).trim().to_owned();
+        if hash.is_empty() {
+            return Err(ToolError::Args("each edit needs a hash".to_owned()));
+        }
+        let content = item
+            .get("content")
+            .or_else(|| item.get("new"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::Args("each edit needs content".to_owned()))?;
+        let line = item
+            .get("line")
+            .or_else(|| item.get("line_number"))
+            .and_then(Value::as_u64)
+            .and_then(|number| usize::try_from(number).ok());
+        edits.push(crate::hashline::Edit {
+            hash,
+            line,
+            content: content.to_owned(),
+        });
+    }
+    Ok(edits)
 }
 
 fn parse_args(raw: &str) -> Result<Value, ToolError> {

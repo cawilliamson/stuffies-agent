@@ -43,6 +43,10 @@ pub struct ChatRequest {
     pub tools: Vec<ToolSpec>,
     pub max_tokens: Option<u64>,
     pub reasoning_effort: Option<String>,
+    /// continue the final assistant message rather than answering a new prompt. the
+    /// endpoint decides whether it honours it; a server that does not still sees its own
+    /// last message and carries on from it.
+    pub continue_final: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,6 +562,12 @@ fn rig_request(request: &ChatRequest) -> Result<rig_core::completion::Completion
         completion =
             completion.additional_params(serde_json::json!({ "reasoning_effort": effort }));
     }
+    if request.continue_final {
+        // vllm and llama.cpp take this; a server that ignores it still sees its own last
+        // message as the conversation's end, which is the next best thing.
+        completion =
+            completion.additional_params(serde_json::json!({ "continue_final_message": true }));
+    }
     Ok(completion)
 }
 
@@ -796,6 +806,7 @@ mod tests {
             }],
             max_tokens: Some(64),
             reasoning_effort: Some("high".to_owned()),
+            continue_final: false,
         };
 
         let built = format!("{:?}", rig_request(&request).expect("request"));
@@ -827,6 +838,7 @@ mod tests {
                 tools: Vec::new(),
                 max_tokens: None,
                 reasoning_effort: None,
+                continue_final: false,
             })
             .await
             .expect("stream");

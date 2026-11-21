@@ -275,6 +275,7 @@ impl Dispatcher {
                 detach: params.detach,
                 client: Some(conn.client()),
                 resumed_from: None,
+                continue_final: params.continue_final,
             })
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!(result))

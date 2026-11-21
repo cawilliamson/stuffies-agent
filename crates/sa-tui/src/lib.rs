@@ -1443,6 +1443,64 @@ mod daemon_tests {
             "a slash command is not a prompt"
         );
     }
+
+    #[tokio::test]
+    async fn a_bare_dot_asks_the_daemon_to_continue() {
+        // resuming is a request to carry on, not a prompt of one character.
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed(".");
+        stream.push(press(crossterm::event::KeyCode::Enter));
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let started = seen
+            .iter()
+            .find(|request| request["method"] == "turn.start")
+            .expect("a turn must be started");
+        assert_eq!(
+            started["params"]["continue_final"], true,
+            "a bare dot carries the answer on: {started:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_text_is_not_a_continue() {
+        let (mut client, server) = daemon(startup_replies());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut stream = typed("hello");
+        stream.push(press(crossterm::event::KeyCode::Enter));
+        run_with(
+            &mut client,
+            Some("s1".to_owned()),
+            false,
+            &mut terminal,
+            keys(stream),
+        )
+        .await
+        .expect("run");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let started = seen
+            .iter()
+            .find(|request| request["method"] == "turn.start")
+            .expect("a turn must be started");
+        assert_eq!(started["params"]["continue_final"], false);
+    }
 }
 
 /// runs one slash command. returns true when the operator asked to quit.
@@ -1673,6 +1731,9 @@ async fn set_model(client: &mut Client, app: &mut App, model: &str) {
 #[allow(clippy::future_not_send)]
 async fn send_prompt(client: &mut Client, app: &mut App, prompt: &str) -> Result<bool, String> {
     let sid = app.tab().session.clone();
+    // a bare dot means "carry on": it carries the interrupted answer forward instead of
+    // asking the model a question it has already been asked.
+    let continues = prompt.trim() == ".";
     let images: Vec<serde_json::Value> = app
         .tab()
         .attachments
@@ -1711,6 +1772,7 @@ async fn send_prompt(client: &mut Client, app: &mut App, prompt: &str) -> Result
             "session_id": sid,
             "prompt": prompt,
             "detach": false,
+            "continue_final": continues,
             "images": images,
         }),
     )
