@@ -539,7 +539,7 @@ fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
 
     SystemPrompt {
         role: format!(
-            "You are sa, a coding agent working in the git workspace at {workspace}. \
+            "You are stuffies-agent, a coding agent working in the git workspace at {workspace}. \
              Tool paths resolve inside it; a path outside it is an error."
         ),
         sections: vec![

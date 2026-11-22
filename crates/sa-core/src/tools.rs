@@ -19,7 +19,16 @@ pub const MAX_TOOL_OUTPUT: usize = 256 * 1024;
 /// default command timeout (spec 9).
 pub const COMMAND_TIMEOUT_SECS: u64 = 600;
 
-/// how many files a search walks before it gives up.
+/// how many lines a read returns when the caller does not say.
+pub const READ_LINES: usize = 2000;
+
+/// the most lines a read returns however many are asked for.
+pub const MAX_READ_LINES: usize = 5000;
+
+/// the most bytes one read returns, so a file of enormous lines cannot flood the context.
+pub const MAX_READ_BYTES: usize = 50 * 1024;
+
+/// how many lines a search walks before it gives up.
 pub const MAX_WALKED: usize = 5000;
 
 /// how many matches a search returns.
@@ -141,11 +150,19 @@ impl ToolRegistry {
             .get("hashline")
             .and_then(Value::as_bool)
             .unwrap_or(true);
-        Ok(if hashed {
-            crate::hashline::render(&body)
-        } else {
-            body
-        })
+        let offset = args
+            .get("offset")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(1)
+            .max(1);
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(READ_LINES)
+            .clamp(1, MAX_READ_LINES);
+        Ok(window(&body, offset, limit, hashed))
     }
 
     /// the declarations a file makes, so the model reads a range instead of a whole file.
@@ -210,6 +227,9 @@ impl ToolRegistry {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // what the file held, so replacing it is a change that can be read rather than a
+        // claim that something was written.
+        let before = tokio::fs::read_to_string(&path).await.ok();
         let body = required(args, "content")?;
         tokio::fs::write(&path, body).await?;
         // what was written is what the model has now seen, so the next edit needs no read.
@@ -217,7 +237,13 @@ impl ToolRegistry {
             lens.guard.record(&path);
         }
         let report = self.check(&path, raw, body);
-        Ok(format!("wrote {} bytes to {raw}{report}", body.len()))
+        let change = before.map_or_else(String::new, |before| {
+            format!("\n\n{}", diff(&before, body, raw))
+        });
+        Ok(format!(
+            "wrote {} bytes to {raw}{change}{report}",
+            body.len()
+        ))
     }
 
     async fn edit(&self, args: &Value) -> Result<String, ToolError> {
@@ -227,9 +253,17 @@ impl ToolRegistry {
         self.guard_edit(&path, raw)?;
         let body = tokio::fs::read_to_string(&path).await?;
         // the hashline form: each edit names the line by the hash of its own text.
-        let edited = if let Some(Value::Array(items)) = args.get("edits") {
+        let (edited, changed) = if let Some(Value::Array(items)) = args.get("edits") {
             let edits = parse_hashline_edits(items)?;
-            crate::hashline::apply(&body, &edits).map_err(ToolError::Args)?
+            let applied = crate::hashline::apply(&body, &edits).map_err(|failure| {
+                // a refusal carries the lines to retry with, so the model does not have to
+                // guess what the file holds now.
+                ToolError::Args(format!(
+                    "{raw}: {}",
+                    crate::hashline::guidance(&body, &failure)
+                ))
+            })?;
+            (applied.source, applied.changed)
         } else {
             let old = required(args, "old")?;
             let new = required(args, "new")?;
@@ -239,17 +273,28 @@ impl ToolRegistry {
             let count = body.matches(old.as_str()).count();
             if count != 1 {
                 return Err(ToolError::Args(format!(
-                    "{raw}: expected exactly one match, found {count}"
+                    "{raw}: expected exactly one match, found {count}{}",
+                    nearby(&body, &old)
                 )));
             }
-            body.replacen(old.as_str(), new, 1)
+            (body.replacen(old.as_str(), new, 1), Vec::new())
         };
         tokio::fs::write(&path, &edited).await?;
         if let Some(lens) = &self.lens {
             lens.guard.record(&path);
         }
         let report = self.check(&path, raw, &edited);
-        Ok(format!("edited {raw}{report}"))
+        // the change itself, in place: a model that has just edited a file should see what
+        // it did rather than a byte count it has to take on trust.
+        let change = diff(&body, &edited, raw);
+        // and the hashes of what it wrote, so the next edit needs no read.
+        let fresh = changed.first().map_or_else(String::new, |line| {
+            format!(
+                "\n\nhashes as written — reuse them for the next edit:\n{}",
+                crate::hashline::window(&edited, *line, 2)
+            )
+        });
+        Ok(format!("edited {raw}\n\n{change}{fresh}{report}"))
     }
 
     async fn find(&self, args: &Value) -> Result<String, ToolError> {
@@ -435,10 +480,14 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "read",
-                "Read a file as text, each line prefixed with `hhhhhh|`: the hash names that \
-                 line for `edit`. Pass `hashline: false` for the raw text. Reading a file is \
-                 what allows it to be edited.",
-                json!({"type": "object", "properties": {"path": {"type": "string"}, "hashline": {"type": "boolean"}}, "required": ["path"]}),
+                &format!(
+                    "Read a file as text, each line prefixed with `hhhhhh|`: the hash names that \
+                     line for `edit`. Pass `hashline: false` for the raw text. Returns at most \
+                     {READ_LINES} lines or {} KiB; when there is more, the last line says the \
+                     offset to continue from. Reading a file is what allows it to be edited.",
+                    MAX_READ_BYTES / 1024
+                ),
+                json!({"type": "object", "properties": {"path": {"type": "string"}, "hashline": {"type": "boolean"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, "required": ["path"]}),
             ),
             spec(
                 "web_fetch",
@@ -572,6 +621,81 @@ fn parse_hashline_edits(items: &[Value]) -> Result<Vec<crate::hashline::Edit>, T
         });
     }
     Ok(edits)
+}
+
+/// where the text a model quoted still is, when an `old`/`new` edit finds nothing.
+///
+/// an edit that matches nothing is the model quoting a file that has moved on. pointing at
+/// the line its quote starts on turns a dead end into a hashline edit it can make instead.
+fn nearby(body: &str, quoted: &str) -> String {
+    let Some(anchor) = quoted.lines().find(|line| !line.trim().is_empty()) else {
+        return String::new();
+    };
+    let Some(at) = body.lines().position(|line| line == anchor) else {
+        return String::new();
+    };
+    format!(
+        "\n\nwhat the file holds there now — edit by hash instead:\n{}",
+        crate::hashline::window(body, at + 1, 4)
+    )
+}
+
+/// one window of a file, and what it says about the rest of it.
+///
+/// a read is bounded on purpose: a model that wants more asks for the next window, which is
+/// cheaper than paying for a whole long file to look at one part of it. the footer is what
+/// makes that possible, because a cut a model cannot see is a cut it will edit blind.
+fn window(source: &str, offset: usize, limit: usize, hashed: bool) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let total = lines.len();
+    let start = offset.saturating_sub(1).min(total);
+
+    let mut body = String::new();
+    let mut shown = 0_usize;
+    let mut bytes = 0_usize;
+    for line in lines.iter().skip(start).take(limit) {
+        let cost = line.len() + 1 + if hashed { 7 } else { 0 };
+        // the byte budget never splits a line: a half line is worse than one fewer.
+        if shown > 0 && bytes + cost > MAX_READ_BYTES {
+            break;
+        }
+        if hashed {
+            let _ = writeln!(body, "{}|{line}", crate::hashline::hash_line(line));
+        } else {
+            let _ = writeln!(body, "{line}");
+        }
+        bytes += cost;
+        shown += 1;
+    }
+
+    if shown == 0 {
+        return format!(
+            "(no lines at offset {offset}; the file has {total}){}",
+            if total == 0 { " and is empty" } else { "" }
+        );
+    }
+    let last = start + shown;
+    if last >= total {
+        return body;
+    }
+    let _ = write!(
+        body,
+        "\n… lines {offset}-{last} of {total}; continue with offset={}",
+        last + 1
+    );
+    body
+}
+
+/// the change an edit made, as a unified diff with the context that shows it in place.
+///
+/// a diff is what makes an edit reviewable: the lines around it say whether the change
+/// landed where it was meant to, which a byte count cannot.
+fn diff(before: &str, after: &str, path: &str) -> String {
+    similar::TextDiff::from_lines(before, after)
+        .unified_diff()
+        .context_radius(3)
+        .header(&format!("a/{path}"), &format!("b/{path}"))
+        .to_string()
 }
 
 fn parse_args(raw: &str) -> Result<Value, ToolError> {

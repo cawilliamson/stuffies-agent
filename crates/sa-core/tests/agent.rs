@@ -295,6 +295,11 @@ async fn the_system_prompt_names_the_tools_the_rules_and_the_workspace() {
         .expect("a system prompt");
 
     assert!(
+        system.contains("You are stuffies-agent,"),
+        "the agent names itself, not the crate prefix:\n{system}"
+    );
+
+    assert!(
         system.contains("<tools>"),
         "the prompt lists tools:\n{system}"
     );

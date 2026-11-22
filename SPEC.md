@@ -860,6 +860,15 @@ grammars share; a container's members are listed beneath it, a function's locals
 
 Rules:
 
+- `edit` and a `write` that replaces an existing file report the change as a unified diff
+  with three lines of context either side, so a change is reviewable in place rather than
+  asserted by a byte count. The transcript colours it: additions, removals and hunk
+  headers each carry their own ink.
+- `read` returns one window of a file: `offset` (1-based) and `limit` (default 2000 lines,
+  maximum 5000) bounded further by 50 KiB, never splitting a line. A window that is not the
+  whole file ends with `… lines A-B of N; continue with offset=B+1`, so a cut is always
+  visible: an unseen cut is an edit made blind. A read past the end says so and names the
+  file's length.
 - `read` renders each line as `hhhhhh|content`, six hex characters of the line's own
   sha256, and `edit` addresses a line by that hash. A hash no line carries, or one that
   several identical lines carry with no `line` to choose between them, is refused rather

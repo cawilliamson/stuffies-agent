@@ -64,6 +64,8 @@ serde = { version = "1", features = ["derive"] }
 serde-saphyr = "2"
 serde_json = "1"
 sha2 = "0.10"
+# the diff an edit reports, so a change is reviewable in place rather than as two blobs.
+similar = "3"
 termtree = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

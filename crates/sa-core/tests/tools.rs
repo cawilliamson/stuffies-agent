@@ -463,6 +463,17 @@ async fn a_running_command_reports_its_output_as_it_arrives() {
     );
 }
 
+/// a file body of `count` numbered lines, as the ranged-read tests need.
+fn numbered(count: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut body = String::new();
+    for n in 1..=count {
+        let _ = writeln!(body, "line {n}");
+    }
+    body
+}
+
 /// the hash a rendered read gives a line, so an edit can name it.
 fn hash_for(rendered: &str, needle: &str) -> String {
     rendered
@@ -520,8 +531,12 @@ async fn an_edit_by_hash_refuses_a_line_that_changed_underneath_it() {
     .expect_err("a stale hash must be refused");
     assert!(refused.contains(&stale), "it names the hash: {refused}");
     assert!(
-        refused.contains("re-read"),
-        "and says what to do: {refused}"
+        refused.contains("changed since it was read"),
+        "it says why: {refused}"
+    );
+    assert!(
+        refused.contains("send one of these hashes"),
+        "and hands back what to retry with: {refused}"
     );
 
     // the file is untouched.
@@ -549,4 +564,228 @@ async fn hashed_text_copied_into_old_still_edits() {
 
     let written = std::fs::read_to_string(dir.path().join("main.rs")).expect("read back");
     assert_eq!(written, "fn main() { run(); }\n");
+}
+
+#[tokio::test]
+async fn an_edit_reports_the_change_as_a_diff_with_context() {
+    // a byte count says something was written; a diff says what, and the lines around it
+    // say whether it landed where it was meant to.
+    let dir = workspace();
+    std::fs::write(
+        dir.path().join("main.rs"),
+        "fn one() {}\nfn two() {}\nfn three() {}\nfn four() {}\nfn five() {}\n",
+    )
+    .expect("write");
+    let reg = registry(dir.path());
+    run(&reg, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+
+    let out = run(
+        &reg,
+        "edit",
+        json!({"path": "main.rs", "old": "fn three() {}", "new": "fn three() { run(); }"}),
+    )
+    .await
+    .expect("edit");
+
+    assert!(out.contains("--- a/main.rs"), "a diff header: {out}");
+    assert!(out.contains("+++ b/main.rs"), "{out}");
+    assert!(out.contains("-fn three() {}"), "the line removed: {out}");
+    assert!(out.contains("+fn three() { run(); }"), "and added: {out}");
+    // context either side, so the change can be read in place.
+    assert!(out.contains(" fn two() {}"), "a line before: {out}");
+    assert!(out.contains(" fn four() {}"), "a line after: {out}");
+}
+
+#[tokio::test]
+async fn a_refused_edit_hands_back_the_hashes_to_retry_with() {
+    // the model is not left to work out what changed: the tool shows it, so the retry is
+    // one call rather than a read and a guess.
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let rendered = run(&reg, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+    let stale = hash_for(&rendered, "fn main() {}");
+
+    std::fs::write(dir.path().join("main.rs"), "fn main() { other(); }\n").expect("write");
+
+    let refused = run(
+        &reg,
+        "edit",
+        json!({"path": "main.rs", "edits": [{"hash": stale, "content": "x"}]}),
+    )
+    .await
+    .expect_err("a stale hash is refused");
+
+    let current = sa_core::hashline::hash_line("fn main() { other(); }");
+    assert!(
+        refused.contains(&current),
+        "the current hash is returned: {refused}"
+    );
+    assert!(
+        refused.contains("send one of these hashes"),
+        "and it says what to do with it: {refused}"
+    );
+}
+
+#[tokio::test]
+async fn a_successful_edit_returns_the_hashes_it_wrote() {
+    // so a follow-up edit needs no read of its own.
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let rendered = run(&reg, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+    let hash = hash_for(&rendered, "fn main() {}");
+
+    let out = run(
+        &reg,
+        "edit",
+        json!({"path": "main.rs", "edits": [{"hash": hash, "content": "fn main() { run(); }"}]}),
+    )
+    .await
+    .expect("edit");
+
+    let fresh = sa_core::hashline::hash_line("fn main() { run(); }");
+    assert!(out.contains("hashes as written"), "{out}");
+    assert!(out.contains(&fresh), "the new hash is returned: {out}");
+}
+
+#[tokio::test]
+async fn an_edit_that_matches_nothing_points_at_where_the_text_went() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    run(&reg, "read", json!({"path": "main.rs"}))
+        .await
+        .expect("read");
+
+    // the first line of the quote is still there; the rest is not.
+    let refused = run(
+        &reg,
+        "edit",
+        json!({"path": "main.rs", "old": "fn main() {}\nfn gone() {}", "new": "x"}),
+    )
+    .await
+    .expect_err("no match");
+
+    assert!(
+        refused.contains("edit by hash instead"),
+        "it points at hashline editing: {refused}"
+    );
+    let hash = sa_core::hashline::hash_line("fn main() {}");
+    assert!(refused.contains(&hash), "with the hash to use: {refused}");
+}
+
+#[tokio::test]
+async fn a_read_returns_one_window_and_says_where_to_continue() {
+    // a read is bounded so a long file is paid for a window at a time, and the footer is
+    // what keeps a cut visible: an unseen cut is an edit made blind.
+    let dir = workspace();
+    let body = numbered(50);
+    std::fs::write(dir.path().join("long.txt"), &body).expect("write");
+    let reg = registry(dir.path());
+
+    let window = run(
+        &reg,
+        "read",
+        json!({"path": "long.txt", "offset": 10, "limit": 5, "hashline": false}),
+    )
+    .await
+    .expect("read");
+
+    assert!(window.contains("line 10"), "{window}");
+    assert!(window.contains("line 14"), "{window}");
+    assert!(
+        !window.contains("line 9\n"),
+        "the window starts at 10: {window}"
+    );
+    assert!(!window.contains("line 15"), "and stops at 14: {window}");
+    assert!(
+        window.contains("lines 10-14 of 50; continue with offset=15"),
+        "the cut says where to continue: {window}"
+    );
+}
+
+#[tokio::test]
+async fn a_read_of_the_tail_says_nothing_about_continuing() {
+    let dir = workspace();
+    std::fs::write(dir.path().join("short.txt"), "one\ntwo\n").expect("write");
+    let reg = registry(dir.path());
+    let out = run(
+        &reg,
+        "read",
+        json!({"path": "short.txt", "offset": 2, "hashline": false}),
+    )
+    .await
+    .expect("read");
+    assert_eq!(out, "two\n", "the tail is the whole answer");
+}
+
+#[tokio::test]
+async fn a_read_past_the_end_says_so() {
+    let dir = workspace();
+    std::fs::write(dir.path().join("short.txt"), "one\ntwo\n").expect("write");
+    let reg = registry(dir.path());
+    let out = run(
+        &reg,
+        "read",
+        json!({"path": "short.txt", "offset": 9, "hashline": false}),
+    )
+    .await
+    .expect("read");
+    assert!(out.contains("no lines at offset 9"), "{out}");
+    assert!(out.contains("has 2"), "it says how long the file is: {out}");
+}
+
+#[tokio::test]
+async fn a_long_file_is_capped_and_points_at_the_next_window() {
+    let dir = workspace();
+    let body = numbered(3000);
+    std::fs::write(dir.path().join("huge.txt"), &body).expect("write");
+    let reg = registry(dir.path());
+
+    let out = run(&reg, "read", json!({"path": "huge.txt", "hashline": false}))
+        .await
+        .expect("read");
+    assert!(out.contains("line 2000"), "the default window ends at 2000");
+    assert!(!out.contains("line 2001"), "{out}");
+    assert!(
+        out.contains("continue with offset=2001"),
+        "and names the next window: {out}"
+    );
+}
+
+#[tokio::test]
+async fn a_windowed_read_is_still_addressable() {
+    // the window keeps the hashes, so an edit can name a line from it.
+    let dir = workspace();
+    let body = numbered(20);
+    std::fs::write(dir.path().join("long.txt"), &body).expect("write");
+    let reg = registry(dir.path());
+
+    let window = run(
+        &reg,
+        "read",
+        json!({"path": "long.txt", "offset": 5, "limit": 3}),
+    )
+    .await
+    .expect("read");
+    let hash = hash_for(&window, "line 6");
+
+    run(
+        &reg,
+        "edit",
+        json!({"path": "long.txt", "edits": [{"hash": hash, "content": "line six"}]}),
+    )
+    .await
+    .expect("edit from a window");
+
+    let written = std::fs::read_to_string(dir.path().join("long.txt")).expect("read back");
+    assert!(written.contains("line six\n"), "{written}");
+    assert!(
+        written.contains("line 5\n"),
+        "the rest is untouched: {written}"
+    );
 }

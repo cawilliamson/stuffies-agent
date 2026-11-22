@@ -2401,6 +2401,11 @@ fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usi
 
 /// the colour a patch or diff line should carry.
 fn diff_ink(line: &str, base: Color) -> Color {
+    // a diff's file headers start with the same characters as a removal and an addition,
+    // and they are neither: they are the file's name.
+    if line.starts_with("--- ") || line.starts_with("+++ ") {
+        return base;
+    }
     match line.chars().next() {
         Some('+') => Color::Rgb(0x7f, 0xc7, 0x9a),
         Some('-') => Color::Rgb(0xe8, 0x7c, 0x7c),

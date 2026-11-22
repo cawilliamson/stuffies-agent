@@ -3959,3 +3959,57 @@ fn the_scrollbar_only_exists_when_there_is_something_to_scroll() {
         "a transcript that fits has no bar to grab"
     );
 }
+
+#[test]
+fn a_diff_in_a_tool_output_is_coloured_by_what_it_does() {
+    // red for what went, green for what arrived: a diff is read at a glance or not at all.
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "edit", "args": {"path": "a.rs"}}),
+    );
+    app.tab_mut().on_event(
+        "tool.completed",
+        &json!({
+            "output": "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-fn two() {}\n+fn two() { run(); }\n",
+            "exit_code": null
+        }),
+    );
+    app.tab_mut()
+        .transcript
+        .last_mut()
+        .expect("the output")
+        .expanded = true;
+
+    let backend = TestBackend::new(100, 40);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    sa_tui::draw(&mut terminal, &mut app).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let colour_of = |needle: &str| -> ratatui::style::Color {
+        for y in 0..40u16 {
+            let row: String = (0..100u16).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(at) = row.find(needle) {
+                let x = u16::try_from(at).expect("fits");
+                return buffer[(x, y)].fg;
+            }
+        }
+        panic!("{needle} is not on screen");
+    };
+
+    assert_eq!(
+        colour_of("-fn two() {}"),
+        sa_tui::app::BAD,
+        "a removed line is red"
+    );
+    assert_eq!(
+        colour_of("+fn two() { run(); }"),
+        sa_tui::app::OK,
+        "an added line is green"
+    );
+    assert_eq!(
+        colour_of("--- a/a.rs"),
+        sa_tui::app::DIM,
+        "a file header is neither an addition nor a removal"
+    );
+}
