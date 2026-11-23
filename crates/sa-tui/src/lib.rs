@@ -1585,7 +1585,7 @@ async fn run_command(
         }
         "/lsp" => match rpc(client, "lsp.list", json!({})).await {
             Ok(list) => {
-                let rows = list.as_array().cloned().unwrap_or_default();
+                let rows = list["servers"].as_array().cloned().unwrap_or_default();
                 if rows.is_empty() {
                     app.tab_mut()
                         .push(app::Role::System, "no language servers configured");

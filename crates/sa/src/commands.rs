@@ -319,7 +319,7 @@ pub async fn lsp_with(client: &mut Client) -> Result<()> {
         .call("lsp.list", json!({}))
         .await
         .map_err(|e| format!("lsp.list failed: {e}"))?;
-    let Some(servers) = response.as_array() else {
+    let Some(servers) = response["servers"].as_array() else {
         println!("no language servers configured");
         return Ok(());
     };
@@ -343,6 +343,17 @@ pub async fn lsp_with(client: &mut Client) -> Result<()> {
         "\nthe table is {}; an entry there is merged over the built-in servers.",
         sa_core::lsp::config_path().display()
     );
+    let searched = response["search_path"]
+        .as_array()
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(|path| path.as_str())
+                .collect::<Vec<_>>()
+                .join(":")
+        })
+        .unwrap_or_default();
+    println!("searched: {searched}");
     Ok(())
 }
 
@@ -1093,15 +1104,15 @@ mod tests {
 
     #[tokio::test]
     async fn listing_language_servers_reports_their_state() {
-        let list = json!([
+        let list = json!({"servers": [
             {"name": "pyright", "installed": true, "running": true},
             {"name": "zls", "installed": false, "running": false},
-        ]);
+        ], "search_path": ["/usr/bin"]});
         let (mut client, _server) = daemon(vec![("lsp.list", list)]);
         lsp_with(&mut client).await.expect("servers");
 
         // no servers is not an error.
-        let (mut client, _server) = daemon(vec![("lsp.list", json!([]))]);
+        let (mut client, _server) = daemon(vec![("lsp.list", json!({"servers": []}))]);
         lsp_with(&mut client).await.expect("empty");
     }
 

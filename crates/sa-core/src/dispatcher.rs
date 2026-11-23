@@ -411,16 +411,24 @@ impl Dispatcher {
 
     #[allow(clippy::unnecessary_wraps)]
     fn lsp_list(&self) -> Result<Value, RpcError> {
-        Ok(json!(self
-            .manager
-            .lsp_status()
-            .into_iter()
-            .map(|(name, installed, running)| json!({
-                "name": name,
-                "installed": installed,
-                "running": running,
-            }))
-            .collect::<Vec<_>>()))
+        Ok(json!({
+            "servers": self
+                .manager
+                .lsp_status()
+                .into_iter()
+                .map(|(name, installed, running)| json!({
+                    "name": name,
+                    "installed": installed,
+                    "running": running,
+                }))
+                .collect::<Vec<_>>(),
+            // where a server was looked for, so a machine where one is installed but not
+            // found says why instead of only saying it is missing.
+            "search_path": crate::lsp::search_paths()
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
+        }))
     }
 
     #[allow(clippy::unnecessary_wraps)]
