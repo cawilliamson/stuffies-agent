@@ -683,3 +683,43 @@ async fn a_windowed_read_is_still_addressable() {
         "the rest is untouched: {written}"
     );
 }
+
+/// the whole point of asking a language server: a change comes back with what is wrong
+/// with it, without the model having to ask.
+#[tokio::test]
+async fn an_edit_reports_what_the_language_server_says() {
+    if !std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join("pyright-langserver").is_file())
+    }) {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"probe\"\n",
+    )
+    .expect("write");
+    std::fs::write(
+        dir.path().join("a.py"),
+        "def shout(text: str) -> str:\n    return text\n\n\nshout(\"hi\")\n",
+    )
+    .expect("write");
+    let mcp =
+        std::sync::Arc::new(sa_core::mcp::Hub::connect(&sa_core::mcp::Config::default()).await);
+    let lsp = std::sync::Arc::new(sa_core::lsp::Hub::new());
+    let tools = ToolRegistry::with_hubs(dir.path().to_path_buf(), mcp, std::sync::Arc::clone(&lsp));
+    let outcome = tools
+        .execute(call(
+            "edit",
+            &json!({"path": "a.py", "old": "shout(\"hi\")", "new": "shout(41)"}),
+        ))
+        .await
+        .expect("edit");
+    lsp.shutdown().await;
+    assert!(outcome.output.contains("edited a.py"), "{}", outcome.output);
+    assert!(
+        outcome.output.contains("cannot be assigned"),
+        "the edit did not carry the finding: {}",
+        outcome.output
+    );
+}
