@@ -302,13 +302,37 @@ impl Config {
     }
 }
 
+/// where a command is looked for.
+///
+/// the daemon's own path first, then the places a user's tools are installed. a service
+/// started by an init system is handed a thin path that omits the user's profile, and a
+/// language server that exists but is not found is the same as one that does not exist.
+#[must_use]
+pub fn search_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    let mut fallbacks = Vec::new();
+    if let Ok(user) = std::env::var("USER") {
+        fallbacks.push(Path::new("/etc/profiles/per-user").join(user).join("bin"));
+    }
+    fallbacks.push(PathBuf::from("/run/current-system/sw/bin"));
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        fallbacks.push(home.join(".local/bin"));
+        fallbacks.push(home.join(".nix-profile/bin"));
+    }
+    paths.extend(fallbacks);
+    paths.retain(|path| !path.as_os_str().is_empty());
+    paths.dedup();
+    paths
+}
+
 /// whether a command can be started, without starting it.
 fn installed(command: &str) -> bool {
     if command.contains('/') {
         return Path::new(command).is_file();
     }
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(command).is_file()))
+    search_paths().iter().any(|dir| dir.join(command).is_file())
 }
 
 /// the directory a server should be rooted at: the nearest ancestor holding one of its
@@ -1154,6 +1178,16 @@ mod tests {
         let config = Config::builtin();
         let found = config.candidates(Path::new("tool.py"));
         assert_eq!(found.first().map(|(name, _)| *name), Some("pyright"));
+    }
+
+    #[test]
+    fn the_search_path_includes_the_user_profile() {
+        let paths = search_paths();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if let Some(home) = home {
+            assert!(paths.contains(&home.join(".nix-profile/bin")));
+        }
+        assert!(paths.contains(&PathBuf::from("/run/current-system/sw/bin")));
     }
 
     #[test]

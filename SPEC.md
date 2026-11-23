@@ -823,6 +823,10 @@ lives, how a tool is named, and when a server is reached.
 asked about the code rather than a second opinion shipped in this binary. A file belongs to
 a server by its extension and by the nearest project marker above it; a server that is not
 installed is never chosen, so the table costs nothing on a machine that has none of them.
+"Installed" means found on the daemon's own path or in the places a user's tools live
+(`/etc/profiles/per-user/$USER/bin`, `/run/current-system/sw/bin`, `~/.local/bin`,
+`~/.nix-profile/bin`): a service started by an init system is handed a path that omits the
+user's profile, and a server that exists but is not found is the same as one that does not.
 The protocol is `lspf`'s job — framing, handshake, request typing and the child process —
 the same way the protocol is `rmcp`'s job for MCP. What belongs to this project is the
 server table, which server a path belongs to, when a server is started and stopped, and
