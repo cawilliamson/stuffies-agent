@@ -1,7 +1,7 @@
 //! session manager: the only writer of session state (spec 2.4).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -149,9 +149,6 @@ pub struct Manager {
     store: Store,
     config: Arc<ManagerConfig>,
     inner: Mutex<Inner>,
-    /// one lens per session: the read-before-edit guard and the workspace's rules. kept
-    /// here rather than per turn, so a file read in one turn licenses an edit in the next.
-    lenses: Mutex<HashMap<String, Arc<crate::lens::Lens>>>,
 }
 
 impl Manager {
@@ -161,28 +158,6 @@ impl Manager {
             store,
             config,
             inner: Mutex::new(Inner::default()),
-            lenses: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// the lens for a session, built on first use from the workspace it works in.
-    fn lens_for(&self, session_id: &str, workspace: &Path) -> Arc<crate::lens::Lens> {
-        let mut lenses = match self.lenses.lock() {
-            Ok(lenses) => lenses,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        Arc::clone(
-            lenses
-                .entry(session_id.to_owned())
-                .or_insert_with(|| Arc::new(crate::lens::Lens::for_workspace(workspace))),
-        )
-    }
-
-    /// forgets a session's lens, so its rules are reloaded for the directory it now works
-    /// in. the guard goes with them: a file is read again before it is edited.
-    fn forget_lens(&self, session_id: &str) {
-        if let Ok(mut lenses) = self.lenses.lock() {
-            lenses.remove(session_id);
         }
     }
 
@@ -492,9 +467,7 @@ impl Manager {
         let path = canonical.display().to_string();
         self.store.set_session_cwd(id, &path)?;
         self.append(id, kinds::SESSION_CWD, &json!({"cwd": path}))?;
-        // the directory changed, so what applies to it changed too: the context, and the
-        // rules the lens checks a written file against.
-        self.forget_lens(id);
+        // the directory changed, so what applies to it changed too.
         let _ = self.announce_context(id, &path);
         Ok(path)
     }
@@ -857,10 +830,9 @@ impl Manager {
             session_id: session_id.clone(),
             cancel: Arc::clone(&cancel),
         });
-        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_lens(
+        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_mcp(
             PathBuf::from(&row.cwd),
             Arc::clone(&self.config.mcp),
-            self.lens_for(&session_id, &workspace),
         ));
 
         // compaction is checked before the turn, and only ever appends (spec 10.4).

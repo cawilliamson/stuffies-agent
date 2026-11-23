@@ -22,11 +22,6 @@ version = "0.1.0"
 
 [workspace.dependencies]
 ansi-to-tui = "8"
-# the structural engine: ast-grep's own rule matcher and its tree-sitter grammars, so a
-# check runs in this process instead of behind a language server or a subprocess.
-ast-grep-config = "0.51"
-ast-grep-core = "0.51"
-ast-grep-language = "0.51"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 command-group = { version = "5", features = ["with-tokio"] }
@@ -36,7 +31,6 @@ dom_query = "0.29"
 dom_smoothie = "0.19"
 edtui = "0.11"
 futures-util = { version = "0.3", features = ["sink", "std"] }
-globset = "0.4"
 htmd = "0.6"
 # ripgrep's walker: what a project's own ignore files exclude is not searched, so a
 # coding agent sees the files the developer sees rather than the build output.
@@ -61,7 +55,6 @@ sa-daemon = { path = "crates/sa-daemon", version = "0.1.0" }
 sa-proto = { path = "crates/sa-proto", version = "0.1.0" }
 sa-tui = { path = "crates/sa-tui", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
-serde-saphyr = "2"
 serde_json = "1"
 sha2 = "0.10"
 # the diff an edit reports, so a change is reviewable in place rather than as two blobs.

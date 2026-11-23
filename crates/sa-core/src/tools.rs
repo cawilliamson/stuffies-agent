@@ -50,9 +50,6 @@ pub struct ToolRegistry {
     workspace: PathBuf,
     /// the mcp servers this daemon reached, if any. their tools are the model's too.
     mcp: Option<std::sync::Arc<crate::mcp::Hub>>,
-    /// the structural lens for this session, when one is wired in: the read-before-edit
-    /// guard and the workspace's own rules.
-    lens: Option<std::sync::Arc<crate::lens::Lens>>,
 }
 
 impl ToolRegistry {
@@ -61,7 +58,6 @@ impl ToolRegistry {
         Self {
             workspace,
             mcp: None,
-            lens: None,
         }
     }
 
@@ -71,22 +67,6 @@ impl ToolRegistry {
         Self {
             workspace,
             mcp: Some(mcp),
-            lens: None,
-        }
-    }
-
-    /// a registry with the session's lens: the guard that refuses a blind edit, and the
-    /// structural check a written file is run through.
-    #[must_use]
-    pub const fn with_lens(
-        workspace: PathBuf,
-        mcp: std::sync::Arc<crate::mcp::Hub>,
-        lens: std::sync::Arc<crate::lens::Lens>,
-    ) -> Self {
-        Self {
-            workspace,
-            mcp: Some(mcp),
-            lens: Some(lens),
         }
     }
 
@@ -123,7 +103,6 @@ impl ToolRegistry {
             "edit" => self.edit(&args).await.map(text),
             "find" => self.find(&args).await.map(text),
             "grep" => self.grep(&args).await.map(text),
-            "outline" => self.outline(&args).await.map(text),
             "read" => self.read(&args).await.map(text),
             "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
             "web_search" => {
@@ -140,11 +119,6 @@ impl ToolRegistry {
     async fn read(&self, args: &Value) -> Result<String, ToolError> {
         let path = self.resolve(required(args, "path")?)?;
         let body = tokio::fs::read_to_string(&path).await?;
-        // a read is what licenses an edit, so it is recorded here rather than at the call
-        // site that happened to read.
-        if let Some(lens) = &self.lens {
-            lens.guard.record(&path);
-        }
         // the hashed form is what makes a line addressable; the raw text is one flag away.
         let hashed = args
             .get("hashline")
@@ -165,65 +139,9 @@ impl ToolRegistry {
         Ok(window(&body, offset, limit, hashed))
     }
 
-    /// the declarations a file makes, so the model reads a range instead of a whole file.
-    async fn outline(&self, args: &Value) -> Result<String, ToolError> {
-        let raw = required(args, "path")?;
-        let path = self.resolve(raw)?;
-        let body = tokio::fs::read_to_string(&path).await?;
-        if let Some(lens) = &self.lens {
-            lens.guard.record(&path);
-        }
-        let symbols = crate::lens::outline(&path, &body);
-        if symbols.is_empty() {
-            return Ok(format!(
-                "{raw}: no declarations ({})",
-                crate::lens::language_of(&path).unwrap_or_else(|| "unparsed".to_owned())
-            ));
-        }
-        let mut out = format!("{raw}: {} declaration(s)\n", symbols.len());
-        for symbol in symbols {
-            let _ = writeln!(
-                out,
-                "{}{} {}-{} {} ({})",
-                "  ".repeat(symbol.depth),
-                symbol.kind,
-                symbol.start,
-                symbol.end,
-                symbol.name,
-                symbol.end - symbol.start + 1
-            );
-        }
-        Ok(out)
-    }
-
-    /// refuses an edit to a file the model has not read, and checks what it wrote.
-    fn guard_edit(&self, path: &Path, raw: &str) -> Result<(), ToolError> {
-        let Some(lens) = &self.lens else {
-            return Ok(());
-        };
-        if lens.guard.may_edit(path) {
-            return Ok(());
-        }
-        Err(ToolError::Args(format!(
-            "{raw} has not been read in this session; read it first so the edit is made to \
-             the text that is really there"
-        )))
-    }
-
-    /// runs the workspace's rules over a file that was just written, and appends what they
-    /// found to the tool's own result.
-    fn check(&self, path: &Path, raw: &str, body: &str) -> String {
-        let Some(lens) = &self.lens else {
-            return String::new();
-        };
-        let findings = lens.rules.scan(path, body);
-        lens.rules.report(raw, &findings)
-    }
-
     async fn write(&self, args: &Value) -> Result<String, ToolError> {
         let raw = required(args, "path")?;
         let path = self.resolve(raw)?;
-        self.guard_edit(&path, raw)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -232,25 +150,15 @@ impl ToolRegistry {
         let before = tokio::fs::read_to_string(&path).await.ok();
         let body = required(args, "content")?;
         tokio::fs::write(&path, body).await?;
-        // what was written is what the model has now seen, so the next edit needs no read.
-        if let Some(lens) = &self.lens {
-            lens.guard.record(&path);
-        }
-        let report = self.check(&path, raw, body);
         let change = before.map_or_else(String::new, |before| {
             format!("\n\n{}", diff(&before, body, raw))
         });
-        Ok(format!(
-            "wrote {} bytes to {raw}{change}{report}",
-            body.len()
-        ))
+        Ok(format!("wrote {} bytes to {raw}{change}", body.len()))
     }
 
     async fn edit(&self, args: &Value) -> Result<String, ToolError> {
         let raw = required(args, "path")?;
         let path = self.resolve(raw)?;
-        // an edit is made to text the model has seen, or it is made to a guess.
-        self.guard_edit(&path, raw)?;
         let body = tokio::fs::read_to_string(&path).await?;
         // the hashline form: each edit names the line by the hash of its own text.
         let (edited, changed) = if let Some(Value::Array(items)) = args.get("edits") {
@@ -280,10 +188,6 @@ impl ToolRegistry {
             (body.replacen(old.as_str(), new, 1), Vec::new())
         };
         tokio::fs::write(&path, &edited).await?;
-        if let Some(lens) = &self.lens {
-            lens.guard.record(&path);
-        }
-        let report = self.check(&path, raw, &edited);
         // the change itself, in place: a model that has just edited a file should see what
         // it did rather than a byte count it has to take on trust.
         let change = diff(&body, &edited, raw);
@@ -294,7 +198,7 @@ impl ToolRegistry {
                 crate::hashline::window(&edited, *line, 2)
             )
         });
-        Ok(format!("edited {raw}\n\n{change}{fresh}{report}"))
+        Ok(format!("edited {raw}\n\n{change}{fresh}"))
     }
 
     async fn find(&self, args: &Value) -> Result<String, ToolError> {
@@ -452,8 +356,7 @@ impl ToolExecutor for ToolRegistry {
                 "Replace lines by the hash they carry: `edits: [{hash, content}]`, where hash \
                  is the `hhhhhh` prefix read returned. The hash names the text itself, so a \
                  line that has moved is still found and a line that has changed is refused. \
-                 Add `line` to choose between identical lines. `old`/`new` also work. The \
-                 file must have been read in this session first.",
+                 Add `line` to choose between identical lines. `old`/`new` also work.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object"}}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["path"]}),
             ),
             spec(
@@ -473,18 +376,12 @@ impl ToolExecutor for ToolRegistry {
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
             ),
             spec(
-                "outline",
-                "List the declarations a file makes, with the line range of each. Read a range \
-                 instead of the whole file.",
-                json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
-            ),
-            spec(
                 "read",
                 &format!(
                     "Read a file as text, each line prefixed with `hhhhhh|`: the hash names that \
                      line for `edit`. Pass `hashline: false` for the raw text. Returns at most \
                      {READ_LINES} lines or {} KiB; when there is more, the last line says the \
-                     offset to continue from. Reading a file is what allows it to be edited.",
+                     offset to continue from.",
                     MAX_READ_BYTES / 1024
                 ),
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "hashline": {"type": "boolean"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, "required": ["path"]}),
@@ -503,8 +400,7 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "write",
-                "Write a file, creating it or replacing its contents entirely. An existing file \
-                 must have been read in this session first.",
+                "Write a file, creating it or replacing its contents entirely.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
             ),
         ];

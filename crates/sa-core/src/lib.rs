@@ -9,7 +9,6 @@ pub use rig_core;
 pub mod agent;
 pub mod dispatcher;
 pub mod hashline;
-pub mod lens;
 pub mod llm;
 pub mod manager;
 pub mod mcp;

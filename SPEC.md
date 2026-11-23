@@ -792,8 +792,13 @@ before any tool runs; an unattended turn never starts without one.
 Initial set, all executed in the daemon process with the session's `cwd`:
 
 ```text
-bash  edit  find  grep  outline  read  web_fetch  web_search  write
+bash  edit  find  grep  read  web_fetch  web_search  write
 ```
+
+`DECIDED`: there is no language-server client. Structural feedback is the project's own
+toolchain and the CI gate's ast-grep rules, both run as processes rather than as a second
+long-lived server with its own lifecycle, memory and failure modes. Project-wide semantic
+indexing is a v3.0 concern, and nothing here pretends to it.
 
 `web_fetch` and `web_search` are the only tools that leave the machine. They speak through a
 browser-emulated client (chrome's tls hello, http/2 settings, header order and values), so
@@ -824,39 +829,6 @@ The knowledge tools (§11.4) are the second set and arrive at v3.0:
 ```text
 knowledge.list  knowledge.read  knowledge.remove  knowledge.search  knowledge.write
 ```
-
-### 9.1 The native lens
-
-`DECIDED`: structural feedback is computed in this process, not behind a language server.
-The engine is `ast-grep`'s own rule matcher over tree-sitter grammars, in `sa-core::lens`,
-so a check costs milliseconds, works offline, and needs no editor or server configuration.
-There is no LSP client in this project and none is planned: a language server is a second
-long-lived process with its own lifecycle, memory and failure modes, and what it provides
-that we cannot compute ourselves — project-wide semantic indexing — is a v3.0 concern.
-
-The lens provides three things.
-
-**The read-before-edit guard.** A file the model has not read in this session is not one it
-may edit. An edit to text it has not seen is an edit to a guess, which is how a rewrite
-silently drops everything the file held. `read`, `outline` and a successful `write` all
-record coverage; a file that does not exist yet needs none, because it could not have been
-read. The guard is per session and lives in the daemon, so a read in one turn licenses an
-edit in the next. Changing a session's `cwd` rebuilds the lens, so a file is read again in
-the directory it now works in.
-
-**The structural check.** A workspace may carry an ast-grep project config
-(`sgconfig.yml` naming its `ruleDirs`), the same format and the same rule files the CI gate
-runs. Every rule is compiled once per session and run against a file the model has just
-written; findings are carried in that tool's own result, worst first, as
-`path:line:column: severity: message [rule]`. A clean file says nothing. A rule file that
-fails to compile is reported rather than silently skipped. A workspace with no config has
-no rules, which is not an error.
-
-**The outline.** `outline {path}` lists the declarations a file makes with the line range of
-each, so the model reads a range instead of a file. It is the syntax tree's own view: no
-index, no cross-file semantics, no server. A declaration is a node whose kind names a
-definition and that carries its name in a `name` field, which is the one shape tree-sitter
-grammars share; a container's members are listed beneath it, a function's locals are not.
 
 Rules:
 
