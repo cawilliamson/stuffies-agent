@@ -47,6 +47,8 @@ pub enum Command {
         #[arg(long, default_value = "markdown")]
         format: String,
     },
+    /// list the language servers, whether each is installed, and whether it is running
+    Lsp,
     /// list the configured mcp servers, their tools and their state
     Mcp,
     /// handshake and ping the daemon

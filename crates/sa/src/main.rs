@@ -58,6 +58,7 @@ async fn main() -> ExitCode {
         Some(Command::Run { prompt }) => commands::run_once(&prompt).await,
         Some(Command::Attach { session, new, line }) => commands::attach(session, new, line).await,
         Some(Command::Sessions) => commands::sessions().await,
+        Some(Command::Lsp) => commands::lsp().await,
         Some(Command::Mcp) => commands::mcp().await,
         Some(Command::Context { dir }) => commands::context(dir),
         Some(Command::Export { session, format }) => commands::export(session, &format).await,
@@ -230,9 +231,10 @@ mod tests {
         );
         for command in [
             Command::Daemon,
+            Command::Lsp,
+            Command::Mcp,
             Command::Ping,
             Command::Sessions,
-            Command::Mcp,
         ] {
             assert!(
                 !wants_the_screen(Some(&command)),

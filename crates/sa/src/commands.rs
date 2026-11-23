@@ -306,6 +306,46 @@ pub async fn sessions_with(client: &mut Client) -> Result<()> {
     Ok(())
 }
 
+// ---- lsp ----------------------------------------------------------------
+
+pub async fn lsp() -> Result<()> {
+    let mut client = connect().await?;
+    lsp_with(&mut client).await
+}
+
+/// as [`lsp`], over a client the caller already holds.
+pub async fn lsp_with(client: &mut Client) -> Result<()> {
+    let response = client
+        .call("lsp.list", json!({}))
+        .await
+        .map_err(|e| format!("lsp.list failed: {e}"))?;
+    let Some(servers) = response.as_array() else {
+        println!("no language servers configured");
+        return Ok(());
+    };
+    if servers.is_empty() {
+        println!("no language servers configured");
+        return Ok(());
+    }
+    for server in servers {
+        let name = server["name"].as_str().unwrap_or("-");
+        let state = match (
+            server["installed"].as_bool().unwrap_or(false),
+            server["running"].as_bool().unwrap_or(false),
+        ) {
+            (_, true) => "running",
+            (true, false) => "installed",
+            (false, false) => "missing",
+        };
+        println!("{name:<28} {state}");
+    }
+    println!(
+        "\nthe table is {}; an entry there is merged over the built-in servers.",
+        sa_core::lsp::config_path().display()
+    );
+    Ok(())
+}
+
 // ---- mcp ----------------------------------------------------------------
 
 pub async fn mcp() -> Result<()> {
@@ -1049,6 +1089,20 @@ mod tests {
             replays[1]["params"]["from_seq"], 1,
             "the next page continues from where the last one stopped"
         );
+    }
+
+    #[tokio::test]
+    async fn listing_language_servers_reports_their_state() {
+        let list = json!([
+            {"name": "pyright", "installed": true, "running": true},
+            {"name": "zls", "installed": false, "running": false},
+        ]);
+        let (mut client, _server) = daemon(vec![("lsp.list", list)]);
+        lsp_with(&mut client).await.expect("servers");
+
+        // no servers is not an error.
+        let (mut client, _server) = daemon(vec![("lsp.list", json!([]))]);
+        lsp_with(&mut client).await.expect("empty");
     }
 
     #[tokio::test]

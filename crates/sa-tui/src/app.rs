@@ -263,6 +263,7 @@ pub const HELP_COMMANDS: &str = "\
 /effort [level] — show or set the reasoning effort; tab completes the levels
 /exit — quit
 /help — this list
+/lsp — list the language servers, whether each is installed, and whether it is running
 /mcp — list the mcp servers and their tools
 /model <name> — switch the model for this tab
 /new — open a tab

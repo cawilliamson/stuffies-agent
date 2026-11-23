@@ -357,6 +357,12 @@ impl Manager {
         self.config.mcp.status()
     }
 
+    /// the language servers this build knows about, and which are installed and running.
+    #[must_use]
+    pub fn lsp_status(&self) -> Vec<(String, bool, bool)> {
+        self.config.lsp.status()
+    }
+
     /// the effort a session should start on: the level the server itself defaults to. none
     /// when the endpoint did not say, which leaves the server's own behaviour alone.
     #[must_use]

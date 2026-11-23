@@ -1211,8 +1211,8 @@ mod daemon_tests {
     #[test]
     fn help_lists_every_command() {
         for command in [
-            "/cancel", "/cd", "/cwd", "/effort", "/exit", "/help", "/mcp", "/model", "/new",
-            "/pwd", "/resume",
+            "/cancel", "/cd", "/cwd", "/effort", "/exit", "/help", "/lsp", "/mcp", "/model",
+            "/new", "/pwd", "/resume",
         ] {
             assert!(
                 app::HELP_COMMANDS.contains(command),
@@ -1583,6 +1583,29 @@ async fn run_command(
         "/help" => {
             app.tab_mut().push(app::Role::System, app::HELP_COMMANDS);
         }
+        "/lsp" => match rpc(client, "lsp.list", json!({})).await {
+            Ok(list) => {
+                let rows = list.as_array().cloned().unwrap_or_default();
+                if rows.is_empty() {
+                    app.tab_mut()
+                        .push(app::Role::System, "no language servers configured");
+                }
+                for row in rows {
+                    let name = row["name"].as_str().unwrap_or("?");
+                    let state = match (
+                        row["installed"].as_bool().unwrap_or(false),
+                        row["running"].as_bool().unwrap_or(false),
+                    ) {
+                        (_, true) => "running",
+                        (true, false) => "installed",
+                        (false, false) => "missing",
+                    };
+                    app.tab_mut()
+                        .push(app::Role::System, format!("{name}: {state}"));
+                }
+            }
+            Err(err) => app.tab_mut().push(app::Role::Error, err),
+        },
         "/mcp" => match rpc(client, "mcp.list", json!({})).await {
             Ok(list) => {
                 let rows = list.as_array().cloned().unwrap_or_default();

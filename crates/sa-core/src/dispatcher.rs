@@ -110,6 +110,7 @@ impl Dispatcher {
                 "handoff arrives at v4.0",
             )),
             "hello" => Self::hello(conn, Some(params)),
+            "lsp.list" => self.lsp_list(),
             "mcp.list" => self.mcp_list(),
             "model.effort" => self.model_effort(&params),
             "model.list" => self.model_list(),
@@ -405,6 +406,20 @@ impl Dispatcher {
                     "effort_levels": effort_levels,
                 })
             })
+            .collect::<Vec<_>>()))
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn lsp_list(&self) -> Result<Value, RpcError> {
+        Ok(json!(self
+            .manager
+            .lsp_status()
+            .into_iter()
+            .map(|(name, installed, running)| json!({
+                "name": name,
+                "installed": installed,
+                "running": running,
+            }))
             .collect::<Vec<_>>()))
     }
 
