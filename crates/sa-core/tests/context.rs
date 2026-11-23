@@ -23,6 +23,7 @@ fn manager_with(dir: &std::path::Path, models: Vec<ModelInfo>) -> Arc<Manager> {
             aux_budget_secs: 5,
             models: Arc::new(Mutex::new(models)),
             mcp: Arc::new(sa_core::mcp::Hub::empty()),
+            lsp: Arc::new(sa_core::lsp::Hub::new()),
         }),
     ))
 }

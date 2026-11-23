@@ -35,6 +35,9 @@ htmd = "0.6"
 # ripgrep's walker: what a project's own ignore files exclude is not searched, so a
 # coding agent sees the files the developer sees rather than the build output.
 ignore = "0.4"
+# the language server protocol: framing, handshake, request typing and child supervision.
+# what stays ours is the server table, discovery and what a finding means.
+lspf = "1.0.3"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 infer = "0.22"
 nix = { version = "0.29", features = ["fs", "process", "signal", "socket", "user"] }

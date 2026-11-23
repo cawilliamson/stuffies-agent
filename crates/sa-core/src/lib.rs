@@ -10,6 +10,7 @@ pub mod agent;
 pub mod dispatcher;
 pub mod hashline;
 pub mod llm;
+pub mod lsp;
 pub mod manager;
 pub mod mcp;
 pub mod peer;

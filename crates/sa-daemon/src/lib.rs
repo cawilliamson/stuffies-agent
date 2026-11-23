@@ -273,6 +273,10 @@ pub async fn run(
         }
     }
 
+    // language servers start when a turn first asks about a file they cover, so a daemon
+    // that never touches a project pays nothing for them.
+    let lsp = Arc::new(sa_core::lsp::Hub::new());
+
     let store = Store::open(&cfg.db_path)?;
     let manager = Arc::new(Manager::new(
         store,
@@ -284,6 +288,7 @@ pub async fn run(
                 .and_then(|v| v.parse().ok()),
             models,
             mcp,
+            lsp,
             lock_dir: cfg.runtime_dir.join("locks"),
             turn_timeout_secs: cfg.turn_timeout_secs,
             aux_budget_secs: cfg.aux_budget_secs,

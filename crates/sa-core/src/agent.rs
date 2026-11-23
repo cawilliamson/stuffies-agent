@@ -548,6 +548,10 @@ fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
                 "rules",
                 "- read a file before editing it\n\
                  - search with grep and find rather than the shell\n\
+                 - every edit and write reports what the language server says about the \
+                 file it changed: fix an error before moving on\n\
+                 - use lsp references and lsp rename rather than a text search when a \
+                 symbol is renamed, so every use changes and nothing else does\n\
                  - run the project's own checks after changing code\n\
                  - keep replies short",
             ),

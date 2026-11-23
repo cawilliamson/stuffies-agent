@@ -50,6 +50,8 @@ pub struct ToolRegistry {
     workspace: PathBuf,
     /// the mcp servers this daemon reached, if any. their tools are the model's too.
     mcp: Option<std::sync::Arc<crate::mcp::Hub>>,
+    /// the language servers this daemon started, if any. they answer about the code.
+    lsp: Option<std::sync::Arc<crate::lsp::Hub>>,
 }
 
 impl ToolRegistry {
@@ -58,15 +60,22 @@ impl ToolRegistry {
         Self {
             workspace,
             mcp: None,
+            lsp: None,
         }
     }
 
-    /// a registry that also offers the tools of every connected mcp server.
+    /// a registry that also offers the tools of every connected mcp server and asks the
+    /// language servers about a file it has just changed.
     #[must_use]
-    pub const fn with_mcp(workspace: PathBuf, mcp: std::sync::Arc<crate::mcp::Hub>) -> Self {
+    pub const fn with_hubs(
+        workspace: PathBuf,
+        mcp: std::sync::Arc<crate::mcp::Hub>,
+        lsp: std::sync::Arc<crate::lsp::Hub>,
+    ) -> Self {
         Self {
             workspace,
             mcp: Some(mcp),
+            lsp: Some(lsp),
         }
     }
 
@@ -103,6 +112,7 @@ impl ToolRegistry {
             "edit" => self.edit(&args).await.map(text),
             "find" => self.find(&args).await.map(text),
             "grep" => self.grep(&args).await.map(text),
+            "lsp" => self.lsp_call(&args).await.map(text),
             "read" => self.read(&args).await.map(text),
             "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
             "web_search" => {
@@ -153,7 +163,11 @@ impl ToolRegistry {
         let change = before.map_or_else(String::new, |before| {
             format!("\n\n{}", diff(&before, body, raw))
         });
-        Ok(format!("wrote {} bytes to {raw}{change}", body.len()))
+        let findings = self.findings(&path).await;
+        Ok(format!(
+            "wrote {} bytes to {raw}{change}{findings}",
+            body.len()
+        ))
     }
 
     async fn edit(&self, args: &Value) -> Result<String, ToolError> {
@@ -198,7 +212,96 @@ impl ToolRegistry {
                 crate::hashline::window(&edited, *line, 2)
             )
         });
-        Ok(format!("edited {raw}\n\n{change}{fresh}"))
+        let findings = self.findings(&path).await;
+        Ok(format!("edited {raw}\n\n{change}{fresh}{findings}"))
+    }
+
+    /// what the language server says about a file that has just been written.
+    ///
+    /// bounded by a deadline: a file that is changed before a server has indexed it is
+    /// still a file that was changed, and an edit must not wait on an indexer to say so.
+    async fn findings(&self, path: &Path) -> String {
+        let Some(hub) = &self.lsp else {
+            return String::new();
+        };
+        match tokio::time::timeout(
+            crate::lsp::EDIT_BUDGET,
+            hub.diagnostics(path, &self.workspace),
+        )
+        .await
+        {
+            Ok(Ok(findings)) if !findings.is_empty() => {
+                format!("\n\n{}", crate::lsp::render(&findings))
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// the queries an editor makes: what a symbol is, where it is defined, who uses it, and
+    /// what the file's declarations are.
+    async fn lsp_call(&self, args: &Value) -> Result<String, ToolError> {
+        let hub = self
+            .lsp
+            .as_ref()
+            .ok_or_else(|| ToolError::Unknown("lsp".to_owned()))?;
+        let action = required(args, "action")?;
+        if action == "status" {
+            let mut out = String::new();
+            for (name, installed, running) in hub.status() {
+                let state = if running {
+                    "running"
+                } else if installed {
+                    "installed"
+                } else {
+                    "missing"
+                };
+                let _ = writeln!(out, "{name}: {state}");
+            }
+            return Ok(out);
+        }
+        let raw = required(args, "path")?;
+        let path = self.resolve(raw)?;
+        let line = args
+            .get("line")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0);
+        let character = args
+            .get("character")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0);
+        let answer = match action {
+            "definition" => {
+                hub.definition(&path, &self.workspace, line, character)
+                    .await
+            }
+            "diagnostics" => hub.diagnostics(&path, &self.workspace).await.map(|found| {
+                if found.is_empty() {
+                    format!("{raw}: no findings")
+                } else {
+                    crate::lsp::render(&found)
+                }
+            }),
+            "hover" => hub.hover(&path, &self.workspace, line, character).await,
+            "references" => {
+                hub.references(&path, &self.workspace, line, character)
+                    .await
+            }
+            "rename" => {
+                hub.rename(
+                    &path,
+                    &self.workspace,
+                    line,
+                    character,
+                    required(args, "new_name")?,
+                )
+                .await
+            }
+            "symbols" => hub.symbols(&path, &self.workspace).await,
+            other => return Err(ToolError::Args(format!("unknown lsp action: {other}"))),
+        };
+        answer.map_err(|error| ToolError::Args(error.to_string()))
     }
 
     async fn find(&self, args: &Value) -> Result<String, ToolError> {
@@ -374,6 +477,18 @@ impl ToolExecutor for ToolRegistry {
                      files and returns at most {MAX_MATCHES} matches."
                 ),
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
+            ),
+            spec(
+                "lsp",
+                "Ask the project's language server about the code, the way an editor does. \
+                 `action` is one of: `diagnostics` (what is wrong with a file), `definition`, \
+                 `references`, `hover`, `symbols` (the declarations a file makes), `rename` \
+                 (applies the rename across the project and reports the diff), or `status` \
+                 (which servers are configured, installed and running). `line` and \
+                 `character` are 0-based and default to the start of the file. `new_name` is \
+                 the replacement for `rename`. `path` is required except for `status`. Every \
+                 `edit` and `write` also reports the findings for the file it changed.",
+                json!({"type": "object", "properties": {"action": {"type": "string"}, "path": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "new_name": {"type": "string"}}, "required": ["action"]}),
             ),
             spec(
                 "read",
@@ -586,7 +701,8 @@ fn window(source: &str, offset: usize, limit: usize, hashed: bool) -> String {
 ///
 /// a diff is what makes an edit reviewable: the lines around it say whether the change
 /// landed where it was meant to, which a byte count cannot.
-fn diff(before: &str, after: &str, path: &str) -> String {
+#[must_use]
+pub fn diff(before: &str, after: &str, path: &str) -> String {
     similar::TextDiff::from_lines(before, after)
         .unified_diff()
         .context_radius(3)

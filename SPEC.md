@@ -792,13 +792,8 @@ before any tool runs; an unattended turn never starts without one.
 Initial set, all executed in the daemon process with the session's `cwd`:
 
 ```text
-bash  edit  find  grep  read  web_fetch  web_search  write
+bash  edit  find  grep  lsp  read  web_fetch  web_search  write
 ```
-
-`DECIDED`: there is no language-server client. Structural feedback is the project's own
-toolchain and the CI gate's ast-grep rules, both run as processes rather than as a second
-long-lived server with its own lifecycle, memory and failure modes. Project-wide semantic
-indexing is a v3.0 concern, and nothing here pretends to it.
 
 `web_fetch` and `web_search` are the only tools that leave the machine. They speak through a
 browser-emulated client (chrome's tls hello, http/2 settings, header order and values), so
@@ -823,6 +818,45 @@ server that fails to connect is reported by `sa mcp` and `/mcp` and skipped; it 
 stops the others, and it never stops a turn. The protocol itself is the official SDK's
 job (`rmcp` through `rig-rmcp`); what belongs to this project is where the configuration
 lives, how a tool is named, and when a server is reached.
+
+`lsp` is the editor's half of the language-server protocol: the project's own tooling,
+asked about the code rather than a second opinion shipped in this binary. A file belongs to
+a server by its extension and by the nearest project marker above it; a server that is not
+installed is never chosen, so the table costs nothing on a machine that has none of them.
+The protocol is `lspf`'s job — framing, handshake, request typing and the child process —
+the same way the protocol is `rmcp`'s job for MCP. What belongs to this project is the
+server table, which server a path belongs to, when a server is started and stopped, and
+what a finding means.
+
+```text
+lsp {action, path?, line?, character?, new_name?}
+```
+
+`action` is `definition`, `diagnostics`, `hover`, `references`, `rename`, `status` or
+`symbols`. `line` and `character` are 0-based. `rename` applies the server's edit across
+every file it names and reports each change as a diff, so a symbol is renamed by the thing
+that understands it rather than by a text match. `status` reports which servers are
+configured, installed and running, and needs no path.
+
+- the table is read from `$XDG_CONFIG_HOME/stuffies-agent/lsp.json` in the shape
+  `oh-my-pi` ships in `defaults.json` (`fileTypes`, `rootMarkers`, `initOptions`,
+  `settings`, `isLinter`), merged over the built-in entries, so an entry of the same name
+  corrects a command or an argument without restating the file types.
+- a server starts when a turn first asks about a file it covers, is rooted at the nearest
+  project marker, and is keyed by server and root so one project's server is never asked
+  about another's files. The daemon owns it, so a later turn reuses it rather than paying
+  for a start.
+- `edit` and a `write` that replaces an existing file report the findings for the file they
+  changed, worst first, as `path:line:column: severity: message [source]`, bounded by a
+  deadline: a file that was changed before a server indexed it is still a file that was
+  changed, and an edit does not wait on an indexer to say so.
+- a server is told what the file now holds before it is asked, so what it reports is about
+  the text on disk rather than the text it was opened with. A finding that survives a fix
+  is the failure this prevents.
+- findings come from a pull (`textDocument/diagnostic`) where the server supports it and
+  from a push (`textDocument/publishDiagnostics`) where it does not. A server that does
+  neither reports nothing, which is not an error.
+- nothing leaves the machine. A language server is a local process started from `PATH`.
 
 The knowledge tools (§11.4) are the second set and arrive at v3.0:
 

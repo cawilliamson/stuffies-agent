@@ -22,6 +22,7 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
             aux_budget_secs: 5,
             models: Arc::new(std::sync::Mutex::new(Vec::new())),
             mcp: Arc::new(sa_core::mcp::Hub::empty()),
+            lsp: Arc::new(sa_core::lsp::Hub::new()),
         }),
     ))
 }

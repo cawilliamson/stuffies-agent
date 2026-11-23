@@ -71,6 +71,7 @@ fn manager(dir: &std::path::Path, provider: &Arc<GatedProvider>) -> Arc<Manager>
             aux_budget_secs: 5,
             models: Arc::new(Mutex::new(Vec::new())),
             mcp: Arc::new(sa_core::mcp::Hub::empty()),
+            lsp: Arc::new(sa_core::lsp::Hub::new()),
         }),
     ))
 }

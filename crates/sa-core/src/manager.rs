@@ -67,6 +67,9 @@ pub struct ManagerConfig {
     pub models: Arc<Mutex<Vec<crate::llm::ModelInfo>>>,
     /// the mcp servers this daemon reached. their tools join the built-ins for every turn.
     pub mcp: Arc<crate::mcp::Hub>,
+    /// the language servers this daemon started. they answer about the code and report on
+    /// what a turn changed.
+    pub lsp: Arc<crate::lsp::Hub>,
 }
 
 struct Subscription {
@@ -830,9 +833,10 @@ impl Manager {
             session_id: session_id.clone(),
             cancel: Arc::clone(&cancel),
         });
-        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_mcp(
+        let tools: Arc<dyn ToolExecutor> = Arc::new(ToolRegistry::with_hubs(
             PathBuf::from(&row.cwd),
             Arc::clone(&self.config.mcp),
+            Arc::clone(&self.config.lsp),
         ));
 
         // compaction is checked before the turn, and only ever appends (spec 10.4).
