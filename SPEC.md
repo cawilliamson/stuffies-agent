@@ -824,11 +824,17 @@ asked about the code rather than a second opinion shipped in this binary. A file
 a server by its extension and by the nearest project marker above it; a server that is not
 installed is never chosen, so the table costs nothing on a machine that has none of them.
 "Installed" means found on the search path: `SA_LSP_PATH` if set, then the daemon's own
-path, then the path a login shell reports, then `~/.local/bin`. A service started by an init
-system is handed a thin path that omits whatever the user's profile adds — on every
-distribution, not one — and a login shell is what a terminal would have had. No
-distribution's directories are named in the code; `SA_LSP_PATH` is the override for a host
-where even that is wrong.
+path, then the path a login shell reports, then `~/.local/bin`. No distribution's
+directories are named in the code, because which ones exist is the host's business, not
+this binary's.
+
+A service started by an init system never gets a login session, so its path omits whatever
+the user's profile adds — on every distribution, not one. The login shell is the best
+effort at recovering that: it is where `~/.cargo/bin` and a toolchain manager's shims
+usually come from. It is not sufficient everywhere. On nixos the profile arrives through
+pam rather than through a shell profile, so a login shell run from the service adds
+nothing, and the unit names the directory itself through `SA_LSP_PATH`. `sa lsp` prints
+the path it searched, so a server that is installed but not found says why.
 The protocol is `lspf`'s job — framing, handshake, request typing and the child process —
 the same way the protocol is `rmcp`'s job for MCP. What belongs to this project is the
 server table, which server a path belongs to, when a server is started and stopped, and
