@@ -304,27 +304,71 @@ impl Config {
 
 /// where a command is looked for.
 ///
-/// the daemon's own path first, then the places a user's tools are installed. a service
-/// started by an init system is handed a thin path that omits the user's profile, and a
-/// language server that exists but is not found is the same as one that does not exist.
+/// `SA_LSP_PATH`, then the daemon's own path, then the path a login shell reports, then
+/// `~/.local/bin`. asking the shell is the portable part: a service is handed a thin path
+/// that omits whatever the user's profile adds, on every distribution, and a login shell is
+/// what a terminal would have had. no distribution's directories are named here.
 #[must_use]
-pub fn search_paths() -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|value| std::env::split_paths(&value).collect())
-        .unwrap_or_default();
-    let mut fallbacks = Vec::new();
-    if let Ok(user) = std::env::var("USER") {
-        fallbacks.push(Path::new("/etc/profiles/per-user").join(user).join("bin"));
+pub fn search_paths() -> &'static [PathBuf] {
+    static PATHS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    PATHS.get_or_init(|| {
+        compose_paths(
+            std::env::var_os("SA_LSP_PATH").as_deref(),
+            std::env::var_os("PATH").as_deref(),
+            login_shell_path(),
+            std::env::var_os("HOME").map(PathBuf::from),
+        )
+    })
+}
+
+/// the search path, in the order a command is looked for. a caller's own setting wins over
+/// everything, because it is the one answer that is never a guess.
+#[must_use]
+fn compose_paths(
+    explicit: Option<&std::ffi::OsStr>,
+    own: Option<&std::ffi::OsStr>,
+    shell: Vec<PathBuf>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for value in [explicit, own].into_iter().flatten() {
+        paths.extend(std::env::split_paths(value));
     }
-    fallbacks.push(PathBuf::from("/run/current-system/sw/bin"));
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        fallbacks.push(home.join(".local/bin"));
-        fallbacks.push(home.join(".nix-profile/bin"));
+    paths.extend(shell);
+    if let Some(home) = home {
+        paths.push(home.join(".local/bin"));
     }
-    paths.extend(fallbacks);
-    paths.retain(|path| !path.as_os_str().is_empty());
-    paths.dedup();
+    // the first place a command is found is the one that runs, so a later repeat of a
+    // directory that is already in the list can never change the answer.
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|path| !path.as_os_str().is_empty() && seen.insert(path.clone()));
     paths
+}
+
+/// the path a login shell reports. bounded, because a profile that waits on a network mount
+/// must not hold up the first query.
+fn login_shell_path() -> Vec<PathBuf> {
+    const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
+    let Some(shell) = std::env::var_os("SHELL").filter(|shell| !shell.is_empty()) else {
+        return Vec::new();
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let output = std::process::Command::new(shell)
+            .args(["-l", "-c", "printf %s \"$PATH\""])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(output);
+    });
+    match rx.recv_timeout(SHELL_TIMEOUT) {
+        Ok(Ok(output)) if output.status.success() => {
+            let reported = String::from_utf8_lossy(&output.stdout);
+            std::env::split_paths(std::ffi::OsStr::new(reported.as_ref())).collect()
+        }
+        // a shell that fails or is slow contributes nothing; the other sources still stand.
+        _ => Vec::new(),
+    }
 }
 
 /// whether a command can be started, without starting it.
@@ -1181,13 +1225,36 @@ mod tests {
     }
 
     #[test]
-    fn the_search_path_includes_the_user_profile() {
-        let paths = search_paths();
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        if let Some(home) = home {
-            assert!(paths.contains(&home.join(".nix-profile/bin")));
-        }
-        assert!(paths.contains(&PathBuf::from("/run/current-system/sw/bin")));
+    fn an_explicit_search_path_comes_first_and_the_rest_follow() {
+        let paths = compose_paths(
+            Some(std::ffi::OsStr::new("/opt/tools/bin")),
+            Some(std::ffi::OsStr::new("/usr/bin")),
+            vec![PathBuf::from("/home/someone/.nix-profile/bin")],
+            Some(PathBuf::from("/home/someone")),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/opt/tools/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/home/someone/.nix-profile/bin"),
+                PathBuf::from("/home/someone/.local/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_repeated_directory_is_named_once() {
+        let paths = compose_paths(
+            None,
+            Some(std::ffi::OsStr::new("/usr/bin:/usr/bin:/bin")),
+            vec![PathBuf::from("/usr/bin")],
+            None,
+        );
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
+        );
     }
 
     #[test]
