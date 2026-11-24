@@ -430,6 +430,71 @@ pub struct Checkpoint {
     pub reference: String,
     pub base_commit: String,
     pub tree: String,
+    /// the shadow git directory the commit lives in, which is never the workspace's `.git`.
+    pub store: PathBuf,
+}
+
+/// how long a checkpoint is kept after the turn that made it. past this it is deleted, and
+/// the objects behind it are pruned with it (spec 8.4).
+pub const CHECKPOINT_MAX_AGE: std::time::Duration = std::time::Duration::from_hours(7 * 24);
+
+/// the directory a workspace's checkpoints live in: one bare git directory per repository,
+/// named for the repository's common git directory so worktrees share it.
+///
+/// it is deliberately outside the workspace. the workspace's own `.git` is the user's, and a
+/// turn must not add a ref or an object to it (spec 6.1).
+fn checkpoint_store(workspace: &Path, root: &Path) -> Result<PathBuf, WorkspaceError> {
+    use sha2::{Digest, Sha256};
+
+    let common = git_common_dir(workspace)?;
+    let mut hasher = Sha256::new();
+    hasher.update(common.display().to_string().as_bytes());
+    let mut name = String::new();
+    for byte in hasher.finalize() {
+        let _ = write!(name, "{byte:02x}");
+    }
+
+    let store = root.join(name);
+    if !store.join("HEAD").exists() {
+        std::fs::create_dir_all(&store)?;
+        let output = std::process::Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&store)
+            .output()?;
+        if !output.status.success() {
+            return Err(WorkspaceError::Git(format!(
+                "git init --bare: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+    }
+    Ok(store)
+}
+
+/// runs git against the shadow store, with the workspace as its worktree.
+fn git_store(
+    store: &Path,
+    workspace: &Path,
+    args: &[&str],
+    env: &[(&str, &Path)],
+) -> Result<String, WorkspaceError> {
+    let mut command = std::process::Command::new("git");
+    command
+        .env("GIT_DIR", store)
+        .env("GIT_WORK_TREE", workspace)
+        .args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(WorkspaceError::Git(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn git(workspace: &Path, args: &[&str]) -> Result<String, WorkspaceError> {
@@ -468,14 +533,21 @@ impl Drop for TempIndex {
 }
 
 /// creates a checkpoint for an unattended turn.
+///
+/// the commit is written to a shadow store under `root`, never to the workspace's `.git`, and
+/// it has no parent: a checkpoint is a tree to restore, not a history to walk. the first
+/// checkpoint of a repository copies its source tree into the store; later ones add only what
+/// changed, because the blobs they reuse are already there.
 pub fn checkpoint(
     workspace: &Path,
+    root: &Path,
     session_id: &str,
     seq: u64,
 ) -> Result<Checkpoint, WorkspaceError> {
     // a directory that is not a repository, or has no commits yet, cannot be checkpointed.
     let base_commit = git(workspace, &["rev-parse", "HEAD"])
         .map_err(|_| WorkspaceError::NotARepository(workspace.display().to_string()))?;
+    let store = checkpoint_store(workspace, root)?;
 
     // unique per call: two sessions can share a session id prefix across repositories,
     // and tests run in parallel.
@@ -485,41 +557,55 @@ pub fn checkpoint(
     )));
     let _ = std::fs::remove_file(&index.0);
 
-    git_env(
+    git_store(
+        &store,
         workspace,
         &["add", "-A"],
-        Some(("GIT_INDEX_FILE", &index.0)),
+        &[("GIT_INDEX_FILE", &index.0)],
     )?;
-    let tree = git_env(
+    let tree = git_store(
+        &store,
         workspace,
         &["write-tree"],
-        Some(("GIT_INDEX_FILE", &index.0)),
+        &[("GIT_INDEX_FILE", &index.0)],
     )?;
 
     let message = format!("sa checkpoint {session_id} {seq}");
-    let commit = git(
+    let commit = git_store(
+        &store,
         workspace,
-        &["commit-tree", &tree, "-p", &base_commit, "-m", &message],
+        &["commit-tree", &tree, "-m", &message],
+        &[],
     )?;
 
     let reference = format!("refs/sa/checkpoints/{session_id}/{seq}");
-    git(workspace, &["update-ref", &reference, &commit])?;
+    git_store(&store, workspace, &["update-ref", &reference, &commit], &[])?;
 
     Ok(Checkpoint {
         reference,
         base_commit,
         tree,
+        store,
     })
 }
 
 /// keeps only the `keep` most recent checkpoint refs for a session (spec 8.4).
 pub fn prune_checkpoints(
     workspace: &Path,
+    root: &Path,
     session_id: &str,
     keep: usize,
 ) -> Result<(), WorkspaceError> {
+    let Ok(store) = checkpoint_store(workspace, root) else {
+        return Ok(());
+    };
     let prefix = format!("refs/sa/checkpoints/{session_id}/");
-    let raw = git(workspace, &["for-each-ref", "--format=%(refname)", &prefix])?;
+    let raw = git_store(
+        &store,
+        workspace,
+        &["for-each-ref", "--format=%(refname)", &prefix],
+        &[],
+    )?;
     // the ref ends in the session's seq, so it is ordered as a number: a lexicographic
     // sort puts `/10` before `/9` and prunes the newest checkpoint instead of the oldest.
     let seq_of = |reference: &str| {
@@ -534,9 +620,78 @@ pub fn prune_checkpoints(
         return Ok(());
     }
     for stale in &refs[..refs.len() - keep] {
-        git(workspace, &["update-ref", "-d", stale])?;
+        git_store(&store, workspace, &["update-ref", "-d", stale], &[])?;
     }
     Ok(())
+}
+
+/// deletes every checkpoint older than `max_age`, and the store of a repository that has no
+/// checkpoints left. a checkpoint nothing will restore is a leak, not a safety net.
+///
+/// returns the number of checkpoints removed. a store that cannot be read is skipped: one
+/// stale directory must not stop a daemon from starting.
+#[must_use]
+pub fn expire_checkpoints(root: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(max_age)
+        .and_then(|when| when.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_secs());
+
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let store = entry.path();
+        if !store.is_dir() {
+            continue;
+        }
+        let listed = std::process::Command::new("git")
+            .env("GIT_DIR", &store)
+            .args([
+                "for-each-ref",
+                "--format=%(refname) %(committerdate:unix)",
+                "refs/sa/checkpoints/",
+            ])
+            .output();
+        let Ok(listed) = listed else { continue };
+        if !listed.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&listed.stdout).lines() {
+            let Some((reference, when)) = line.rsplit_once(' ') else {
+                continue;
+            };
+            let when: u64 = when.parse().unwrap_or_default();
+            if when >= cutoff {
+                continue;
+            }
+            let deleted = std::process::Command::new("git")
+                .env("GIT_DIR", &store)
+                .args(["update-ref", "-d", reference])
+                .output();
+            if deleted.is_ok_and(|out| out.status.success()) {
+                removed += 1;
+            }
+        }
+
+        // nothing points at the objects any more, so they can go now rather than whenever a
+        // user's next `git gc` happens to run.
+        let _ = std::process::Command::new("git")
+            .env("GIT_DIR", &store)
+            .args(["gc", "--prune=now", "--quiet"])
+            .output();
+
+        let empty = std::process::Command::new("git")
+            .env("GIT_DIR", &store)
+            .args(["for-each-ref", "--count=1", "refs/sa/checkpoints/"])
+            .output()
+            .is_ok_and(|out| out.status.success() && out.stdout.is_empty());
+        if empty {
+            let _ = std::fs::remove_dir_all(&store);
+        }
+    }
+    removed
 }
 
 #[must_use]
@@ -545,6 +700,7 @@ pub fn checkpoint_payload(checkpoint: &Checkpoint) -> Value {
         "ref": checkpoint.reference,
         "base_commit": checkpoint.base_commit,
         "tree": checkpoint.tree,
+        "store": checkpoint.store.display().to_string(),
         "includes_untracked": true,
     })
 }
@@ -573,12 +729,28 @@ mod tests {
         dir
     }
 
+    /// the refs of a session's checkpoints, read from the shadow store rather than the repo.
+    fn store_refs(dir: &std::path::Path, root: &std::path::Path, session: &str) -> String {
+        let store = checkpoint_store(dir, root).expect("store");
+        std::process::Command::new("git")
+            .env("GIT_DIR", &store)
+            .args([
+                "for-each-ref",
+                "--format=%(refname)",
+                &format!("refs/sa/checkpoints/{session}/"),
+            ])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            .unwrap_or_default()
+    }
+
     #[test]
     fn checkpoint_captures_untracked_files_without_touching_the_worktree() {
         let dir = repo();
+        let root = tempfile::tempdir().expect("root");
         std::fs::write(dir.path().join("new.txt"), "untracked").expect("write");
 
-        let checkpoint = checkpoint(dir.path(), "s1", 1).expect("checkpoint");
+        let checkpoint = checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
 
         assert!(
             dir.path().join("new.txt").exists(),
@@ -591,22 +763,95 @@ mod tests {
         assert!(staged.is_empty(), "real index was modified: {staged}");
     }
 
+    /// the whole point of the shadow store: a checkpoint must not add a ref or an object to
+    /// the user's `.git`.
+    #[test]
+    fn checkpoint_writes_nothing_into_the_workspace_git_dir() {
+        let dir = repo();
+        let root = tempfile::tempdir().expect("root");
+        let objects = |dir: &std::path::Path| {
+            std::fs::read_dir(dir.join(".git/objects"))
+                .map(|entries| entries.flatten().count())
+                .unwrap_or_default()
+        };
+        let before = objects(dir.path());
+
+        checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
+
+        assert_eq!(
+            objects(dir.path()),
+            before,
+            "no object may be written into the workspace's .git"
+        );
+        assert!(
+            git(dir.path(), &["for-each-ref", "refs/sa/"])
+                .expect("refs")
+                .is_empty(),
+            "no checkpoint ref may be written into the workspace's .git"
+        );
+        assert_eq!(
+            store_refs(dir.path(), root.path(), "s1").lines().count(),
+            1,
+            "the checkpoint belongs in the shadow store"
+        );
+    }
+
+    /// a checkpoint nothing will restore is a leak. past its age it goes, and so does the
+    /// store once nothing is left in it.
+    #[test]
+    fn old_checkpoints_expire_and_take_their_store_with_them() {
+        let dir = repo();
+        let root = tempfile::tempdir().expect("root");
+        let checkpoint = checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
+
+        // rewrite the commit with a committer date in the past: the age is the commit's,
+        // not the file's, so this is what a checkpoint from last month looks like.
+        let store = &checkpoint.store;
+        let old = std::process::Command::new("git")
+            .env("GIT_DIR", store)
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00+0000")
+            .args(["commit-tree", &checkpoint.tree, "-m", "sa checkpoint s1 1"])
+            .output()
+            .expect("commit-tree");
+        let old_commit = String::from_utf8_lossy(&old.stdout).trim().to_owned();
+        std::process::Command::new("git")
+            .env("GIT_DIR", store)
+            .args(["update-ref", &checkpoint.reference, &old_commit])
+            .output()
+            .expect("update-ref");
+
+        let removed = expire_checkpoints(root.path(), std::time::Duration::from_secs(3600));
+        assert_eq!(removed, 1, "the aged checkpoint must go");
+        assert!(
+            !store.exists(),
+            "a store with no checkpoints left must be removed"
+        );
+    }
+
+    #[test]
+    fn a_recent_checkpoint_is_not_expired() {
+        let dir = repo();
+        let root = tempfile::tempdir().expect("root");
+        checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
+
+        let removed = expire_checkpoints(root.path(), CHECKPOINT_MAX_AGE);
+        assert_eq!(removed, 0, "a fresh checkpoint must be kept");
+        assert_eq!(
+            store_refs(dir.path(), root.path(), "s1").lines().count(),
+            1,
+            "and it must still be restorable"
+        );
+    }
+
     #[test]
     fn checkpoint_ref_survives_and_prunes() {
         let dir = repo();
+        let root = tempfile::tempdir().expect("root");
         for seq in 1..=3 {
-            checkpoint(dir.path(), "s1", seq).expect("checkpoint");
+            checkpoint(dir.path(), root.path(), "s1", seq).expect("checkpoint");
         }
-        prune_checkpoints(dir.path(), "s1", 2).expect("prune");
-        let refs = git(
-            dir.path(),
-            &[
-                "for-each-ref",
-                "--format=%(refname)",
-                "refs/sa/checkpoints/s1/",
-            ],
-        )
-        .expect("refs");
+        prune_checkpoints(dir.path(), root.path(), "s1", 2).expect("prune");
+        let refs = store_refs(dir.path(), root.path(), "s1");
         assert_eq!(refs.lines().count(), 2, "{refs}");
     }
 
@@ -615,19 +860,12 @@ mod tests {
         // the regression: the refs were sorted as text, so `/10` sorted before `/9` and the
         // newest checkpoint was the first thing pruned.
         let dir = repo();
+        let root = tempfile::tempdir().expect("root");
         for seq in 1..=11 {
-            checkpoint(dir.path(), "s1", seq).expect("checkpoint");
+            checkpoint(dir.path(), root.path(), "s1", seq).expect("checkpoint");
         }
-        prune_checkpoints(dir.path(), "s1", 3).expect("prune");
-        let refs = git(
-            dir.path(),
-            &[
-                "for-each-ref",
-                "--format=%(refname)",
-                "refs/sa/checkpoints/s1/",
-            ],
-        )
-        .expect("refs");
+        prune_checkpoints(dir.path(), root.path(), "s1", 3).expect("prune");
+        let refs = store_refs(dir.path(), root.path(), "s1");
         let mut kept: Vec<&str> = refs.lines().collect();
         kept.sort_unstable();
         assert_eq!(

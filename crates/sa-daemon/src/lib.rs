@@ -299,10 +299,21 @@ async fn host(
             mcp,
             lsp,
             lock_dir: cfg.runtime_dir.join("locks"),
+            checkpoint_dir: cfg.state_dir.join("checkpoints"),
             turn_timeout_secs: cfg.turn_timeout_secs,
             aux_budget_secs: cfg.aux_budget_secs,
         }),
     ));
+
+    // a checkpoint nothing will restore is a leak. expire them at startup rather than on a
+    // timer: a daemon that is not running has nothing to expire on behalf of.
+    let expired = sa_core::workspace::expire_checkpoints(
+        &cfg.state_dir.join("checkpoints"),
+        sa_core::workspace::CHECKPOINT_MAX_AGE,
+    );
+    if expired > 0 {
+        tracing::info!(expired, "expired checkpoints past their age");
+    }
 
     let recovered = manager.recover()?;
     if recovered > 0 {

@@ -23,6 +23,21 @@ and no shim exists to protect a decision that has not shipped.
 - **no legacy accommodation.** No dual code paths, no deprecated aliases, no migration
   shims. Change the thing and fix the call sites.
 
+## the workspace is the user's
+
+A turn leaves no traces in the directory it works on. Everything the agent writes for its
+own bookkeeping — event log, checkpoints, locks, caches, logs, scratch files — lives under
+`$XDG_STATE_HOME/stuffies-agent` and `$XDG_RUNTIME_DIR`. Nothing of ours belongs in the
+workspace, and the workspace's `.git` is part of the workspace.
+
+The only things that appear in a workspace are the changes the turn was asked to make: the
+files it edited, and the files its tools created on purpose. Anything else is a trace, and a
+trace is a bug, not a detail.
+
+This is why the agent has no permission system (spec 8) and why the one guard it keeps is a
+checkpoint: the user's defence against a bad turn is that their directory is exactly as they
+left it, plus the edits they wanted. A recovery point that lives in their `.git` is not that.
+
 ## ordering
 
 Alphabetical, everywhere a collection is written down: tool specs, slash commands, help

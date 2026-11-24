@@ -18,6 +18,7 @@ fn manager(dir: &std::path::Path, script: Vec<Vec<Delta>>) -> Arc<Manager> {
             provider,
             max_tokens: None,
             lock_dir: dir.join("locks"),
+            checkpoint_dir: dir.join("checkpoints"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
             models: Arc::new(std::sync::Mutex::new(Vec::new())),

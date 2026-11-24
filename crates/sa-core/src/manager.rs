@@ -59,6 +59,8 @@ pub struct ManagerConfig {
     pub provider: Arc<dyn Provider>,
     pub max_tokens: Option<u64>,
     pub lock_dir: PathBuf,
+    /// where checkpoints live. outside the workspace, always (spec 8.4).
+    pub checkpoint_dir: PathBuf,
     pub turn_timeout_secs: u64,
     /// how long an auxiliary model call (title, compaction) may take before it is abandoned.
     /// without this a stalled provider blocks the turn before the agent even starts.
@@ -797,14 +799,24 @@ impl Manager {
         // an unattended turn never starts without a checkpoint (spec 8.4).
         if detach {
             let seq = self.store.last_seq(&session_id).unwrap_or(0);
-            match crate::workspace::checkpoint(&workspace, &session_id, seq) {
+            match crate::workspace::checkpoint(
+                &workspace,
+                &self.config.checkpoint_dir,
+                &session_id,
+                seq,
+            ) {
                 Ok(checkpoint) => {
                     let _ = self.append(
                         &session_id,
                         kinds::CHECKPOINT,
                         &crate::workspace::checkpoint_payload(&checkpoint),
                     );
-                    let _ = crate::workspace::prune_checkpoints(&workspace, &session_id, 10);
+                    let _ = crate::workspace::prune_checkpoints(
+                        &workspace,
+                        &self.config.checkpoint_dir,
+                        &session_id,
+                        10,
+                    );
                 }
                 // a non-git workspace cannot be checkpointed; that is recorded, not fatal.
                 Err(crate::workspace::WorkspaceError::NotARepository(_)) => {

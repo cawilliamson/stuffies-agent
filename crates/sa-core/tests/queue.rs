@@ -68,6 +68,7 @@ fn manager(dir: &std::path::Path, provider: &Arc<GatedProvider>) -> Arc<Manager>
             provider: Arc::clone(provider) as Arc<dyn Provider>,
             max_tokens: None,
             lock_dir: dir.join("locks"),
+            checkpoint_dir: dir.join("checkpoints"),
             turn_timeout_secs: 30,
             aux_budget_secs: 5,
             models: Arc::new(Mutex::new(Vec::new())),

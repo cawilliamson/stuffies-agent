@@ -613,8 +613,9 @@ Read-only exceptions, both permitted because they predate sa:
 
 - an `AGENTS.md` or `SOUL.md` that already exists in the workspace root is read and never
   written. If absent, sa does not create one.
-- `refs/sa/checkpoints/` is written into `.git` (spec 8.4). It is git metadata, invisible
-  to the working tree and to `git status`, and is removed with `git update-ref -d`.
+- nothing else. In particular `.git` is the user's: a checkpoint does not add a ref or an
+  object to it (spec 8.4), so the workspace after a turn differs from the one before it only
+  by the edits the turn was asked to make.
 
 There is no `sa init`. There is nothing to initialise: the daemon creates its own
 directories on first use, and per-workspace config is optional.
@@ -774,16 +775,23 @@ the agent.
 
 Before any unattended turn the daemon creates a checkpoint and records it in a `checkpoint`
 event. The checkpoint is a commit built against a temporary index, so neither the worktree
-nor the real index is touched:
+nor the real index is touched, and it is written to a shadow store under
+`$XDG_STATE_HOME/stuffies-agent/checkpoints/<repo-id>/` rather than to the workspace's
+`.git`:
 
 ```text
-GIT_INDEX_FILE=<temp> git add -A
-GIT_INDEX_FILE=<temp> git write-tree
-git commit-tree <tree> -p HEAD -m "sa checkpoint <session_id> <seq>"
-git update-ref refs/sa/checkpoints/<session_id>/<seq> <commit>
+GIT_DIR=<store> GIT_WORK_TREE=<workspace> GIT_INDEX_FILE=<temp> git add -A
+GIT_DIR=<store> GIT_WORK_TREE=<workspace> GIT_INDEX_FILE=<temp> git write-tree
+GIT_DIR=<store> git commit-tree <tree> -m "sa checkpoint <session_id> <seq>"
+git --git-dir=<store> update-ref refs/sa/checkpoints/<session_id>/<seq> <commit>
 ```
 
-The event carries `ref`, `base_commit`, `tree`, and `includes_untracked: true`.
+The commit has no parent. A checkpoint is a tree to restore, not a history to walk, and an
+orphan commit means the store does not depend on the user's repository staying where it is.
+The first checkpoint of a repository copies its source tree into the store; later ones add
+only what changed, because the blobs they reuse are already there.
+
+The event carries `ref`, `base_commit`, `tree`, `store`, and `includes_untracked: true`.
 
 `DECIDED`: not `git stash`. `git stash push` cleans the worktree, which is the opposite of
 what a checkpoint wants, and it mutates a shared list. `git stash create` avoids the list but
@@ -791,10 +799,19 @@ silently ignores untracked files, which is exactly what an agent writes. The tem
 commit captures tracked and untracked files, changes nothing in place, and is removed with
 `git update-ref -d`.
 
+`DECIDED`: not the workspace's `.git`. A ref and its objects there are a trace in the user's
+repository: they survive pruning until a `git gc`, they grow the object store on every
+detached turn, and they make `git fsck` and `git log --all` say things about sa. A shadow
+store is one directory, removed with `rm -rf`.
+
+Retention is by age as well as count: a session keeps its ten most recent checkpoints, and
+any checkpoint older than seven days is deleted with its objects. A checkpoint nothing will
+restore is a leak, not a safety net.
+
 Recovery is documented, not inferred:
 
 ```text
-git checkout <ref> -- .
+git --git-dir=<store> --work-tree=<workspace> checkout <ref> -- .
 ```
 
 That restores tracked files to the checkpoint state. Files created after the checkpoint are
