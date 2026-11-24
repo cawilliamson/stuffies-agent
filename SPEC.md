@@ -868,6 +868,18 @@ configured, installed and running, and needs no path.
 - findings come from a pull (`textDocument/diagnostic`) where the server supports it and
   from a push (`textDocument/publishDiagnostics`) where it does not. A server that does
   neither reports nothing, which is not an error.
+- a pull is not believed the first time it answers. rust-analyzer returns an empty report
+  for a file that does not compile until its first pass finishes, so a query waits for the
+  server to stop reporting (`SETTLE`) before calling a file clean. Reporting a broken file
+  as clean is the one mistake a checker must not make.
+- the server is started with the path it was found on, because a language server shells out
+  to its own toolchain: rust-analyzer needs `cargo` and `rustc` on `PATH` to load a project
+  at all.
+- `lspf` sends `root_uri: None` at initialize and offers no way to set it. A server that
+  infers its project from the file path works (rust-analyzer, pyright); one that expects to
+  be told its root at initialize does not, and `typescript-language-server` is the known
+  case: it starts, answers navigation, and never reports a diagnostic. Its pull is
+  `-32601` and its push never arrives.
 - nothing leaves the machine. A language server is a local process started from `PATH`.
 
 The knowledge tools (§11.4) are the second set and arrive at v3.0:
