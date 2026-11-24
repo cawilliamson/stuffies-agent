@@ -35,7 +35,11 @@ async fn a_type_error_is_reported_for_the_text_on_disk() {
     );
     let hub = Hub::new();
     let findings = hub
-        .diagnostics(&dir.path().join("a.py"), dir.path())
+        .diagnostics(
+            &dir.path().join("a.py"),
+            dir.path(),
+            std::time::Duration::from_secs(30),
+        )
         .await
         .expect("diagnostics");
     hub.shutdown().await;
@@ -72,7 +76,10 @@ async fn a_fixed_file_has_no_findings() {
     )
     .expect("write");
     let hub = Hub::new();
-    let before = hub.diagnostics(&file, dir.path()).await.expect("first");
+    let before = hub
+        .diagnostics(&file, dir.path(), std::time::Duration::from_secs(30))
+        .await
+        .expect("first");
     assert!(
         !before.is_empty(),
         "expected the broken text to be reported"
@@ -82,10 +89,44 @@ async fn a_fixed_file_has_no_findings() {
         "def shout(text: str) -> str:\n    return text\n\n\nshout(\"hi\")\n",
     )
     .expect("rewrite");
-    let after = hub.diagnostics(&file, dir.path()).await.expect("second");
+    let after = hub
+        .diagnostics(&file, dir.path(), std::time::Duration::from_secs(30))
+        .await
+        .expect("second");
     hub.shutdown().await;
     assert!(
         after.is_empty(),
         "the server still described the old text: {after:?}"
+    );
+}
+
+/// a server answers before it has analysed anything: rust-analyzer returns an empty report
+/// for a file that does not compile until its first pass finishes. believing that answer
+/// calls a broken file clean, which is the one mistake a checker must not make.
+#[tokio::test]
+async fn a_broken_file_is_not_reported_clean_before_the_server_has_analysed() {
+    if !installed("rust-analyzer") {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+    write(
+        dir.path(),
+        "Cargo.toml",
+        "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    let file = dir.path().join("src/lib.rs");
+    std::fs::write(&file, "pub fn answer() -> u32 {\n    \"not a number\"\n}\n").expect("write");
+    let hub = Hub::new();
+    let findings = hub
+        .diagnostics(&file, dir.path(), std::time::Duration::from_secs(40))
+        .await
+        .expect("diagnostics");
+    hub.shutdown().await;
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.severity == Severity::Error),
+        "a file that does not compile was reported clean: {findings:?}"
     );
 }

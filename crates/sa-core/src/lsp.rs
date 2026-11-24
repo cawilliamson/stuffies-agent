@@ -35,6 +35,12 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(20);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// how long `edit` and `write` will wait for findings before reporting the change alone.
 pub const EDIT_BUDGET: Duration = Duration::from_secs(8);
+/// how long a query waits after the last report before believing it.
+///
+/// a server answers a pull before it has analysed anything: rust-analyzer returns an empty
+/// report for a file that does not compile until its first pass finishes, and reports again
+/// as it learns more. believing the first empty answer is how a broken file is called clean.
+pub const SETTLE: Duration = Duration::from_millis(2500);
 /// how many findings a tool result carries.
 pub const MAX_FINDINGS: usize = 40;
 
@@ -495,6 +501,9 @@ struct Running {
     handle: lspf::ServerHandle,
     open: Mutex<BTreeMap<String, Open>>,
     diagnostics: Arc<Mutex<BTreeMap<String, Vec<Finding>>>>,
+    /// how many times the server has reported on a document. a clean file is a report with
+    /// no findings, which is not the same as a server that has not spoken yet.
+    reports: Arc<Mutex<BTreeMap<String, u64>>>,
 }
 
 /// the servers this daemon has started, keyed by server and root so one project's server is
@@ -626,8 +635,9 @@ impl Hub {
                         error: error.to_string(),
                     })?;
                 if let Ok(mut guard) = server.open.lock() {
-                    guard.insert(key, Open { version: 1 });
+                    guard.insert(key.clone(), Open { version: 1 });
                 }
+                forget(server, &key);
             }
             Some(version) => {
                 let version = version + 1;
@@ -649,18 +659,21 @@ impl Hub {
                         error: error.to_string(),
                     })?;
                 if let Ok(mut guard) = server.open.lock() {
-                    guard.insert(key, Open { version });
+                    guard.insert(key.clone(), Open { version });
                 }
+                forget(server, &key);
             }
         }
         Ok(uri)
     }
 
-    /// every finding a server reports for this file, pushed or pulled.
+    /// every finding a server reports for this file, pushed or pulled, waiting until the
+    /// server has stopped reporting or the budget is spent.
     pub async fn diagnostics(
         &self,
         path: &Path,
         workspace: &Path,
+        budget: Duration,
     ) -> Result<Vec<Finding>, LspError> {
         let server = self.ensure(path, workspace).await?;
         let uri = self.sync(&server, path).await?;
@@ -672,42 +685,49 @@ impl Hub {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
                     text: None,
                 });
-        // pull first: a server that supports it answers for the current text, where a push
-        // may still describe the previous one.
-        let pulled = tokio::time::timeout(
-            REQUEST_TIMEOUT,
-            server
-                .handle
-                .request::<DocumentDiagnosticRequest>(DocumentDiagnosticParams {
-                    text_document: TextDocumentIdentifier { uri: uri.clone() },
-                    identifier: None,
-                    previous_result_id: None,
-                    work_done_progress_params: WorkDoneProgressParams::default(),
-                    partial_result_params: lspf::types::PartialResultParams::default(),
-                }),
-        )
-        .await;
-        let mut findings = match pulled {
-            Ok(Ok(report)) => findings_from_report(&report, &uri, &server, path),
-            _ => Vec::new(),
-        };
-        if findings.is_empty() {
-            // no pull support, or nothing yet: give a server that pushes a moment to do so.
-            for _ in 0..40 {
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                let pushed = server
-                    .diagnostics
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.get(&uri.to_string()).cloned())
-                    .unwrap_or_default();
-                if !pushed.is_empty() {
-                    findings = pushed;
-                    break;
+        let deadline = std::time::Instant::now() + budget;
+        let mut reports = reports_of(&server, &uri);
+        let mut quiet_since = std::time::Instant::now();
+        loop {
+            // a pull that answers is the server's own view of this text, which is better
+            // than anything it pushed about an earlier one.
+            if let Ok(Ok(report)) = tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                server
+                    .handle
+                    .request::<DocumentDiagnosticRequest>(DocumentDiagnosticParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        identifier: None,
+                        previous_result_id: None,
+                        work_done_progress_params: WorkDoneProgressParams::default(),
+                        partial_result_params: lspf::types::PartialResultParams::default(),
+                    }),
+            )
+            .await
+            {
+                let found = findings_from_report(&report, &uri, &server, path);
+                if !found.is_empty() {
+                    return Ok(found);
                 }
             }
+            if let Some(pushed) = server
+                .diagnostics
+                .lock()
+                .ok()
+                .and_then(|guard| guard.get(&uri.to_string()).cloned())
+            {
+                return Ok(pushed);
+            }
+            let now = reports_of(&server, &uri);
+            if now != reports {
+                reports = now;
+                quiet_since = std::time::Instant::now();
+            }
+            if quiet_since.elapsed() >= SETTLE || std::time::Instant::now() >= deadline {
+                return Ok(Vec::new());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        Ok(findings)
     }
 
     /// where the symbol at a position is defined.
@@ -869,7 +889,9 @@ impl Hub {
 /// starts one server, rooted at `root`, with a handler that keeps what it pushes.
 async fn start(name: &str, entry: &ServerEntry, root: &Path) -> Result<Running, String> {
     let diagnostics: Arc<Mutex<BTreeMap<String, Vec<Finding>>>> = Arc::default();
+    let reports: Arc<Mutex<BTreeMap<String, u64>>> = Arc::default();
     let sink = Arc::clone(&diagnostics);
+    let counted = Arc::clone(&reports);
     let mut command = tokio::process::Command::new(&entry.command);
     command.args(&entry.args).current_dir(root);
     let child = tokio::time::timeout(
@@ -882,6 +904,7 @@ async fn start(name: &str, entry: &ServerEntry, root: &Path) -> Result<Running, 
             .initialization_options(entry.init_options.clone())
             .notification::<PublishDiagnosticsNotification, _, _>(move |_ctx, params| {
                 let sink = Arc::clone(&sink);
+                let counted = Arc::clone(&counted);
                 async move {
                     let key = params.uri.to_string();
                     let findings = params
@@ -903,8 +926,11 @@ async fn start(name: &str, entry: &ServerEntry, root: &Path) -> Result<Running, 
                         if findings.is_empty() {
                             guard.remove(&key);
                         } else {
-                            guard.insert(key, findings);
+                            guard.insert(key.clone(), findings);
                         }
+                    }
+                    if let Ok(mut guard) = counted.lock() {
+                        *guard.entry(key).or_insert(0) += 1;
                     }
                 }
             })
@@ -919,7 +945,26 @@ async fn start(name: &str, entry: &ServerEntry, root: &Path) -> Result<Running, 
         handle,
         open: Mutex::default(),
         diagnostics,
+        reports,
     })
+}
+
+/// how many reports the server has made about a document.
+fn reports_of(server: &Arc<Running>, uri: &Uri) -> u64 {
+    server
+        .reports
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(&uri.to_string()).copied())
+        .unwrap_or_default()
+}
+
+/// drops what the server said about a document, because the text has changed and the old
+/// report describes text that is no longer there.
+fn forget(server: &Arc<Running>, uri: &str) {
+    if let Ok(mut guard) = server.diagnostics.lock() {
+        guard.remove(uri);
+    }
 }
 
 fn uri_of(path: &Path) -> Result<Uri, LspError> {

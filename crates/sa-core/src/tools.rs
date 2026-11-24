@@ -226,7 +226,7 @@ impl ToolRegistry {
         };
         match tokio::time::timeout(
             crate::lsp::EDIT_BUDGET,
-            hub.diagnostics(path, &self.workspace),
+            hub.diagnostics(path, &self.workspace, crate::lsp::EDIT_BUDGET),
         )
         .await
         {
@@ -276,13 +276,16 @@ impl ToolRegistry {
                 hub.definition(&path, &self.workspace, line, character)
                     .await
             }
-            "diagnostics" => hub.diagnostics(&path, &self.workspace).await.map(|found| {
-                if found.is_empty() {
-                    format!("{raw}: no findings")
-                } else {
-                    crate::lsp::render(&found)
-                }
-            }),
+            "diagnostics" => hub
+                .diagnostics(&path, &self.workspace, crate::lsp::REQUEST_TIMEOUT)
+                .await
+                .map(|found| {
+                    if found.is_empty() {
+                        format!("{raw}: no findings")
+                    } else {
+                        crate::lsp::render(&found)
+                    }
+                }),
             "hover" => hub.hover(&path, &self.workspace, line, character).await,
             "references" => {
                 hub.references(&path, &self.workspace, line, character)
