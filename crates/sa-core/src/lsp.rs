@@ -590,15 +590,14 @@ impl Hub {
         if let Some(server) = self.running.lock().ok().and_then(|g| g.get(&key).cloned()) {
             return Ok(server);
         }
-        let server =
-            Arc::new(
-                start(name, entry, &root)
-                    .await
-                    .map_err(|error| LspError::Server {
-                        server: name.to_owned(),
-                        error,
-                    })?,
-            );
+        let server = Arc::new(
+            start(entry, &root)
+                .await
+                .map_err(|error| LspError::Server {
+                    server: name.to_owned(),
+                    error,
+                })?,
+        );
         if let Ok(mut guard) = self.running.lock() {
             // a second start that raced this one is dropped rather than kept, so one key
             // never names two children.
@@ -887,13 +886,29 @@ impl Hub {
 }
 
 /// starts one server, rooted at `root`, with a handler that keeps what it pushes.
-async fn start(name: &str, entry: &ServerEntry, root: &Path) -> Result<Running, String> {
+async fn start(entry: &ServerEntry, root: &Path) -> Result<Running, String> {
     let diagnostics: Arc<Mutex<BTreeMap<String, Vec<Finding>>>> = Arc::default();
     let reports: Arc<Mutex<BTreeMap<String, u64>>> = Arc::default();
     let sink = Arc::clone(&diagnostics);
     let counted = Arc::clone(&reports);
-    let mut command = tokio::process::Command::new(&entry.command);
+    // the executable is resolved on the path it was found on, and the child runs with that
+    // path: a language server shells out to its own toolchain (`cargo`, `rustc`, `tsc`), and
+    // a server that starts but cannot find its compiler reports less than it knows.
+    let program = Path::new(&entry.command)
+        .is_absolute()
+        .then(|| PathBuf::from(&entry.command))
+        .or_else(|| {
+            search_paths()
+                .iter()
+                .map(|dir| dir.join(&entry.command))
+                .find(|path| path.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from(&entry.command));
+    let mut command = tokio::process::Command::new(&program);
     command.args(&entry.args).current_dir(root);
+    if let Ok(path) = std::env::join_paths(search_paths()) {
+        command.env("PATH", path);
+    }
     let child = tokio::time::timeout(
         START_TIMEOUT,
         lspf::Client::builder(ClientCapabilities::default())
@@ -937,8 +952,8 @@ async fn start(name: &str, entry: &ServerEntry, root: &Path) -> Result<Running, 
             .spawn(command),
     )
     .await
-    .map_err(|_| format!("{name}: no handshake in {}s", START_TIMEOUT.as_secs()))?
-    .map_err(|error| format!("{name}: {error}"))?;
+    .map_err(|_| format!("no handshake in {}s", START_TIMEOUT.as_secs()))?
+    .map_err(|error| error.to_string())?;
     let handle = child.server();
     Ok(Running {
         child,
