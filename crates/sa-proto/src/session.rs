@@ -80,6 +80,10 @@ pub struct SessionSummary {
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// the part of `prompt_tokens` the endpoint served from its own cache. it is billed
+    /// differently from the rest, so a total that hides it cannot say what a turn cost.
+    #[serde(default)]
+    pub cached_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_micros: Option<u64>,
 }

@@ -35,6 +35,7 @@ async fn the_provider_streams_an_answer() {
                 stop_reason,
                 prompt_tokens,
                 completion_tokens,
+                ..
             } => {
                 eprintln!("[done] {stop_reason} {prompt_tokens} in / {completion_tokens} out");
                 done = true;

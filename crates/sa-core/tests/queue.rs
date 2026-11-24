@@ -50,6 +50,7 @@ impl Provider for GatedProvider {
                         stop_reason: "stop".to_owned(),
                         prompt_tokens: 1,
                         completion_tokens: 1,
+                        cached_tokens: 0,
                     })
                     .await;
             });

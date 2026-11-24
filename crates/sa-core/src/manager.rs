@@ -558,6 +558,7 @@ impl Manager {
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
+            cached_tokens: 0,
             // the endpoint prices nothing, so nothing is claimed: absent, not zero.
             cost_micros: None,
         };
@@ -573,6 +574,7 @@ impl Manager {
                 .get("completion_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
+            usage.cached_tokens += u.get("cached_tokens").and_then(Value::as_u64).unwrap_or(0);
         }
         Ok(usage)
     }
@@ -927,6 +929,7 @@ impl Manager {
                         "usage": {
                             "prompt_tokens": outcome.usage.prompt_tokens,
                             "completion_tokens": outcome.usage.completion_tokens,
+                            "cached_tokens": outcome.usage.cached_tokens,
                         },
                         // what the model's view costs now, against the window it has. the
                         // figure is the prompt the endpoint counted, not an estimate.
@@ -1243,6 +1246,7 @@ impl Manager {
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
+            cached_tokens: 0,
             cost_micros: None,
         };
         while let Some(delta) = rx.recv().await {
@@ -1251,10 +1255,12 @@ impl Manager {
                 crate::llm::Delta::Done {
                     prompt_tokens,
                     completion_tokens,
+                    cached_tokens,
                     ..
                 } => {
                     usage.prompt_tokens = prompt_tokens;
                     usage.completion_tokens = completion_tokens;
+                    usage.cached_tokens = cached_tokens;
                 }
                 _ => {}
             }

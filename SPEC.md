@@ -143,7 +143,7 @@ session.fork     {session_id, from_seq,           -> {session_id, workspace}
                   workspace, title?}
 session.delete   {session_id}                     -> {}
 session.usage    {session_id}                     -> {prompt_tokens, completion_tokens,
-                                                     cost_micros?}
+                                                     cached_tokens, cost_micros?}
 ```
 
 Turns:
@@ -448,7 +448,7 @@ session.renamed     {v, title}
 session.state       {v, state, reason?}
 turn.started        {v, turn_id, prompt, model, detach, resumed_from?}
 turn.completed      {v, turn_id, finish_reason, usage:{prompt_tokens,
-                     completion_tokens, cost_micros?}}
+                     completion_tokens, cached_tokens, cost_micros?}}
 turn.interrupted    {v, turn_id, cause, pending_call_id?}
 turn.queued         {v, steering[], follow_up[]}
 turn.steered        {v, prompt}
@@ -975,6 +975,10 @@ the agent loop. Nothing else is built for it now.
 `cost_micros` is computed from a static table in daemon config, keyed by model id. An
 unknown model omits `cost_micros` rather than guessing. `session.usage` sums
 `llm.completed` usage across the session.
+
+`cached_tokens` is the part of `prompt_tokens` the endpoint served from its own prompt
+cache, as the provider reported it. It is carried because a cached token and an uncached one
+are not billed the same: a total that hides the split cannot say what a turn cost.
 
 ### 10.4 Compaction
 

@@ -200,6 +200,7 @@ impl Agent {
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
+            cached_tokens: 0,
             cost_micros: None,
         };
 
@@ -255,6 +256,7 @@ impl Agent {
                                     "usage": {
                                         "prompt_tokens": usage.prompt_tokens,
                                         "completion_tokens": usage.completion_tokens,
+                                        "cached_tokens": usage.cached_tokens,
                                     },
                                 }),
                             )?;
@@ -284,9 +286,11 @@ impl Agent {
                         stop_reason,
                         prompt_tokens,
                         completion_tokens,
+                        cached_tokens,
                     } => {
                         usage.prompt_tokens += prompt_tokens;
                         usage.completion_tokens += completion_tokens;
+                        usage.cached_tokens += cached_tokens;
                         // the meter follows the conversation as it grows, rather than
                         // sitting at its last figure until the whole turn ends.
                         if prompt_tokens > 0 {
@@ -320,6 +324,7 @@ impl Agent {
                                     "usage": {
                                         "prompt_tokens": prompt_tokens,
                                         "completion_tokens": completion_tokens,
+                                        "cached_tokens": cached_tokens,
                                     },
                                 }),
                             )?;
@@ -347,6 +352,7 @@ impl Agent {
                     "usage": {
                         "prompt_tokens": usage.prompt_tokens,
                         "completion_tokens": usage.completion_tokens,
+                        "cached_tokens": usage.cached_tokens,
                     },
                 }),
             )?;

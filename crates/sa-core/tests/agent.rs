@@ -79,6 +79,7 @@ async fn tool_results_are_addressed_to_the_call_that_requested_them() {
                 stop_reason: "tool_calls".to_owned(),
                 prompt_tokens: 5,
                 completion_tokens: 5,
+                cached_tokens: 0,
             },
         ],
         vec![
@@ -87,6 +88,7 @@ async fn tool_results_are_addressed_to_the_call_that_requested_them() {
                 stop_reason: "stop".to_owned(),
                 prompt_tokens: 5,
                 completion_tokens: 5,
+                cached_tokens: 0,
             },
         ],
     ]));
@@ -158,6 +160,7 @@ async fn a_failed_tool_still_answers_the_call() {
                 stop_reason: "tool_calls".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ],
         vec![
@@ -166,6 +169,7 @@ async fn a_failed_tool_still_answers_the_call() {
                 stop_reason: "stop".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ],
     ]));
@@ -277,6 +281,7 @@ async fn the_system_prompt_names_the_tools_the_rules_and_the_workspace() {
         stop_reason: "stop".to_owned(),
         prompt_tokens: 1,
         completion_tokens: 1,
+        cached_tokens: 0,
     }]]));
     let sink = Arc::new(RecordingSink::default());
     let agent = Agent::new(
@@ -355,12 +360,14 @@ async fn a_flooding_tool_result_is_capped_and_marked() {
                 stop_reason: "tool_calls".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ],
         vec![Delta::Done {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         }],
     ]));
     let sink = Arc::new(RecordingSink::default());
@@ -423,12 +430,14 @@ async fn a_steering_message_reaches_the_next_model_round_trip() {
                 stop_reason: "tool_calls".to_owned(),
                 prompt_tokens: 5,
                 completion_tokens: 5,
+                cached_tokens: 0,
             },
         ],
         vec![Delta::Done {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         }],
     ]));
     let sink = Arc::new(SteeringSink {
@@ -469,6 +478,7 @@ async fn steering_is_delivered_one_message_per_round_trip() {
                 stop_reason: "tool_calls".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ]
     };
@@ -479,6 +489,7 @@ async fn steering_is_delivered_one_message_per_round_trip() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         }],
     ]));
     let sink = Arc::new(SteeringSink {
@@ -552,6 +563,7 @@ async fn escape_abandons_a_running_tool_instead_of_waiting_for_it() {
                 stop_reason: "tool_calls".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ],
         vec![
@@ -560,6 +572,7 @@ async fn escape_abandons_a_running_tool_instead_of_waiting_for_it() {
                 stop_reason: "stop".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ],
     ]);
@@ -610,6 +623,7 @@ async fn a_turn_runs_past_any_fixed_number_of_rounds() {
                 stop_reason: "tool_calls".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ]);
     }
@@ -619,6 +633,7 @@ async fn a_turn_runs_past_any_fixed_number_of_rounds() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]);
 
@@ -717,6 +732,7 @@ async fn a_follow_up_turn_sees_what_the_last_one_did() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]]));
     let agent = Agent::new(
@@ -783,6 +799,7 @@ async fn every_round_of_tool_calls_in_the_history_keeps_its_own_results() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]]));
     let agent = Agent::new(
@@ -866,6 +883,7 @@ async fn a_round_that_reports_tool_calls_but_makes_none_ends_the_turn() {
             stop_reason: "tool_calls".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]]));
     let agent = Agent::new(
@@ -896,6 +914,7 @@ async fn a_truncated_answer_is_recorded_as_the_reason_it_stopped() {
             stop_reason: "length".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]]));
     let sink = Arc::new(RecordingSink::default());
@@ -921,6 +940,7 @@ async fn a_continued_turn_carries_on_the_answer_that_was_cut_off() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]]));
     let agent = Agent::new(

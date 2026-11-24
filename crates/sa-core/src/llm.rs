@@ -134,6 +134,8 @@ pub enum Delta {
         stop_reason: String,
         prompt_tokens: u64,
         completion_tokens: u64,
+        /// the part of `prompt_tokens` the endpoint read from its prompt cache.
+        cached_tokens: u64,
     },
     /// the stream failed after it started. carried as a delta so the turn fails with the
     /// reason rather than completing with an empty answer.
@@ -633,6 +635,9 @@ impl Provider for OpenAiProvider {
                         stop_reason: stop_reason(partial.finish_reason(), has_calls),
                         prompt_tokens: partial.usage.input_tokens.unwrap_or_default(),
                         completion_tokens: partial.usage.output_tokens.unwrap_or_default(),
+                        // rig normalises the provider's cache counters, so what the
+                        // endpoint charged for is already known here.
+                        cached_tokens: partial.usage.cached_input_tokens.unwrap_or_default(),
                     })
                     .await;
             });
@@ -828,6 +833,7 @@ mod tests {
                 stop_reason: "stop".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ]]);
         let mut rx = provider

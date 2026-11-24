@@ -219,6 +219,7 @@ async fn a_turn_streams_into_the_log_and_completes() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 11,
             completion_tokens: 7,
+            cached_tokens: 0,
         },
     ]];
     let daemon = Harness::start(script).await;
@@ -275,6 +276,7 @@ async fn a_turn_completes_with_no_client_attached() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]];
     let daemon = Harness::start(script).await;
@@ -352,6 +354,7 @@ async fn a_restart_appends_an_interruption_for_the_open_turn() {
                 stop_reason: "stop".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ],
         vec![Delta::Text("never delivered".to_owned())],
@@ -400,6 +403,7 @@ async fn sa_writes_nothing_into_the_workspace() {
             stop_reason: "stop".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
+            cached_tokens: 0,
         },
     ]];
     let daemon = Harness::start(script).await;
@@ -538,6 +542,7 @@ async fn a_second_turn_sees_the_first_turns_context() {
                 stop_reason: "stop".to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
+                cached_tokens: 0,
             },
         ]
     };

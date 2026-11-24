@@ -518,7 +518,9 @@ impl ToolExecutor for ToolRegistry {
             ),
             spec(
                 "write",
-                "Write a file, creating it or replacing its contents entirely.",
+                "Write a file, creating it or replacing its contents entirely. Prefer `edit` for \
+                 a change to a file that already exists: a rewrite re-sends the whole file, and \
+                 every later round-trip pays for it again.",
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
             ),
         ];

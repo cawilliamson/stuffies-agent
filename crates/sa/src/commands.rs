@@ -104,7 +104,17 @@ impl Renderer {
                     .get("completion_tokens")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                println!("\x1b[2m[{prompt} in / {completion} out]\x1b[0m");
+                let cached = usage
+                    .get("cached_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                // the cached share is billed differently, so a total that hides it cannot
+                // say what the turn cost.
+                if cached > 0 {
+                    println!("\x1b[2m[{prompt} in ({cached} cached) / {completion} out]\x1b[0m");
+                } else {
+                    println!("\x1b[2m[{prompt} in / {completion} out]\x1b[0m");
+                }
             }
             "turn.interrupted" => {
                 let cause = payload
@@ -642,8 +652,10 @@ pub async fn attach(
                                 .await
                                 .map_err(|e| format!("session.usage failed: {e}"))?;
                             println!(
-                                "{} in / {} out",
-                                usage["prompt_tokens"], usage["completion_tokens"]
+                                "{} in ({} cached) / {} out",
+                                usage["prompt_tokens"],
+                                usage["cached_tokens"],
+                                usage["completion_tokens"]
                             );
                         }
                         ("reasoning", arg) => {
