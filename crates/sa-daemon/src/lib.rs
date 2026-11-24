@@ -13,6 +13,7 @@ use sa_core::manager::{Manager, ManagerConfig};
 use sa_core::peer;
 use sa_core::store::Store;
 use sa_proto::error::{code, RpcError};
+use tokio::net::UnixStream;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -126,13 +127,22 @@ pub enum DaemonError {
     Manager(#[from] sa_core::manager::ManagerError),
 }
 
-/// runs the daemon until `shutdown` resolves.
-pub async fn run(
-    cfg: Config,
+/// everything a daemon needs before it accepts a connection.
+struct Host {
+    dispatcher: Arc<Dispatcher>,
+    manager: Arc<Manager>,
+}
+
+/// builds the model catalog, the mcp servers, the language servers and the manager.
+///
+/// `store` is where sessions live. the socket daemon opens the database in the state
+/// directory; a standalone run passes an in-memory one, so nothing it does can reach the
+/// daemon's rows.
+async fn host(
+    cfg: &Config,
     provider: Arc<dyn Provider>,
-    shutdown: impl Future<Output = ()>,
-) -> Result<(), DaemonError> {
-    socket::prepare_runtime_dir(&cfg.runtime_dir)?;
+    store: Store,
+) -> Result<Host, DaemonError> {
     std::fs::create_dir_all(&cfg.state_dir)?;
 
     // ask the endpoint what it serves rather than inventing a name. if it cannot answer
@@ -277,7 +287,6 @@ pub async fn run(
     // that never touches a project pays nothing for them.
     let lsp = Arc::new(sa_core::lsp::Hub::new());
 
-    let store = Store::open(&cfg.db_path)?;
     let manager = Arc::new(Manager::new(
         store,
         Arc::new(ManagerConfig {
@@ -300,8 +309,48 @@ pub async fn run(
         tracing::warn!(recovered, "turns interrupted by the previous daemon");
     }
 
-    let listener = socket::bind(&cfg.socket_path)?;
     let dispatcher = Arc::new(Dispatcher::new(Arc::clone(&manager)));
+    Ok(Host {
+        dispatcher,
+        manager,
+    })
+}
+
+/// runs the daemon's machinery inside this process and returns the client end of a
+/// socketpair wired to it.
+///
+/// nothing is bound: no socket file, no port, no listener. a daemon already running on this
+/// machine is never contacted and never disturbed, and because the store is in memory the
+/// run leaves no session behind. this is a way to exercise one build end to end, not a
+/// second daemon (spec 4.4).
+pub async fn standalone(
+    cfg: Config,
+    provider: Arc<dyn Provider>,
+) -> Result<UnixStream, DaemonError> {
+    let host = host(&cfg, provider, Store::open_in_memory()?).await?;
+    let (backend, client) = UnixStream::pair()?;
+    tokio::spawn(async move {
+        if let Err(err) = conn::serve(backend, host.dispatcher, host.manager).await {
+            tracing::debug!(%err, "standalone connection closed");
+        }
+    });
+    Ok(client)
+}
+
+/// runs the daemon until `shutdown` resolves.
+pub async fn run(
+    cfg: Config,
+    provider: Arc<dyn Provider>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), DaemonError> {
+    socket::prepare_runtime_dir(&cfg.runtime_dir)?;
+    let store = Store::open(&cfg.db_path)?;
+    let Host {
+        dispatcher,
+        manager,
+    } = host(&cfg, provider, store).await?;
+
+    let listener = socket::bind(&cfg.socket_path)?;
     let own_uid = nix::unistd::geteuid().as_raw();
 
     tracing::info!(

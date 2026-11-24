@@ -33,3 +33,17 @@ The exceptions are the ones where order carries meaning, and they are narrow: a 
 protocol that defines the sequence, a dependency's own required order, a ranking or a
 time series, and a list the reader is meant to follow step by step. "It reads better this
 way" is not one of them.
+
+## testing
+
+`sa --standalone <command>` builds the backend into the front-end process, so a change can be
+exercised end to end without a daemon: no socket, no database, nothing to restart between
+builds. Use it to iterate quickly and for one-off checks of a client path.
+
+It is opt-in, never the default and never a fallback. A command that needs a daemon still
+fails without one; `--standalone` is the thing you ask for.
+
+It is also not the deployment standard. The supported shape is the daemon plus a disposable
+client, and standalone shares its startup with it, so behaviour that only works in one of
+them is a bug. Test daemon mode too before calling a change done: start `sa daemon`, attach a
+client to it, and confirm the same behaviour over the socket.

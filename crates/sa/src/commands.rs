@@ -3,6 +3,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 
 use sa_client::Client;
+use sa_core::llm::{MissingProvider, OpenAiProvider, Provider};
 use serde_json::{json, Value};
 
 type Result<T> = std::result::Result<T, String>;
@@ -17,11 +18,34 @@ fn socket() -> std::path::PathBuf {
     crate::cli::socket_path()
 }
 
-async fn connect() -> Result<Client> {
+/// the model provider, from the environment. a build with no credentials still starts: every
+/// turn fails with a message rather than the whole mode refusing to run.
+pub fn provider() -> std::sync::Arc<dyn Provider> {
+    match OpenAiProvider::from_env() {
+        Ok(provider) => std::sync::Arc::new(provider),
+        Err(err) => {
+            eprintln!("sa: no model credentials ({err}); turns will fail");
+            std::sync::Arc::new(MissingProvider)
+        }
+    }
+}
+
+/// the byte stream to the backend: a socket to the daemon, or one end of a socketpair whose
+/// other end is this same process (spec 4.4).
+pub async fn stream(standalone: bool) -> Result<tokio::net::UnixStream> {
+    if standalone {
+        return sa_daemon::standalone(sa_daemon::Config::from_env(), provider())
+            .await
+            .map_err(|e| e.to_string());
+    }
     let path = socket();
-    let mut client = Client::connect(&path)
+    sa_client::connect_raw(&path)
         .await
-        .map_err(|e| format!("cannot reach daemon at {}: {e}", path.display()))?;
+        .map_err(|e| format!("cannot reach daemon at {}: {e}", path.display()))
+}
+
+pub async fn connect(standalone: bool) -> Result<Client> {
+    let mut client = Client::from_stream(stream(standalone).await?);
     client
         .handshake("sa")
         .await
@@ -273,8 +297,8 @@ pub fn context(dir: Option<String>) -> Result<()> {
 
 // ---- sessions -----------------------------------------------------------
 
-pub async fn sessions() -> Result<()> {
-    let mut client = connect().await?;
+pub async fn sessions(standalone: bool) -> Result<()> {
+    let mut client = connect(standalone).await?;
     sessions_with(&mut client).await
 }
 
@@ -308,8 +332,8 @@ pub async fn sessions_with(client: &mut Client) -> Result<()> {
 
 // ---- lsp ----------------------------------------------------------------
 
-pub async fn lsp() -> Result<()> {
-    let mut client = connect().await?;
+pub async fn lsp(standalone: bool) -> Result<()> {
+    let mut client = connect(standalone).await?;
     lsp_with(&mut client).await
 }
 
@@ -359,8 +383,8 @@ pub async fn lsp_with(client: &mut Client) -> Result<()> {
 
 // ---- mcp ----------------------------------------------------------------
 
-pub async fn mcp() -> Result<()> {
-    let mut client = connect().await?;
+pub async fn mcp(standalone: bool) -> Result<()> {
+    let mut client = connect(standalone).await?;
     mcp_with(&mut client).await
 }
 
@@ -401,8 +425,8 @@ pub async fn mcp_with(client: &mut Client) -> Result<()> {
 
 // ---- run ----------------------------------------------------------------
 
-pub async fn run_once(prompt: &str) -> Result<()> {
-    let mut client = connect().await?;
+pub async fn run_once(standalone: bool, prompt: &str) -> Result<()> {
+    let mut client = connect(standalone).await?;
     run_once_with(&mut client, prompt).await
 }
 
@@ -471,8 +495,13 @@ fn help() {
 // the tui it hands off to holds an `Rc` editor clipboard, so this future is not `Send`.
 // it is awaited by `main` directly and never spawned.
 #[allow(clippy::future_not_send)]
-pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()> {
-    let mut client = connect().await?;
+pub async fn attach(
+    standalone: bool,
+    session: Option<String>,
+    new: bool,
+    line: bool,
+) -> Result<()> {
+    let mut client = connect(standalone).await?;
 
     // a terminal gets the whole window: every session is a tab in it, so there is nothing
     // to choose here beyond which tab to land on.
@@ -588,7 +617,9 @@ pub async fn attach(session: Option<String>, new: bool, line: bool) -> Result<()
                                 .map_err(|e| format!("subscribe failed: {e}"))?;
                             println!("sa: new session {session_id}");
                         }
-                        ("sessions", _) => sessions().await?,
+                        // the same connection, not a second one: a standalone run has
+                        // exactly one backend and it is already held here.
+                        ("sessions", _) => sessions_with(&mut client).await?,
                         ("model", model) if !model.is_empty() => {
                             client
                                 .call(
@@ -715,8 +746,8 @@ async fn replay_all(client: &mut Client, session_id: &str, mut page: Value) -> R
     }
 }
 
-pub async fn export(session: Option<String>, format: &str) -> Result<()> {
-    let mut client = connect().await?;
+pub async fn export(standalone: bool, session: Option<String>, format: &str) -> Result<()> {
+    let mut client = connect(standalone).await?;
     export_with(&mut client, session, format).await
 }
 

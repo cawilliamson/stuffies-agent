@@ -79,12 +79,19 @@ async fn call(
 ) -> Value {
     let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
     framed.send(line.to_string()).await.expect("send");
-    let raw = framed
-        .next()
-        .await
-        .expect("a frame")
-        .expect("a valid frame");
-    serde_json::from_str(&raw).expect("json")
+    // a notification the daemon pushes while the call is in flight is not this call's
+    // reply, so it is read past rather than mistaken for one.
+    loop {
+        let raw = framed
+            .next()
+            .await
+            .expect("a frame")
+            .expect("a valid frame");
+        let frame: Value = serde_json::from_str(&raw).expect("json");
+        if frame.get("id").and_then(Value::as_i64) == Some(id) {
+            return frame;
+        }
+    }
 }
 
 fn hello(protocol: u32) -> Value {
@@ -250,4 +257,80 @@ fn the_default_state_dir_is_absolute_and_outside_the_cwd() {
         "state dir must not be relative: {}",
         cfg.state_dir.display()
     );
+}
+
+// ---- standalone (spec 4.4) ------------------------------------------------
+
+/// a standalone run serves the protocol over a socketpair and touches neither the daemon's
+/// socket nor its database: the whole point is testing one build without disturbing a
+/// daemon that may be running beside it.
+#[tokio::test]
+async fn standalone_serves_over_a_socketpair_and_writes_no_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg = Config::at(dir.path());
+    let socket = cfg.socket_path.clone();
+    let db = cfg.db_path.clone();
+
+    let client = sa_daemon::standalone(cfg, Arc::new(ScriptedProvider::new(Vec::new())))
+        .await
+        .expect("standalone backend");
+    let mut framed = Framed::new(client, LinesCodec::new_with_max_length(MAX_LINE_LEN));
+
+    let hello = call(&mut framed, 1, "hello", hello(PROTOCOL_VERSION)).await;
+    assert!(hello["result"]["protocol"].is_u64(), "{hello}");
+
+    let ping = call(&mut framed, 2, "ping", json!({})).await;
+    assert_eq!(ping["result"]["sessions"], 0, "a fresh in-memory store");
+
+    assert!(
+        !socket.exists(),
+        "standalone must not bind the daemon's socket at {}",
+        socket.display()
+    );
+    assert!(
+        !db.exists(),
+        "standalone must not create the daemon's database at {}",
+        db.display()
+    );
+}
+
+/// sessions created by a standalone run do not outlive it, so a one-off test cannot leave
+/// rows behind for the daemon to reconcile.
+#[tokio::test]
+async fn standalone_sessions_are_discarded_with_the_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg = Config::at(dir.path());
+    let db = cfg.db_path.clone();
+
+    for _ in 0..2 {
+        let client =
+            sa_daemon::standalone(cfg.clone(), Arc::new(ScriptedProvider::new(Vec::new())))
+                .await
+                .expect("standalone backend");
+        let mut framed = Framed::new(client, LinesCodec::new_with_max_length(MAX_LINE_LEN));
+        call(&mut framed, 1, "hello", hello(PROTOCOL_VERSION)).await;
+        let created = call(
+            &mut framed,
+            2,
+            "session.create",
+            json!({"cwd": dir.path().display().to_string()}),
+        )
+        .await;
+        assert!(created["result"]["session_id"].is_string(), "{created}");
+
+        let listed = call(
+            &mut framed,
+            3,
+            "session.list",
+            json!({"include_deleted": false}),
+        )
+        .await;
+        assert_eq!(
+            listed["result"].as_array().map(Vec::len),
+            Some(1),
+            "{listed}"
+        );
+    }
+
+    assert!(!db.exists(), "no database was ever created");
 }

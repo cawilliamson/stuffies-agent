@@ -96,6 +96,83 @@ fn ping_cli_fails_when_the_daemon_is_absent() {
     assert!(stderr.contains("cannot reach daemon"), "{stderr}");
 }
 
+/// standalone builds the backend into this process, so it works with no daemon at all and
+/// never contacts the socket it is pointed at (spec 4.4).
+#[test]
+fn standalone_ping_needs_no_daemon() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("nope.sock");
+
+    let out = Command::new(SA)
+        .args(["--standalone", "ping"])
+        .env("SA_SOCKET", &missing)
+        .env("SA_STATE_DIR", dir.path().join("state"))
+        .output()
+        .expect("run sa --standalone ping");
+
+    assert!(
+        out.status.success(),
+        "standalone must not need a daemon: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json on stdout");
+    assert_eq!(value["sessions"], 0, "an in-memory store starts empty");
+    assert!(
+        !missing.exists(),
+        "standalone must not create the socket it was pointed at"
+    );
+    assert!(
+        !dir.path().join("state").join("sa.db").exists(),
+        "standalone must not create a database"
+    );
+}
+
+/// `daemon` already is the backend, so asking for it in-process is a contradiction and
+/// says so rather than quietly ignoring the flag.
+#[test]
+fn standalone_daemon_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let out = Command::new(SA)
+        .args(["--standalone", "daemon"])
+        .env("SA_SOCKET", dir.path().join("nope.sock"))
+        .env("SA_STATE_DIR", dir.path().join("state"))
+        .output()
+        .expect("run sa --standalone daemon");
+
+    assert!(!out.status.success(), "the combination makes no sense");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--standalone"), "{stderr}");
+    assert!(stderr.contains("daemon"), "{stderr}");
+    assert!(
+        !dir.path().join("nope.sock").exists(),
+        "it must refuse before binding anything"
+    );
+}
+
+/// a standalone run leaves no session behind, so running it twice cannot see the first run.
+#[test]
+fn standalone_does_not_accumulate_sessions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("nope.sock");
+
+    for _ in 0..2 {
+        let out = Command::new(SA)
+            .args(["--standalone", "sessions"])
+            .env("SA_SOCKET", &missing)
+            .env("SA_STATE_DIR", dir.path().join("state"))
+            .output()
+            .expect("run sa --standalone sessions");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(!dir.path().join("state").join("sa.db").exists());
+}
+
 #[test]
 fn stdio_proxy_serves_ping() {
     let daemon = Daemon::start();

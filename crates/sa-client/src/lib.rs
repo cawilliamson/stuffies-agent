@@ -27,29 +27,25 @@ pub enum ClientError {
     Closed,
 }
 
+/// connects to the daemon socket without any framing, for byte relays such as `sa rpc`.
+pub async fn connect_raw(path: &Path) -> Result<UnixStream, ClientError> {
+    Ok(UnixStream::connect(path).await?)
+}
+
 pub struct Client {
     framed: Framed<UnixStream, LinesCodec>,
     next_id: i64,
     queued: std::collections::VecDeque<serde_json::Value>,
 }
 
-/// connects to the daemon socket without any framing, for byte relays such as `sa rpc`.
-pub async fn connect_raw(path: &Path) -> Result<UnixStream, ClientError> {
-    Ok(UnixStream::connect(path).await?)
-}
-
 impl Client {
+    /// connects to the daemon socket.
     pub async fn connect(path: &Path) -> Result<Self, ClientError> {
-        let stream = connect_raw(path).await?;
-        Ok(Self {
-            framed: Framed::new(stream, LinesCodec::new_with_max_length(MAX_LINE_LEN)),
-            next_id: 0,
-            queued: std::collections::VecDeque::new(),
-        })
+        Ok(Self::from_stream(connect_raw(path).await?))
     }
 
-    /// a client over an already-connected stream. used by tests, which stand a scripted
-    /// daemon on the other end instead of a real socket.
+    /// a client over an already-connected stream. used by the standalone backend, which
+    /// stands itself on the other end of a socketpair, and by tests.
     #[must_use]
     pub fn from_stream(stream: UnixStream) -> Self {
         Self {

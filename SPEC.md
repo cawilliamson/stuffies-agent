@@ -328,7 +328,26 @@ Consequences, all of which are requirements:
 
 `DECIDED`: SSH stdio is the remote transport. No other remote transport is scheduled.
 
-### 4.3 HTTP (web surface)
+### 4.3 Standalone (in-process)
+
+`sa --standalone` runs the backend inside the front-end process, for testing a build without
+deploying the daemon: the flag is global, so `attach`, `run`, `sessions`, `export`, `lsp`,
+`mcp`, `ping` and `rpc --stdio` all take it.
+
+The transport is a `socketpair`. Nothing is bound: no socket file, no port, no listener. A
+daemon already running on the machine is never contacted and never disturbed, so a build
+under test cannot be refused by a stale daemon's build check.
+
+The store is in memory. Standalone never opens `$XDG_STATE_HOME/stuffies-agent/sa.db`, so a
+schema change under test cannot migrate a live daemon's database, and no session outlives
+the run. What it does read is the workspace: `AGENTS.md`, skills, and the project's own
+files, exactly as a daemon would.
+
+Standalone is a testing mode, not a second daemon. It holds no socket, recovers nothing on
+start, and is not a supported way to run the agent. Combining it with `daemon` is refused:
+the daemon already is the backend, so running it in-process says nothing.
+
+### 4.4 HTTP (web surface)
 
 `DECIDED`: the web surface is the knowledge and memory front end (§1), served by the daemon
 itself over loopback HTTP. Unlike a chat gateway, HTTP is a passive carrier: it holds no

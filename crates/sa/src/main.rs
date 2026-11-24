@@ -11,8 +11,6 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use cli::{Cli, Command};
-use sa_client::Client;
-use sa_core::llm::{MissingProvider, OpenAiProvider, Provider};
 use sa_daemon::{run, Config};
 
 #[tokio::main]
@@ -34,34 +32,34 @@ async fn main() -> ExitCode {
 
     let result = match parsed.command {
         // no subcommand means attach: `sa` on its own should get you working.
-        None => commands::attach(None, false, false).await,
-        Some(Command::Daemon) => {
-            let provider: std::sync::Arc<dyn Provider> = match OpenAiProvider::from_env() {
-                Ok(provider) => std::sync::Arc::new(provider),
-                Err(err) => {
-                    eprintln!("sa: no model credentials ({err}); turns will fail");
-                    std::sync::Arc::new(MissingProvider)
-                }
-            };
-            run(Config::from_env(), provider, shutdown_signal())
-                .await
-                .map_err(|e| e.to_string())
-        }
-        Some(Command::Ping) => ping().await,
+        None => commands::attach(parsed.standalone, None, false, false).await,
+        // the daemon already is the backend, so asking for it in-process says nothing.
+        Some(Command::Daemon) if parsed.standalone => Err(
+            "--standalone runs the backend in this process; `daemon` already is the backend"
+                .to_owned(),
+        ),
+        Some(Command::Daemon) => run(Config::from_env(), commands::provider(), shutdown_signal())
+            .await
+            .map_err(|e| e.to_string()),
+        Some(Command::Ping) => ping(parsed.standalone).await,
         Some(Command::Rpc { stdio }) => {
             if stdio {
-                proxy_stdio().await
+                proxy_stdio(parsed.standalone).await
             } else {
                 Err("only --stdio is supported".to_owned())
             }
         }
-        Some(Command::Run { prompt }) => commands::run_once(&prompt).await,
-        Some(Command::Attach { session, new, line }) => commands::attach(session, new, line).await,
-        Some(Command::Sessions) => commands::sessions().await,
-        Some(Command::Lsp) => commands::lsp().await,
-        Some(Command::Mcp) => commands::mcp().await,
+        Some(Command::Run { prompt }) => commands::run_once(parsed.standalone, &prompt).await,
+        Some(Command::Attach { session, new, line }) => {
+            commands::attach(parsed.standalone, session, new, line).await
+        }
+        Some(Command::Sessions) => commands::sessions(parsed.standalone).await,
+        Some(Command::Lsp) => commands::lsp(parsed.standalone).await,
+        Some(Command::Mcp) => commands::mcp(parsed.standalone).await,
         Some(Command::Context { dir }) => commands::context(dir),
-        Some(Command::Export { session, format }) => commands::export(session, &format).await,
+        Some(Command::Export { session, format }) => {
+            commands::export(parsed.standalone, session, &format).await
+        }
     };
 
     match result {
@@ -139,15 +137,9 @@ fn log_file_in(dir: &std::path::Path) -> Option<std::fs::File> {
         .ok()
 }
 
-async fn ping() -> Result<(), String> {
-    let path = cli::socket_path();
-    let mut client = Client::connect(&path)
-        .await
-        .map_err(|e| format!("cannot reach daemon at {}: {e}", path.display()))?;
-    client
-        .handshake("sa")
-        .await
-        .map_err(|e| format!("handshake failed: {e}"))?;
+async fn ping(standalone: bool) -> Result<(), String> {
+    // `connect` has already performed the mandatory handshake.
+    let mut client = commands::connect(standalone).await?;
     let ping = client
         .ping()
         .await
@@ -167,11 +159,8 @@ async fn ping() -> Result<(), String> {
 
 /// dumb byte relay between the daemon socket and stdio. no protocol awareness: the daemon
 /// sees the proxy's own uid, which is the point (spec 4.2).
-async fn proxy_stdio() -> Result<(), String> {
-    let path = cli::socket_path();
-    let stream = sa_client::connect_raw(&path)
-        .await
-        .map_err(|e| format!("cannot reach daemon at {}: {e}", path.display()))?;
+async fn proxy_stdio(standalone: bool) -> Result<(), String> {
+    let stream = commands::stream(standalone).await?;
 
     let (mut sock_read, mut sock_write) = stream.into_split();
     let mut stdin = tokio::io::stdin();

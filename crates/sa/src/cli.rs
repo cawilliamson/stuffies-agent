@@ -16,6 +16,9 @@ pub struct Cli {
     /// omit to attach to the most recent session.
     #[command(subcommand)]
     pub command: Option<Command>,
+    /// run the backend in this process: no socket, no daemon, no database
+    #[arg(long, global = true)]
+    pub standalone: bool,
 }
 
 #[derive(Debug, Subcommand)]
