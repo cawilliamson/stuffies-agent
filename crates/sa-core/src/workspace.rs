@@ -383,28 +383,9 @@ pub struct WorkspaceLock {
 
 /// the git common directory, which is shared by every worktree of one repository.
 pub fn git_common_dir(workspace: &Path) -> Result<PathBuf, WorkspaceError> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["rev-parse", "--git-common-dir"])
-        .output()?;
-    if !output.status.success() {
-        return Err(WorkspaceError::NotARepository(
-            workspace.display().to_string(),
-        ));
-    }
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if raw.is_empty() {
-        return Err(WorkspaceError::NotARepository(
-            workspace.display().to_string(),
-        ));
-    }
-    let path = Path::new(&raw);
-    Ok(if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        workspace.join(path)
-    })
+    let repo = gix::discover(workspace)
+        .map_err(|_| WorkspaceError::NotARepository(workspace.display().to_string()))?;
+    Ok(repo.common_dir().to_path_buf())
 }
 
 /// takes the workspace lock, creating the lock directory if needed.
@@ -452,7 +433,25 @@ pub const CHECKPOINT_MAX_AGE: std::time::Duration = std::time::Duration::from_ho
 ///
 /// it is deliberately outside the workspace. the workspace's own `.git` is the user's, and a
 /// turn must not add a ref or an object to it (spec 6.1).
-fn checkpoint_store(workspace: &Path, root: &Path) -> Result<PathBuf, WorkspaceError> {
+/// the identity sa's checkpoints are committed under.
+///
+/// the store is sa's own repository, so it inherits none of the user's identity. naming sa
+/// makes a checkpoint independent of how their git is configured, which is also the truthful
+/// author for it.
+/// gix errors carry no io variant of ours, so they are named rather than flattened silently.
+fn git_err(err: impl std::fmt::Display) -> WorkspaceError {
+    WorkspaceError::Git(err.to_string())
+}
+
+const SA_NAME: &str = "sa";
+const SA_EMAIL: &str = "sa@localhost";
+
+/// the directory a workspace's checkpoints live in: one bare git directory per repository,
+/// named for the repository's common git directory so worktrees share it.
+///
+/// it is deliberately outside the workspace. the workspace's own `.git` is the user's, and a
+/// turn must not add a ref or an object to it (spec 6.1).
+fn checkpoint_store(workspace: &Path, root: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
 
     // a repository is identified by its common git directory, so every worktree of it shares
@@ -466,83 +465,160 @@ fn checkpoint_store(workspace: &Path, root: &Path) -> Result<PathBuf, WorkspaceE
     for byte in hasher.finalize() {
         let _ = write!(name, "{byte:02x}");
     }
+    root.join(name)
+}
 
-    let store = root.join(name);
+/// opens the store, creating it as a bare repository on first use.
+fn open_store(store: &Path) -> Result<gix::Repository, WorkspaceError> {
     if !store.join("HEAD").exists() {
-        std::fs::create_dir_all(&store)?;
-        let output = std::process::Command::new("git")
-            .args(["init", "--bare", "--quiet"])
-            .arg(&store)
-            .output()?;
-        if !output.status.success() {
-            return Err(WorkspaceError::Git(format!(
-                "git init --bare: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
+        std::fs::create_dir_all(store)?;
+        gix::init_bare(store)
+            .map_err(|err| WorkspaceError::Git(format!("init {}: {err}", store.display())))?;
+    }
+    gix::open(store).map_err(|err| WorkspaceError::Git(format!("open {}: {err}", store.display())))
+}
+
+/// one directory level of the tree being built.
+#[derive(Default)]
+struct Node {
+    /// name -> (content id, executable)
+    files: std::collections::BTreeMap<String, (gix::ObjectId, bool)>,
+    /// name -> symlink target
+    links: std::collections::BTreeMap<String, Vec<u8>>,
+    dirs: std::collections::BTreeMap<String, Self>,
+}
+
+impl Node {
+    fn insert(&mut self, path: &Path, id: gix::ObjectId, executable: bool) {
+        let mut parts = path.iter().filter_map(|part| part.to_str()).peekable();
+        let mut node = self;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                node.files.insert(part.to_owned(), (id, executable));
+                return;
+            }
+            node = node.dirs.entry(part.to_owned()).or_default();
         }
     }
-    Ok(store)
+
+    fn insert_link(&mut self, path: &Path, target: Vec<u8>) {
+        let mut parts = path.iter().filter_map(|part| part.to_str()).peekable();
+        let mut node = self;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                node.links.insert(part.to_owned(), target);
+                return;
+            }
+            node = node.dirs.entry(part.to_owned()).or_default();
+        }
+    }
 }
 
-/// runs git against the shadow store, with the workspace as its worktree.
-fn git_store(
-    store: &Path,
-    workspace: &Path,
-    args: &[&str],
-    env: &[(&str, &Path)],
-) -> Result<String, WorkspaceError> {
-    let mut command = std::process::Command::new("git");
-    command
-        .env("GIT_DIR", store)
-        .env("GIT_WORK_TREE", workspace)
-        .args(args);
-    for (key, value) in env {
-        command.env(key, value);
+/// git orders tree entries as though a directory's name ended in `/`. getting this wrong
+/// writes a tree git will not read back.
+fn sort_key(name: &str, is_dir: bool) -> String {
+    if is_dir {
+        format!("{name}/")
+    } else {
+        name.to_owned()
     }
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(WorkspaceError::Git(format!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn git(workspace: &Path, args: &[&str]) -> Result<String, WorkspaceError> {
-    git_env(workspace, args, None)
+fn write_tree(repo: &gix::Repository, node: &Node) -> Result<gix::ObjectId, WorkspaceError> {
+    let mut entries: Vec<(String, gix::objs::tree::Entry)> = Vec::new();
+    let mut push = |name: &str, is_dir: bool, mode: u32, oid: gix::ObjectId| {
+        let Ok(mode) = gix::objs::tree::EntryMode::try_from(mode) else {
+            return;
+        };
+        entries.push((
+            sort_key(name, is_dir),
+            gix::objs::tree::Entry {
+                mode,
+                filename: name.into(),
+                oid,
+            },
+        ));
+    };
+
+    for (name, (oid, executable)) in &node.files {
+        push(
+            name,
+            false,
+            if *executable { 0o100_755 } else { 0o100_644 },
+            *oid,
+        );
+    }
+    for (name, target) in &node.links {
+        let oid = repo.write_blob(target).map_err(git_err)?.detach();
+        push(name, false, 0o120_000, oid);
+    }
+    for (name, child) in &node.dirs {
+        let oid = write_tree(repo, child)?;
+        push(name, true, 0o40_000, oid);
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let tree = gix::objs::Tree {
+        entries: entries.into_iter().map(|(_, entry)| entry).collect(),
+    };
+    Ok(repo.write_object(&tree).map_err(git_err)?.detach())
 }
 
-fn git_env(
-    workspace: &Path,
-    args: &[&str],
-    env: Option<(&str, &Path)>,
-) -> Result<String, WorkspaceError> {
-    let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(workspace).args(args);
-    if let Some((key, value)) = env {
-        command.env(key, value);
-    }
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(WorkspaceError::Git(format!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
+/// writes the worktree into the store as a tree, and returns its id.
+///
+/// the walk honours the project's own ignore files, so what is checkpointed is what the user
+/// considers their source. it does not need the directory to be a repository.
+fn snapshot(repo: &gix::Repository, workspace: &Path) -> Result<gix::ObjectId, WorkspaceError> {
+    use std::os::unix::fs::PermissionsExt;
 
-/// a checkpoint's temporary git index, removed however the checkpoint ends: a git command
-/// that fails must not leave the index behind in the temp directory.
-struct TempIndex(PathBuf);
+    let mut builder = ignore::WalkBuilder::new(workspace);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        // `.gitignore` is honoured whether or not the directory is a repository.
+        .require_git(false)
+        .follow_links(false);
 
-impl Drop for TempIndex {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+    let mut root = Node::default();
+    for entry in builder.build().flatten() {
+        let path = entry.path();
+        if path == workspace {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(workspace) else {
+            continue;
+        };
+        // `.git` is the repository's own bookkeeping and git never tracks it. it also holds
+        // read-only object files, which restoring over would fail on.
+        if relative
+            .components()
+            .next()
+            .is_some_and(|first| first.as_os_str() == ".git")
+        {
+            continue;
+        }
+        let Ok(metadata) = path.symlink_metadata() else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            if let Ok(target) = std::fs::read_link(path) {
+                root.insert_link(relative, target.display().to_string().into_bytes());
+            }
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let executable = metadata.permissions().mode() & 0o111 != 0;
+        let oid = repo.write_blob(&bytes).map_err(git_err)?.detach();
+        root.insert(relative, oid, executable);
     }
+    write_tree(repo, &root)
 }
 
 /// creates a checkpoint for an unattended turn.
@@ -550,7 +626,7 @@ impl Drop for TempIndex {
 /// the commit is written to a shadow store under `root`, never to the workspace's `.git`, and
 /// it has no parent: a checkpoint is a tree to restore, not a history to walk. the first
 /// checkpoint of a repository copies its source tree into the store; later ones add only what
-/// changed, because the blobs they reuse are already there.
+/// changed, because the objects they reuse are already there.
 pub fn checkpoint(
     workspace: &Path,
     root: &Path,
@@ -559,61 +635,76 @@ pub fn checkpoint(
 ) -> Result<Checkpoint, WorkspaceError> {
     // where HEAD was, when there is one. it is recorded for the reader, not for the commit:
     // the checkpoint has no parent, so a workspace with no history can still be checkpointed.
-    let base_commit = git(workspace, &["rev-parse", "HEAD"]).ok();
-    let store = checkpoint_store(workspace, root)?;
+    let base_commit = gix::discover(workspace).ok().and_then(|repo| {
+        repo.head_commit()
+            .ok()
+            .map(|commit| commit.id().to_string())
+    });
+    let store = checkpoint_store(workspace, root);
+    let repo = open_store(&store)?;
 
-    // unique per call: two sessions can share a session id prefix across repositories,
-    // and tests run in parallel.
-    let index = TempIndex(std::env::temp_dir().join(format!(
-        "sa-index-{session_id}-{seq}-{}",
-        uuid::Uuid::new_v4()
-    )));
-    let _ = std::fs::remove_file(&index.0);
-
-    git_store(
-        &store,
-        workspace,
-        &["add", "-A"],
-        &[("GIT_INDEX_FILE", &index.0)],
-    )?;
-    let tree = git_store(
-        &store,
-        workspace,
-        &["write-tree"],
-        &[("GIT_INDEX_FILE", &index.0)],
-    )?;
-
+    let tree = snapshot(&repo, workspace)?;
+    let signature = gix::actor::Signature {
+        name: SA_NAME.into(),
+        email: SA_EMAIL.into(),
+        time: gix::date::Time::now_utc(),
+    };
     let message = format!("sa checkpoint {session_id} {seq}");
-    let commit = git_store(
-        &store,
-        workspace,
-        &[
-            // the store is sa's own repository, so it inherits none of the user's identity.
-            // a user who sets `user.name` per repository rather than globally would have
-            // every checkpoint fail; naming sa makes the commit independent of their config,
-            // and is the truthful author for it.
-            "-c",
-            "user.name=sa",
-            "-c",
-            "user.email=sa@localhost",
-            "commit-tree",
-            &tree,
-            "-m",
-            &message,
-        ],
-        &[],
-    )?;
+    let commit = gix::objs::Commit {
+        tree,
+        author: signature.clone(),
+        committer: signature,
+        message: message.clone().into(),
+        parents: smallvec::SmallVec::new(),
+        encoding: None,
+        extra_headers: Vec::new(),
+    };
+    let id = repo.write_object(&commit).map_err(git_err)?.detach();
 
     let reference = format!("refs/sa/checkpoints/{session_id}/{seq}");
-    git_store(&store, workspace, &["update-ref", &reference, &commit], &[])?;
+    let name = gix::refs::FullName::try_from(reference.clone())
+        .map_err(|err| WorkspaceError::Git(format!("{reference}: {err}")))?;
+    repo.reference(
+        name,
+        id,
+        gix::refs::transaction::PreviousValue::Any,
+        message.as_str(),
+    )
+    .map_err(|err| WorkspaceError::Git(format!("update-ref {reference}: {err}")))?;
 
     Ok(Checkpoint {
-        commit,
+        commit: id.to_string(),
         reference,
         base_commit,
-        tree,
+        tree: tree.to_string(),
         store,
     })
+}
+
+/// the checkpoint refs of one session in a store, oldest first.
+fn session_refs(
+    repo: &gix::Repository,
+    session_id: &str,
+) -> Result<Vec<(u64, gix::ObjectId)>, WorkspaceError> {
+    let prefix = format!("refs/sa/checkpoints/{session_id}/");
+    // the iterator borrows the platform, so the platform is a named local rather than a
+    // temporary inside the same expression.
+    let platform = repo.references().map_err(git_err)?;
+    let iter = platform.prefixed(prefix.as_str()).map_err(git_err)?;
+    let mut out = Vec::new();
+    for reference in iter {
+        let Ok(reference) = reference else { continue };
+        let full = reference.name().as_bstr().to_string();
+        let Some(seq) = full.rsplit('/').next().and_then(|seq| seq.parse().ok()) else {
+            continue;
+        };
+        let Ok(id) = reference.into_fully_peeled_id() else {
+            continue;
+        };
+        out.push((seq, id.detach()));
+    }
+    out.sort_by_key(|(seq, _)| *seq);
+    Ok(out)
 }
 
 /// keeps only the `keep` most recent checkpoint refs for a session (spec 8.4).
@@ -623,31 +714,21 @@ pub fn prune_checkpoints(
     session_id: &str,
     keep: usize,
 ) -> Result<(), WorkspaceError> {
-    let Ok(store) = checkpoint_store(workspace, root) else {
+    let store = checkpoint_store(workspace, root);
+    let Ok(repo) = open_store(&store) else {
         return Ok(());
     };
-    let prefix = format!("refs/sa/checkpoints/{session_id}/");
-    let raw = git_store(
-        &store,
-        workspace,
-        &["for-each-ref", "--format=%(refname)", &prefix],
-        &[],
-    )?;
-    // the ref ends in the session's seq, so it is ordered as a number: a lexicographic
-    // sort puts `/10` before `/9` and prunes the newest checkpoint instead of the oldest.
-    let seq_of = |reference: &str| {
-        reference
-            .rsplit('/')
-            .next()
-            .and_then(|seq| seq.parse::<u64>().ok())
-    };
-    let mut refs: Vec<&str> = raw.lines().filter(|line| !line.is_empty()).collect();
-    refs.sort_by_key(|reference| seq_of(reference).unwrap_or_default());
+    let refs = session_refs(&repo, session_id)?;
     if refs.len() <= keep {
         return Ok(());
     }
-    for stale in &refs[..refs.len() - keep] {
-        git_store(&store, workspace, &["update-ref", "-d", stale], &[])?;
+    // the seq is a number, so it is ordered as one: a lexicographic sort puts `/10` before
+    // `/9` and prunes the newest checkpoint instead of the oldest.
+    for (seq, _) in &refs[..refs.len() - keep] {
+        let name = format!("refs/sa/checkpoints/{session_id}/{seq}");
+        if let Ok(reference) = repo.find_reference(name.as_str()) {
+            let _ = reference.delete();
+        }
     }
     Ok(())
 }
@@ -673,47 +754,44 @@ pub fn expire_checkpoints(root: &Path, max_age: std::time::Duration) -> usize {
         if !store.is_dir() {
             continue;
         }
-        let listed = std::process::Command::new("git")
-            .env("GIT_DIR", &store)
-            .args([
-                "for-each-ref",
-                "--format=%(refname) %(committerdate:unix)",
-                "refs/sa/checkpoints/",
-            ])
-            .output();
-        let Ok(listed) = listed else { continue };
-        if !listed.status.success() {
+        let Ok(repo) = gix::open(&store) else {
             continue;
-        }
-        for line in String::from_utf8_lossy(&listed.stdout).lines() {
-            let Some((reference, when)) = line.rsplit_once(' ') else {
-                continue;
-            };
-            let when: u64 = when.parse().unwrap_or_default();
-            if when >= cutoff {
-                continue;
+        };
+
+        let mut stale: Vec<String> = Vec::new();
+        if let Ok(platform) = repo.references() {
+            if let Ok(iter) = platform.prefixed("refs/sa/checkpoints/") {
+                for reference in iter.flatten() {
+                    let Ok(id) = reference.clone().into_fully_peeled_id() else {
+                        continue;
+                    };
+                    let Ok(commit) = repo.find_commit(id.detach()) else {
+                        continue;
+                    };
+                    let Ok(time) = commit.time() else { continue };
+                    if (time.seconds as u64) < cutoff {
+                        stale.push(reference.name().as_bstr().to_string());
+                    }
+                }
             }
-            let deleted = std::process::Command::new("git")
-                .env("GIT_DIR", &store)
-                .args(["update-ref", "-d", reference])
-                .output();
-            if deleted.is_ok_and(|out| out.status.success()) {
-                removed += 1;
+        }
+        for name in stale {
+            if let Ok(reference) = repo.find_reference(name.as_str()) {
+                if reference.delete().is_ok() {
+                    removed += 1;
+                }
             }
         }
 
-        // nothing points at the objects any more, so they can go now rather than whenever a
-        // user's next `git gc` happens to run.
-        let _ = std::process::Command::new("git")
-            .env("GIT_DIR", &store)
-            .args(["gc", "--prune=now", "--quiet"])
-            .output();
-
-        let empty = std::process::Command::new("git")
-            .env("GIT_DIR", &store)
-            .args(["for-each-ref", "--count=1", "refs/sa/checkpoints/"])
-            .output()
-            .is_ok_and(|out| out.status.success() && out.stdout.is_empty());
+        // nothing points at the objects any more. a store is a plain directory, so removing
+        // it is the prune: an empty one is deleted outright, and one with checkpoints left
+        // keeps the objects they still share.
+        let mut empty = false;
+        if let Ok(platform) = repo.references() {
+            if let Ok(iter) = platform.prefixed("refs/sa/checkpoints/") {
+                empty = iter.flatten().next().is_none();
+            }
+        }
         if empty {
             let _ = std::fs::remove_dir_all(&store);
         }
@@ -737,38 +815,35 @@ pub fn list_checkpoints(
     workspace: &Path,
     root: &Path,
 ) -> Result<Vec<CheckpointEntry>, WorkspaceError> {
-    let store = checkpoint_store(workspace, root)?;
-    let raw = git_store(
-        &store,
-        workspace,
-        &[
-            "for-each-ref",
-            "--format=%(refname) %(committerdate:unix) %(objectname)",
-            "refs/sa/checkpoints/",
-        ],
-        &[],
-    )?;
+    let store = checkpoint_store(workspace, root);
+    let repo = open_store(&store)?;
+    let platform = repo.references().map_err(git_err)?;
+    let iter = platform.prefixed("refs/sa/checkpoints/").map_err(git_err)?;
+
     let mut out = Vec::new();
-    for line in raw.lines() {
-        let mut parts = line.rsplitn(3, ' ');
-        let (Some(id), Some(at), Some(reference)) = (parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        let Some(tail) = reference.strip_prefix("refs/sa/checkpoints/") else {
+    for reference in iter {
+        let Ok(reference) = reference else { continue };
+        let full = reference.name().as_bstr().to_string();
+        let Some(tail) = full.strip_prefix("refs/sa/checkpoints/") else {
             continue;
         };
         let Some((session_id, seq)) = tail.rsplit_once('/') else {
             continue;
         };
+        let Ok(id) = reference.into_fully_peeled_id() else {
+            continue;
+        };
+        let Ok(commit) = repo.find_commit(id.detach()) else {
+            continue;
+        };
+        let at = commit.time().map_or(0, |time| time.seconds as u64);
         out.push(CheckpointEntry {
-            id: id.to_owned(),
+            id: commit.id().to_string(),
             session_id: session_id.to_owned(),
             seq: seq.parse().unwrap_or_default(),
-            at: at.parse().unwrap_or_default(),
+            at,
         });
     }
-    // newest first: the one a user is most likely to want is at the top.
     out.sort_by(|a, b| b.at.cmp(&a.at).then(b.seq.cmp(&a.seq)));
     Ok(out)
 }
@@ -781,7 +856,8 @@ pub fn list_checkpoints(
 ///
 /// returns how many files the checkpoint holds.
 pub fn rewind(workspace: &Path, root: &Path, id: &str) -> Result<usize, WorkspaceError> {
-    let store = checkpoint_store(workspace, root)?;
+    let store = checkpoint_store(workspace, root);
+    let repo = open_store(&store)?;
     let all = list_checkpoints(workspace, root)?;
     let matches: Vec<&CheckpointEntry> = all
         .iter()
@@ -792,15 +868,67 @@ pub fn rewind(workspace: &Path, root: &Path, id: &str) -> Result<usize, Workspac
         [one] => *one,
         _ => return Err(WorkspaceError::AmbiguousCheckpoint(id.to_owned())),
     };
+    let oid = gix::ObjectId::from_hex(entry.id.as_bytes())
+        .map_err(|err| WorkspaceError::Git(format!("{}: {err}", entry.id)))?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|err| WorkspaceError::Git(format!("commit {}: {err}", entry.id)))?;
+    let tree = commit
+        .tree()
+        .map_err(|err| WorkspaceError::Git(format!("tree {}: {err}", entry.id)))?;
+    let mut files = 0;
+    restore(&repo, workspace, &tree, Path::new(""), &mut files)?;
+    Ok(files)
+}
 
-    let files = git_store(
-        &store,
-        workspace,
-        &["ls-tree", "-r", "--name-only", &entry.id],
-        &[],
-    )?;
-    git_store(&store, workspace, &["checkout", &entry.id, "--", "."], &[])?;
-    Ok(files.lines().count())
+fn restore(
+    repo: &gix::Repository,
+    workspace: &Path,
+    tree: &gix::Tree<'_>,
+    prefix: &Path,
+    files: &mut usize,
+) -> Result<(), WorkspaceError> {
+    use gix::objs::tree::EntryKind;
+
+    for entry in tree.iter() {
+        let Ok(entry) = entry else { continue };
+        let name = entry.filename().to_string();
+        let path = prefix.join(&name);
+        match entry.mode().kind() {
+            EntryKind::Tree => {
+                let child = repo
+                    .find_object(entry.oid())
+                    .map_err(|err| WorkspaceError::Git(err.to_string()))?
+                    .into_tree();
+                restore(repo, workspace, &child, &path, files)?;
+            }
+            EntryKind::Blob | EntryKind::BlobExecutable => {
+                let Ok(object) = repo.find_object(entry.oid()) else {
+                    continue;
+                };
+                let blob = object.into_blob();
+                let target = workspace.join(&path);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&target, &blob.data)?;
+                *files += 1;
+            }
+            EntryKind::Link => {
+                let Ok(object) = repo.find_object(entry.oid()) else {
+                    continue;
+                };
+                let blob = object.into_blob();
+                let target = workspace.join(&path);
+                let link = String::from_utf8_lossy(&blob.data).to_string();
+                let _ = std::fs::remove_file(&target);
+                let _ = std::os::unix::fs::symlink(link, &target);
+                *files += 1;
+            }
+            EntryKind::Commit => {}
+        }
+    }
+    Ok(())
 }
 
 #[must_use]
@@ -842,9 +970,27 @@ mod tests {
         dir
     }
 
+    /// runs git, for the tests only: the production path uses gix. checking a store written
+    /// by gix with the real git binary is what proves it is a repository git would read.
+    fn git(dir: &std::path::Path, args: &[&str]) -> Result<String, WorkspaceError> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()?;
+        if !output.status.success() {
+            return Err(WorkspaceError::Git(format!(
+                "git {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
     /// the refs of a session's checkpoints, read from the shadow store rather than the repo.
     fn store_refs(dir: &std::path::Path, root: &std::path::Path, session: &str) -> String {
-        let store = checkpoint_store(dir, root).expect("store");
+        let store = checkpoint_store(dir, root);
         std::process::Command::new("git")
             .env("GIT_DIR", &store)
             .args([
@@ -878,29 +1024,25 @@ mod tests {
 
     /// the whole point of the shadow store: a checkpoint must not add a ref or an object to
     /// the user's `.git`.
+    ///
+    /// the assertion is about the object itself, not the shape of `.git/objects`: git runs
+    /// `gc --auto` in the background after a commit, so counting entries there is a race.
     #[test]
     fn checkpoint_writes_nothing_into_the_workspace_git_dir() {
         let dir = repo();
         let root = tempfile::tempdir().expect("root");
-        let objects = |dir: &std::path::Path| {
-            std::fs::read_dir(dir.join(".git/objects"))
-                .map(|entries| entries.flatten().count())
-                .unwrap_or_default()
-        };
-        let before = objects(dir.path());
 
-        checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
+        let checkpoint = checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
 
-        assert_eq!(
-            objects(dir.path()),
-            before,
-            "no object may be written into the workspace's .git"
-        );
         assert!(
             git(dir.path(), &["for-each-ref", "refs/sa/"])
                 .expect("refs")
                 .is_empty(),
             "no checkpoint ref may be written into the workspace's .git"
+        );
+        assert!(
+            git(dir.path(), &["cat-file", "-e", &checkpoint.commit]).is_err(),
+            "the checkpoint object must not be in the workspace's .git"
         );
         assert_eq!(
             store_refs(dir.path(), root.path(), "s1").lines().count(),

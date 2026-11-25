@@ -17,6 +17,7 @@ base64.workspace = true
 crossterm.workspace = true
 edtui.workspace = true
 futures-util.workspace = true
+gix.workspace = true
 image.workspace = true
 infer.workspace = true
 ratatui-image.workspace = true

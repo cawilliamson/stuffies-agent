@@ -1642,21 +1642,18 @@ fn scrolled(name: &str, offset: usize, cap: usize) -> String {
 }
 
 /// the git branch of a directory, for the status bar. absent outside a repository.
+///
+/// read with gix rather than the git binary: the status bar must not depend on git being
+/// installed, and a detached HEAD has no branch name to show.
 #[must_use]
 pub fn git_branch(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if branch.is_empty() || branch == "HEAD" {
+    let repo = gix::discover(cwd).ok()?;
+    let name = repo.head_name().ok()??;
+    let branch = name.shorten().to_string();
+    if branch.is_empty() {
         None
     } else {
         Some(branch)

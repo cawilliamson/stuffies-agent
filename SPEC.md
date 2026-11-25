@@ -782,16 +782,14 @@ the agent.
 ### 8.1 Unattended safety net
 
 Before any unattended turn the daemon creates a checkpoint and records it in a `checkpoint`
-event. The checkpoint is a commit built against a temporary index, so neither the worktree
-nor the real index is touched, and it is written to a shadow store under
-`$XDG_STATE_HOME/stuffies-agent/checkpoints/<repo-id>/` rather than to the workspace's
-`.git`:
+event. It is written to a shadow store under
+`$XDG_STATE_HOME/stuffies-agent/checkpoints/<repo-id>/`, never to the workspace's `.git`:
 
 ```text
-GIT_DIR=<store> GIT_WORK_TREE=<workspace> GIT_INDEX_FILE=<temp> git add -A
-GIT_DIR=<store> GIT_WORK_TREE=<workspace> GIT_INDEX_FILE=<temp> git write-tree
-GIT_DIR=<store> git commit-tree <tree> -m "sa checkpoint <session_id> <seq>"
-git --git-dir=<store> update-ref refs/sa/checkpoints/<session_id>/<seq> <commit>
+write-blob   every file the worktree holds, honouring the project's ignore files
+write-tree   the blobs, as a tree
+write-object a commit over that tree, with no parent
+update-ref   refs/sa/checkpoints/<session_id>/<seq>
 ```
 
 The commit has no parent. A checkpoint is a tree to restore, not a history to walk, and an
@@ -800,15 +798,25 @@ orphan commit means the store does not depend on the user's repository staying w
 A workspace does not have to be a repository. The store is sa's own bare git directory, so a
 plain directory is checkpointed exactly as a repository is: the store is named for the
 repository's common git directory when there is one, and for the workspace path when there is
-not. `base_commit` is recorded when HEAD exists and omitted when it does not.
+not. `base_commit` is recorded when HEAD exists and omitted when it does not. Nothing is
+written into the workspace, so a directory that is not a repository does not become one.
+
+`DECIDED`: the store is written with `gix`, not by running `git`. The daemon does not require
+the git binary at all. Shelling out meant inheriting whatever git configuration the process
+happened to see — a checkpoint failed outright for a user who sets `user.name` per repository
+rather than globally — and it made a subprocess the price of every snapshot. The object format
+is the contract, and `gix` writes it: a store sa creates is readable by `git`. Tests still run
+`git` against what sa wrote, which is how that claim is checked.
+
+The first checkpoint of a workspace copies its source tree into the store; later ones add only
+what changed, because the objects they reuse are already there.
 
 A rewind restores the files the checkpoint holds and leaves files created after it alone: it
 restores what was there rather than deleting what was added. The commit id is the handle a
 user types, and a unique prefix of it is accepted.
-The first checkpoint of a repository copies its source tree into the store; later ones add
-only what changed, because the blobs they reuse are already there.
 
-The event carries `ref`, `base_commit`, `tree`, `store`, and `includes_untracked: true`.
+The event carries `id`, `ref`, `tree`, `store`, `includes_untracked: true`, and `base_commit`
+when there is one.
 
 `DECIDED`: not `git stash`. `git stash push` cleans the worktree, which is the opposite of
 what a checkpoint wants, and it mutates a shared list. `git stash create` avoids the list but
