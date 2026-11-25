@@ -853,6 +853,8 @@ fn the_status_bar_shows_the_effort_level() {
 #[test]
 fn frames_fill_whatever_width_is_available() {
     let mut app = App::new("s", "m");
+    // a turn, so the pane is showing frames rather than the greeting a fresh session opens on.
+    app.tab_mut().push(Role::User, "x");
     app.tab_mut().push(Role::Assistant, "x");
     assert_eq!(sa_tui::render(&app, 60)[0].width(), 60);
     assert_eq!(
@@ -1037,6 +1039,8 @@ fn markdown_italics_and_code_render_without_markers() {
     use ratatui::style::Modifier;
 
     let mut app = App::new("s", "m");
+    // the banner art carries a backtick of its own, so this is a session with a turn in it.
+    app.tab_mut().push(Role::User, "run it");
     app.tab_mut()
         .push(Role::Assistant, "use *cargo* with `--release` now");
 
@@ -1313,8 +1317,22 @@ fn an_empty_session_opens_on_the_banner() {
         "the banner is what an empty session shows:\n{transcript}"
     );
 
+    // attaching a fresh session writes a context notice straight away, so the banner must
+    // survive an entry that is not a turn. this is the case the first cut missed.
     let mut app = App::new("session-abcdef", "m");
-    app.tab_mut().push(Role::System, "hello");
+    app.tab_mut().push(Role::System, "context: nothing to load");
+    let transcript = flatten(&transcript_lines(app.tab(), 100));
+    assert!(
+        transcript.contains("a daemon-first coding agent"),
+        "a session with no turn yet still opens on the banner:\n{transcript}"
+    );
+    assert!(
+        transcript.find("a daemon-first coding agent") < transcript.find("context:"),
+        "the banner is above the notices:\n{transcript}"
+    );
+
+    // once there is a turn, the greeting is gone.
+    app.tab_mut().push(Role::User, "hello");
     let transcript = flatten(&transcript_lines(app.tab(), 100));
     assert!(
         !transcript.contains("a daemon-first coding agent"),

@@ -2867,12 +2867,19 @@ fn separate(out: &mut Vec<Line<'static>>) {
 pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
     // fill whatever width the pane has: no cap, or wide terminals leave a dead margin.
     let inner = usize::from(width).max(16);
-    // a session with nothing in it opens on the banner. it is a greeting rather than a
-    // record, so it is drawn here and never written to the event log.
-    if tab.transcript.is_empty() {
-        return banner(inner);
-    }
+    // a session that has not been asked anything yet opens on the banner, at the top and
+    // above whatever notices attaching produced. the test is "no turn yet", not "no
+    // entries": attaching a fresh session writes a context notice straight away, so an
+    // empty transcript is a state the operator never sees.
+    //
+    // it is a greeting rather than a record, so it is drawn here and never written to the
+    // event log.
+    let fresh = !tab.transcript.iter().any(|entry| entry.role == Role::User);
     let mut out: Vec<Line<'static>> = Vec::new();
+    if fresh {
+        out.extend(banner(inner));
+        out.push(Line::default());
+    }
     let mut index = 0;
 
     while index < tab.transcript.len() {
