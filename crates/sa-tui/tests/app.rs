@@ -1313,7 +1313,7 @@ fn an_empty_session_opens_on_the_banner() {
     let app = App::new("session-abcdef", "m");
     let transcript = flatten(&transcript_lines(app.tab(), 100));
     assert!(
-        transcript.contains("a daemon-first coding agent"),
+        transcript.contains("|____/"),
         "the banner is what an empty session shows:\n{transcript}"
     );
 
@@ -1323,11 +1323,11 @@ fn an_empty_session_opens_on_the_banner() {
     app.tab_mut().push(Role::System, "context: nothing to load");
     let transcript = flatten(&transcript_lines(app.tab(), 100));
     assert!(
-        transcript.contains("a daemon-first coding agent"),
+        transcript.contains("|____/"),
         "a session with no turn yet still opens on the banner:\n{transcript}"
     );
     assert!(
-        transcript.find("a daemon-first coding agent") < transcript.find("context:"),
+        transcript.find("|____/") < transcript.find("context:"),
         "the banner is above the notices:\n{transcript}"
     );
 
@@ -1335,7 +1335,7 @@ fn an_empty_session_opens_on_the_banner() {
     app.tab_mut().push(Role::User, "hello");
     let transcript = flatten(&transcript_lines(app.tab(), 100));
     assert!(
-        !transcript.contains("a daemon-first coding agent"),
+        !transcript.contains("|____/"),
         "the banner is a greeting, not a record:\n{transcript}"
     );
 }

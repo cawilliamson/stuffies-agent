@@ -2438,33 +2438,59 @@ fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usi
     (out, used)
 }
 
-/// the banner an empty session opens on: the name, at the top of the pane, and one line
-/// saying what this is.
+/// the banner a session opens on, before it has been asked anything: the wordmark, bold,
+/// with a ramp down it.
 ///
-/// the art is five rows and 57 columns. below that the pane cannot hold it without folding
-/// it in half, so the name is written plainly instead of being mangled.
+/// the art is six rows and 67 columns. below that the pane cannot hold it without folding it
+/// in half, so the name is written plainly instead of being mangled.
 fn banner(width: usize) -> Vec<Line<'static>> {
-    const ART: [&str; 5] = [
-        r" ___ _         __  __ _            _                _",
-        r"/ __| |_ _  _ / _|/ _(_)___ ___   /_\  __ _ ___ _ _| |_",
-        r"\__ \  _| || |  _|  _| / -_|_-<  / _ \/ _` / -_) ' \  _|",
-        r"|___/\__|\_,_|_| |_| |_\___/__/ /_/ \_\__, \___|_||_\__|",
-        r"                                      |___/",
+    const ART: [&str; 6] = [
+        r" ____  _          __  __ _                _                    _",
+        r"/ ___|| |_ _   _ / _|/ _(_) ___  ___     / \   __ _  ___ _ __ | |_",
+        r"\___ \| __| | | | |_| |_| |/ _ \/ __|   / _ \ / _` |/ _ \ '_ \| __|",
+        r" ___) | |_| |_| |  _|  _| |  __/\__ \  / ___ \ (_| |  __/ | | | |_",
+        r"|____/ \__|\__,_|_| |_| |_|\___||___/ /_/   \_\__, |\___|_| |_|\__|",
+        r"                                              |___/",
     ];
+    let bold = Modifier::BOLD;
     let mut out = Vec::new();
-    let name = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
-    if width >= 60 {
-        for line in ART {
-            out.push(Line::from(Span::styled(line.to_owned(), name)));
+    if width >= 70 {
+        // a flat colour on line art reads as a wireframe. the ramp, and the weight, are what
+        // make a wordmark look solid.
+        let last = ART.len().saturating_sub(1).max(1);
+        for (index, line) in ART.iter().enumerate() {
+            let shade = ramp(index, last);
+            out.push(Line::from(Span::styled(
+                (*line).to_owned(),
+                Style::default().fg(shade).add_modifier(bold),
+            )));
         }
     } else {
-        out.push(Line::from(Span::styled("Stuffies Agent", name)));
+        out.push(Line::from(Span::styled(
+            "Stuffies Agent",
+            Style::default().fg(ACCENT).add_modifier(bold),
+        )));
     }
-    out.push(Line::from(Span::styled(
-        "a daemon-first coding agent",
-        Style::default().fg(DIM),
-    )));
     out
+}
+
+/// the shade a banner row takes: bright at the top of the art, deeper at the bottom.
+fn ramp(row: usize, last: usize) -> Color {
+    const TOP: (u8, u8, u8) = (0xd8, 0xf0, 0xff);
+    const BOTTOM: (u8, u8, u8) = (0x5f, 0x9f, 0xe0);
+    let t = (row.min(last) as f32) / (last as f32);
+    let mix = |from: u8, to: u8| {
+        let from = f32::from(from);
+        (f32::from(to) - from)
+            .mul_add(t, from)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color::Rgb(
+        mix(TOP.0, BOTTOM.0),
+        mix(TOP.1, BOTTOM.1),
+        mix(TOP.2, BOTTOM.2),
+    )
 }
 
 /// the colour a patch or diff line should carry.
