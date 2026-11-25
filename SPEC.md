@@ -993,6 +993,9 @@ is green and only if a measured turn is latency-bound on tool calls.
 - The daemon owns model credentials. Clients never see a key.
 - Configuration is daemon-local: environment (`OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`) and
   a credential file under `$XDG_CONFIG_HOME/stuffies-agent/` at mode `0600`.
+- `SA_TOKEN_FILE` names a file holding the token, either as the token alone or as an
+  environment file with an `OPENAI_API_TOKEN` or `VLLM_API_KEY` line. The daemon takes the
+  value out of it itself, so whatever starts the daemon needs no `sed` to do it.
 - Bundles carry no credentials. A handoff to a host without credentials fails at import
   verification, not mid-turn.
 

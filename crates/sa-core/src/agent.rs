@@ -545,15 +545,20 @@ fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
 
     SystemPrompt {
         role: format!(
-            "You are stuffies-agent, a coding agent working in the git workspace at {workspace}. \
+            "You are stuffies-agent, a coding agent working in the workspace at {workspace}. \
              Tool paths resolve inside it; a path outside it is an error."
         ),
         sections: vec![
             Section::new("tools", tools_text),
             Section::new(
                 "rules",
-                "- read a file before editing it\n\
-                 - search with grep and find rather than the shell\n\
+                // bash is the fallback, not the default: every built-in tool is bounded,
+                // structured and needs no external program, which is what makes the agent
+                // work on a machine that has none of them.
+                "- prefer the built-in tools: read a file before editing it, search with \
+                 grep and find, and change code with edit rather than rewriting the file\n\
+                 - use bash for what no built-in tool does: running the project's tests, \
+                 builds and its own commands\n\
                  - every edit and write reports what the language server says about the \
                  file it changed: fix an error before moving on\n\
                  - use lsp references and lsp rename rather than a text search when a \

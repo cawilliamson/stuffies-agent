@@ -43,6 +43,17 @@ This is why the agent has no permission system (spec 8) and why the one guard it
 checkpoint: the user's defence against a bad turn is that their directory is exactly as they
 left it, plus the edits they wanted. A recovery point that lives in their `.git` is not that.
 
+## the daemon runs on its own
+
+Nothing of ours may need an external program to work. The checkpoint store is written with
+`gix`, the token is read from its file in rust, and the tools are built in. A language server,
+an MCP server and the shell the agent's own commands run in are the exceptions, because they
+are the things the agent is fronting rather than utilities it depends on.
+
+bash is the fallback, not the default. A built-in tool is bounded, structured and needs
+nothing installed; the shell is for what no built-in tool does, such as running a project's
+tests. When a new need appears, the answer is a tool, not a command line.
+
 ## ordering
 
 Alphabetical, everywhere a collection is written down: tool specs, slash commands, help

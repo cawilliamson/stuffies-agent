@@ -314,7 +314,7 @@ async fn the_system_prompt_names_the_tools_the_rules_and_the_workspace() {
         "the prompt carries rules:\n{system}"
     );
     assert!(
-        system.contains("the git workspace at /tmp/ws"),
+        system.contains("the workspace at /tmp/ws"),
         "the model is told the session's workspace, not the daemon's cwd:\n{system}"
     );
     // the workspace is stated once, not repeated per tool or per section.

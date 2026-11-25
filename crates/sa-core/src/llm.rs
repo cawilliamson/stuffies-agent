@@ -300,12 +300,15 @@ impl OpenAiProvider {
         })
     }
 
-    /// reads `OPENAI_API_ENDPOINT` and `OPENAI_API_TOKEN` from the environment.
+    /// reads `OPENAI_API_ENDPOINT` and the token from the environment.
+    ///
+    /// the token comes from `OPENAI_API_TOKEN`, or from the file `SA_TOKEN_FILE` names. a
+    /// file is what a secret manager hands over, and reading it here means whatever starts
+    /// the daemon needs no `sed` to take the value back out of it.
     pub fn from_env() -> Result<Self, LlmError> {
         let endpoint = std::env::var("OPENAI_API_ENDPOINT")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned());
-        let api_key = std::env::var("OPENAI_API_TOKEN").map_err(|_| LlmError::NoCredentials)?;
-        Self::new(endpoint, api_key)
+        Self::new(endpoint, token_from_env()?)
     }
 
     /// asks the endpoint which effort values it honours, by sending the same probe with
@@ -665,6 +668,51 @@ fn stop_reason(reason: Option<rig_core::completion::FinishReason>, has_calls: bo
     named.to_owned()
 }
 
+/// the token, from the environment or from the file `SA_TOKEN_FILE` names.
+fn token_from_env() -> Result<String, LlmError> {
+    if let Ok(token) = std::env::var("OPENAI_API_TOKEN") {
+        let token = token.trim().to_owned();
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+    let Some(path) = std::env::var_os("SA_TOKEN_FILE") else {
+        return Err(LlmError::NoCredentials);
+    };
+    let raw = std::fs::read_to_string(&path).map_err(|_| LlmError::NoCredentials)?;
+    token_from_file(&raw).ok_or(LlmError::NoCredentials)
+}
+
+/// a token file is either the token itself or an environment file that holds one.
+///
+/// a secret manager writes `KEY=value` lines, which is why the value is taken out of the
+/// line here rather than by a shell: the daemon is the only thing that has to know the
+/// format.
+fn token_from_file(raw: &str) -> Option<String> {
+    let mut bare = None;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match line.split_once('=') {
+            Some((key, value)) if matches!(key.trim(), "OPENAI_API_TOKEN" | "VLLM_API_KEY") => {
+                let value = value.trim().trim_matches(['"', '\'']).trim();
+                if !value.is_empty() {
+                    return Some(value.to_owned());
+                }
+            }
+            Some(_) => {}
+            None => {
+                if bare.is_none() {
+                    bare = Some(line.to_owned());
+                }
+            }
+        }
+    }
+    bare
+}
+
 /// stands in when no credentials are configured. the daemon still starts, so session
 /// listing and replay work; only turns fail.
 pub struct MissingProvider;
@@ -768,6 +816,35 @@ impl Provider for ScriptedProvider {
             });
             Ok(rx)
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod token_tests {
+    use super::token_from_file;
+
+    #[test]
+    fn an_environment_file_yields_the_value() {
+        let raw = "OTHER=1\nVLLM_API_KEY=sk-abc123\n";
+        assert_eq!(token_from_file(raw).as_deref(), Some("sk-abc123"));
+    }
+
+    #[test]
+    fn a_bare_token_is_the_token() {
+        assert_eq!(token_from_file("sk-bare\n").as_deref(), Some("sk-bare"));
+    }
+
+    #[test]
+    fn quotes_comments_and_blanks_are_not_part_of_it() {
+        let raw = "# a comment\n\nOPENAI_API_TOKEN=\"sk-quoted\"\n";
+        assert_eq!(token_from_file(raw).as_deref(), Some("sk-quoted"));
+    }
+
+    #[test]
+    fn a_file_with_no_token_is_none() {
+        assert_eq!(token_from_file("SOMETHING=else\n"), None);
+        assert_eq!(token_from_file(""), None);
     }
 }
 
