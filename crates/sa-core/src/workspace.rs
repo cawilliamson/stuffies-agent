@@ -587,7 +587,20 @@ pub fn checkpoint(
     let commit = git_store(
         &store,
         workspace,
-        &["commit-tree", &tree, "-m", &message],
+        &[
+            // the store is sa's own repository, so it inherits none of the user's identity.
+            // a user who sets `user.name` per repository rather than globally would have
+            // every checkpoint fail; naming sa makes the commit independent of their config,
+            // and is the truthful author for it.
+            "-c",
+            "user.name=sa",
+            "-c",
+            "user.email=sa@localhost",
+            "commit-tree",
+            &tree,
+            "-m",
+            &message,
+        ],
         &[],
     )?;
 
@@ -910,7 +923,16 @@ mod tests {
         let old = std::process::Command::new("git")
             .env("GIT_DIR", store)
             .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00+0000")
-            .args(["commit-tree", &checkpoint.tree, "-m", "sa checkpoint s1 1"])
+            .args([
+                "-c",
+                "user.name=sa",
+                "-c",
+                "user.email=sa@localhost",
+                "commit-tree",
+                &checkpoint.tree,
+                "-m",
+                "sa checkpoint s1 1",
+            ])
             .output()
             .expect("commit-tree");
         let old_commit = String::from_utf8_lossy(&old.stdout).trim().to_owned();
