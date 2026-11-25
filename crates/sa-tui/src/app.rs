@@ -2807,18 +2807,34 @@ fn framed_tool(
     let (_, edge, ink) = role_style(Role::Tool, "");
     let (_, _, out_ink) = role_style(Role::ToolOutput, "");
     let width = width.saturating_sub(2);
+
+    // what the tool was pointed at belongs in the title. "grep" on its own says nothing
+    // about what was searched, and the title is what the operator reads first.
+    //
+    // the target is only named when it fits whole. a title cut short teaches nothing the
+    // invocation below does not already say, and an ellipsis in a heading is just noise.
+    let suffix = exit_code.map_or_else(String::new, |code| format!(" (exit {code})"));
+    // `top` spends five columns on the frame: `╭─ `, the space after the label, and `╮`.
+    let room = width.saturating_sub(tool.chars().count() + suffix.chars().count() + 6);
+    let first = call.lines().next().unwrap_or_default().trim();
+    let title = if first.chars().count() <= room && !first.is_empty() {
+        format!("{tool} {first}{suffix}")
+    } else {
+        format!("{tool}{suffix}")
+    };
     let mut out = Vec::new();
-    // the exit code belongs in the title, so the rule stays clean.
-    let title = exit_code.map_or_else(|| tool.to_owned(), |code| format!("{tool} (exit {code})"));
     top(&mut out, &title, width, edge);
+
+    // the invocation in full, always: it is what was run, and a command that wraps or does
+    // not fit a heading is still shown above its output.
     let invocation = if tool == "bash" {
         format!("$ {call}")
     } else {
         call.to_owned()
     };
-    // a command and its output are literal: no markdown, but ANSI colouring is honoured.
     body(&mut out, &invocation, width, ink, false, edge, false);
     divider(&mut out, width, edge);
+
     // collapsed, the tail is what says how the command went; ctrl+x shows the rest.
     let (shown, hidden) = if expanded {
         (output.to_owned(), 0)
@@ -2836,15 +2852,17 @@ fn framed_tool(
             false,
         );
     }
-    body_ansi(&mut out, &shown, width, out_ink, edge);
+    if shown.trim().is_empty() {
+        // a command that printed nothing is a result, not a panel that failed to draw.
+        body(&mut out, "<no output>", width, out_ink, false, edge, false);
+    } else {
+        body_ansi(&mut out, &shown, width, out_ink, edge);
+    }
     bottom(&mut out, width, edge);
     inset(out)
 }
 
-/// the lines a collapsed tool output shows, and how many it left out.
-///
-/// the tail, because the end of a command is what says how it went; the beginning is what
-/// the operator scrolls back for when they want it, one key away.
+/// the tail of a command's output, and how many lines above it were left out.
 fn tail(output: &str) -> (String, usize) {
     const SHOWN: usize = 5;
     let lines: Vec<&str> = output.lines().collect();

@@ -774,9 +774,10 @@ fn a_tool_call_and_its_output_share_one_split_frame() {
         1,
         "the call and its output must share a frame:\n{screen}"
     );
+    // the title says what the tool was pointed at, and how it went.
     assert!(
-        screen.contains("\u{256d}\u{2500} bash (exit 1)"),
-        "the exit code belongs in the title:\n{screen}"
+        screen.contains("\u{256d}\u{2500} bash ls -la (exit 1)"),
+        "the title names the command and the exit code:\n{screen}"
     );
     assert!(screen.contains("$ ls -la"), "bash gets a prompt:\n{screen}");
     assert!(
@@ -3120,6 +3121,11 @@ fn a_long_tool_call_is_shown_in_full_across_rows() {
         "the whole command is drawn, not cut at a fixed length:\n{shown}"
     );
     assert!(!shown.contains('\u{2026}'), "nothing is elided:\n{shown}");
+    // a command that printed nothing says so, rather than leaving a panel that looks broken.
+    assert!(
+        shown.contains("<no output>"),
+        "empty output is stated:\n{shown}"
+    );
 }
 
 #[test]
