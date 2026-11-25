@@ -247,15 +247,18 @@ impl ToolRegistry {
         let action = required(args, "action")?;
         if action == "status" {
             let mut out = String::new();
-            for (name, installed, running) in hub.status() {
-                let state = if running {
+            for server in hub.status() {
+                let state = if server.running {
                     "running"
-                } else if installed {
+                } else if server.installed {
                     "installed"
                 } else {
                     "missing"
                 };
-                let _ = writeln!(out, "{name}: {state}");
+                let version = server
+                    .version
+                    .map_or_else(String::new, |version| format!(" ({version})"));
+                let _ = writeln!(out, "{}: {state}{version}", server.name);
             }
             return Ok(out);
         }

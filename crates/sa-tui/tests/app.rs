@@ -1301,6 +1301,40 @@ fn flatten(lines: &[ratatui::text::Line<'static>]) -> String {
         .join("\n")
 }
 
+/// a session with nothing in it opens on the banner, at the top of the pane. it is a
+/// greeting rather than a record, so it is drawn from the empty state and never written to
+/// the event log: as soon as the session has content, it is gone.
+#[test]
+fn an_empty_session_opens_on_the_banner() {
+    let app = App::new("session-abcdef", "m");
+    let transcript = flatten(&transcript_lines(app.tab(), 100));
+    assert!(
+        transcript.contains("a daemon-first coding agent"),
+        "the banner is what an empty session shows:\n{transcript}"
+    );
+
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().push(Role::System, "hello");
+    let transcript = flatten(&transcript_lines(app.tab(), 100));
+    assert!(
+        !transcript.contains("a daemon-first coding agent"),
+        "the banner is a greeting, not a record:\n{transcript}"
+    );
+}
+
+/// the art is 57 columns. a narrower pane gets the name plainly rather than art folded in
+/// half.
+#[test]
+fn a_narrow_pane_gets_the_name_not_the_art() {
+    let app = App::new("session-abcdef", "m");
+    let transcript = flatten(&transcript_lines(app.tab(), 40));
+    assert!(transcript.contains("Stuffies Agent"), "{transcript}");
+    assert!(
+        !transcript.contains("___"),
+        "the art must not be mangled into a narrow pane:\n{transcript}"
+    );
+}
+
 #[test]
 fn the_working_header_rides_the_composer_border() {
     let mut app = App::new("session-abcdef", "m");
@@ -2251,10 +2285,12 @@ fn a_multi_line_prompt_is_drawn_on_separate_rows() {
     sa_tui::draw(&mut terminal, &mut app).expect("draw");
     let buffer = terminal.backend().buffer();
 
-    // the transcript is empty and the strip and status bar are outside this band, so any
-    // of these letters inside it can only be composer text.
-    let row_of =
-        |target: &str| (2..22u16).find(|&y| (0..80u16).any(|x| buffer[(x, y)].symbol() == target));
+    // the banner draws words of its own into the transcript band, so a single letter is
+    // not enough to identify composer text: the three typed in a row are.
+    let row_of = |target: &str| {
+        (2..22u16)
+            .find(|&y| (0..78u16).any(|x| (0..3u16).all(|i| buffer[(x + i, y)].symbol() == target)))
+    };
     let (q, w, e) = (
         row_of("q").expect("first line"),
         row_of("w").expect("second line"),

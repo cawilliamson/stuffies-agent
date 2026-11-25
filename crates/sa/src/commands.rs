@@ -375,15 +375,19 @@ pub async fn lsp_with(client: &mut Client) -> Result<()> {
     }
     for server in servers {
         let name = server["name"].as_str().unwrap_or("-");
-        let state = match (
+        let (ink, state) = match (
             server["installed"].as_bool().unwrap_or(false),
             server["running"].as_bool().unwrap_or(false),
         ) {
-            (_, true) => "running",
-            (true, false) => "installed",
-            (false, false) => "missing",
+            (_, true) => ("\x1b[1;32m", "running"),
+            (true, false) => ("\x1b[32m", "installed"),
+            (false, false) => ("\x1b[31m", "missing"),
         };
-        println!("{name:<28} {state}");
+        let version = server["version"]
+            .as_str()
+            .filter(|version| !version.is_empty())
+            .map_or_else(String::new, |version| format!(" \x1b[2m({version})\x1b[0m"));
+        println!("{ink}{name:<28}\x1b[0m {state}{version}");
     }
     println!(
         "\nthe table is {}; an entry there is merged over the built-in servers.",

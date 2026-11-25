@@ -361,7 +361,7 @@ impl Manager {
 
     /// the language servers this build knows about, and which are installed and running.
     #[must_use]
-    pub fn lsp_status(&self) -> Vec<(String, bool, bool)> {
+    pub fn lsp_status(&self) -> Vec<crate::lsp::ServerStatus> {
         self.config.lsp.status()
     }
 

@@ -2438,6 +2438,35 @@ fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usi
     (out, used)
 }
 
+/// the banner an empty session opens on: the name, at the top of the pane, and one line
+/// saying what this is.
+///
+/// the art is five rows and 57 columns. below that the pane cannot hold it without folding
+/// it in half, so the name is written plainly instead of being mangled.
+fn banner(width: usize) -> Vec<Line<'static>> {
+    const ART: [&str; 5] = [
+        r" ___ _         __  __ _            _                _",
+        r"/ __| |_ _  _ / _|/ _(_)___ ___   /_\  __ _ ___ _ _| |_",
+        r"\__ \  _| || |  _|  _| / -_|_-<  / _ \/ _` / -_) ' \  _|",
+        r"|___/\__|\_,_|_| |_| |_\___/__/ /_/ \_\__, \___|_||_\__|",
+        r"                                      |___/",
+    ];
+    let mut out = Vec::new();
+    let name = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    if width >= 60 {
+        for line in ART {
+            out.push(Line::from(Span::styled(line.to_owned(), name)));
+        }
+    } else {
+        out.push(Line::from(Span::styled("Stuffies Agent", name)));
+    }
+    out.push(Line::from(Span::styled(
+        "a daemon-first coding agent",
+        Style::default().fg(DIM),
+    )));
+    out
+}
+
 /// the colour a patch or diff line should carry.
 fn diff_ink(line: &str, base: Color) -> Color {
     // a diff's file headers start with the same characters as a removal and an addition,
@@ -2718,15 +2747,21 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     let markdown = !matches!(entry.role, Role::System | Role::Tool | Role::ToolOutput);
     // reasoning reads as an aside wherever it appears, in its own frame or above a reply.
     let italic = entry.role == Role::Thinking;
-    body(
-        &mut out,
-        &entry_body(entry),
-        width,
-        ink,
-        markdown,
-        edge,
-        italic,
-    );
+    if entry.role == Role::System {
+        // a notice is ours, so it may carry colour: a listing where one row is green and
+        // the next is red is still one message, and must be.
+        body_ansi(&mut out, &entry_body(entry), width, ink, edge);
+    } else {
+        body(
+            &mut out,
+            &entry_body(entry),
+            width,
+            ink,
+            markdown,
+            edge,
+            italic,
+        );
+    }
     for thumb in &entry.images {
         body_image(&mut out, thumb, width, edge);
     }
@@ -2832,6 +2867,11 @@ fn separate(out: &mut Vec<Line<'static>>) {
 pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
     // fill whatever width the pane has: no cap, or wide terminals leave a dead margin.
     let inner = usize::from(width).max(16);
+    // a session with nothing in it opens on the banner. it is a greeting rather than a
+    // record, so it is drawn here and never written to the event log.
+    if tab.transcript.is_empty() {
+        return banner(inner);
+    }
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut index = 0;
 

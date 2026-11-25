@@ -56,6 +56,62 @@ pub enum LspError {
     Server { server: String, error: String },
 }
 
+/// asks a server what version it is, blocking.
+///
+/// `--version` is the convention, but not universal: `gopls` rejects it and answers to a
+/// bare `version`. the caller bounds how long this may take, so nothing here waits.
+fn probe_version(command: &str) -> Option<String> {
+    let program = resolve(command)?;
+    for args in [["--version"].as_slice(), ["version"].as_slice()] {
+        let output = std::process::Command::new(&program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        if let Some(version) = version_token(&text) {
+            return Some(version);
+        }
+    }
+    None
+}
+
+/// the first version-looking token in a line of output.
+///
+/// a server prints its name, then a version, and versions are not all semver: rust-analyzer
+/// reports a date. a leading `v` is part of the spelling, not the number.
+fn version_token(text: &str) -> Option<String> {
+    for token in text.split_whitespace() {
+        let token =
+            token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-');
+        let token = token.strip_prefix(['v', 'V']).unwrap_or(token);
+        let core: String = token
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+            .collect();
+        let digits = core.chars().filter(char::is_ascii_digit).count();
+        let marks = core.matches(['.', '-']).count();
+        if digits >= 2 && marks >= 1 && core.starts_with(|c: char| c.is_ascii_digit()) {
+            return Some(core);
+        }
+    }
+    None
+}
+
+/// one configured language server, as the list command reports it.
+#[derive(Debug, Clone)]
+pub struct ServerStatus {
+    pub name: String,
+    pub installed: bool,
+    pub running: bool,
+    /// what the server says its version is, when it can be asked cheaply.
+    pub version: Option<String>,
+}
+
 /// one language server, in the shape `oh-my-pi`'s `defaults.json` uses.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerEntry {
@@ -379,10 +435,19 @@ fn login_shell_path() -> Vec<PathBuf> {
 
 /// whether a command can be started, without starting it.
 fn installed(command: &str) -> bool {
+    resolve(command).is_some()
+}
+
+/// where a configured command actually is, the way a shell would find it.
+fn resolve(command: &str) -> Option<PathBuf> {
     if command.contains('/') {
-        return Path::new(command).is_file();
+        let path = PathBuf::from(command);
+        return path.is_file().then_some(path);
     }
-    search_paths().iter().any(|dir| dir.join(command).is_file())
+    search_paths()
+        .iter()
+        .map(|dir| dir.join(command))
+        .find(|path| path.is_file())
 }
 
 /// the directory a server should be rooted at: the nearest ancestor holding one of its
@@ -538,7 +603,11 @@ impl Hub {
 
     /// what is configured, installed and running, for an operator asking.
     #[must_use]
-    pub fn status(&self) -> Vec<(String, bool, bool)> {
+    pub fn status(&self) -> Vec<ServerStatus> {
+        /// how long the whole list may wait for versions. the probes run together, so this
+        /// is the budget for all of them rather than for each.
+        const VERSION_BUDGET: Duration = Duration::from_secs(3);
+
         let active: BTreeMap<String, usize> = self
             .running
             .lock()
@@ -552,17 +621,38 @@ impl Hub {
                     })
             })
             .unwrap_or_default();
-        self.config
-            .servers
-            .iter()
-            .map(|(name, entry)| {
-                (
-                    name.clone(),
-                    installed(&entry.command),
-                    active.contains_key(name),
-                )
-            })
-            .collect()
+
+        let mut statuses = Vec::with_capacity(self.config.servers.len());
+        let mut probes = Vec::new();
+        for (name, entry) in &self.config.servers {
+            let installed = installed(&entry.command);
+            // only ask a server that is there: probing a missing one is a failed spawn.
+            if installed {
+                let command = entry.command.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(probe_version(&command));
+                });
+                probes.push((statuses.len(), rx));
+            }
+            statuses.push(ServerStatus {
+                name: name.clone(),
+                installed,
+                running: active.contains_key(name),
+                version: None,
+            });
+        }
+
+        // every probe started together, so one slow server cannot hold up the rest and the
+        // list waits no longer than the budget in total.
+        let deadline = std::time::Instant::now() + VERSION_BUDGET;
+        for (index, rx) in probes {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if let Ok(version) = rx.recv_timeout(left) {
+                statuses[index].version = version;
+            }
+        }
+        statuses
     }
 
     /// stops every server this hub started.

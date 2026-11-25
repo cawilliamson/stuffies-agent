@@ -1625,15 +1625,22 @@ async fn run_command(
                     .iter()
                     .map(|row| {
                         let name = row["name"].as_str().unwrap_or("?");
-                        let state = match (
+                        let (ink, state) = match (
                             row["installed"].as_bool().unwrap_or(false),
                             row["running"].as_bool().unwrap_or(false),
                         ) {
-                            (_, true) => "running",
-                            (true, false) => "installed",
-                            (false, false) => "missing",
+                            (_, true) => (RUNNING_INK, "running"),
+                            (true, false) => (OK_INK, "installed"),
+                            (false, false) => (BAD_INK, "missing"),
                         };
-                        format!("{name}: {state}")
+                        // the version is a detail, not a verdict: it stays faint.
+                        let version = row["version"]
+                            .as_str()
+                            .filter(|version| !version.is_empty())
+                            .map_or_else(String::new, |version| {
+                                format!(" {FAINT_INK}({version}){INK_OFF}")
+                            });
+                        format!("{ink}{name}{INK_OFF}: {state}{version}")
                     })
                     .collect();
                 app.tab_mut().push(
@@ -1764,6 +1771,14 @@ async fn run_command(
     }
     Ok(false)
 }
+
+/// the colours a listing uses for a state: green for a server that is there, red for one
+/// that is not. a notice is ours, so it may colour its own rows.
+const OK_INK: &str = "\x1b[32m";
+const RUNNING_INK: &str = "\x1b[1;32m";
+const BAD_INK: &str = "\x1b[31m";
+const FAINT_INK: &str = "\x1b[2m";
+const INK_OFF: &str = "\x1b[0m";
 
 /// a command's answer is one message. rows are joined rather than pushed one at a time: a
 /// command that lists ten servers is still one reply, and ten separate entries in the

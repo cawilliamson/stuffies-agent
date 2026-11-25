@@ -445,10 +445,11 @@ impl Dispatcher {
                 .manager
                 .lsp_status()
                 .into_iter()
-                .map(|(name, installed, running)| json!({
-                    "name": name,
-                    "installed": installed,
-                    "running": running,
+                .map(|server| json!({
+                    "name": server.name,
+                    "installed": server.installed,
+                    "running": server.running,
+                    "version": server.version,
                 }))
                 .collect::<Vec<_>>(),
             // where a server was looked for, so a machine where one is installed but not
