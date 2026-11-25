@@ -1343,25 +1343,37 @@ fn an_empty_session_opens_on_the_banner() {
 
 /// the art is 57 columns. a narrower pane gets the name plainly rather than art folded in
 /// half.
-/// the art is inset from the edge and starts at the very top of the pane: it was hard
-/// against the left and one row down.
+/// the art shares the frames' left margin and starts at the very top of the pane: it was
+/// hard against the edge and a row down, then inset past the messages it sits above.
 #[test]
-fn the_banner_is_inset_and_flush_to_the_top() {
-    let app = App::new("session-abcdef", "m");
-    let lines = transcript_lines(app.tab(), 100);
-    let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-    assert!(
-        first.starts_with("   ") && first.contains("____"),
-        "the art is inset from the edge and on the first row:\n{first:?}"
-    );
-    // the first entry follows the art directly: a blank row used to push it away.
+fn the_banner_lines_up_with_the_frames_below_it() {
     let mut app = App::new("session-abcdef", "m");
     app.tab_mut().push(Role::System, "context: nothing to load");
     let lines = transcript_lines(app.tab(), 100);
-    let after_art: String = lines[6].spans.iter().map(|s| s.content.as_ref()).collect();
+    let text = |line: &ratatui::text::Line<'static>| -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    };
+    let indent = |line: &str| line.chars().position(|c| c != ' ');
+
+    let art = (0..6)
+        .filter_map(|index| indent(&text(&lines[index])))
+        .min()
+        .expect("the art has ink");
+    let frame = lines
+        .iter()
+        .map(text)
+        .find(|line| line.trim_start().starts_with('\u{256d}'))
+        .and_then(|line| indent(&line))
+        .expect("a frame is drawn");
+    assert_eq!(
+        art,
+        frame,
+        "the art and the frames share a left margin:\n{}",
+        flatten(&lines)
+    );
     assert!(
-        after_art.trim_start().starts_with('\u{256d}'),
-        "the first entry sits against the art:\n{after_art:?}"
+        !text(&lines[0]).trim().is_empty(),
+        "the art starts on the first row, with no blank above it"
     );
 }
 

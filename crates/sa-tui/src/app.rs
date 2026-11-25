@@ -2452,8 +2452,9 @@ fn banner(width: usize) -> Vec<Line<'static>> {
         r"|____/ \__|\__,_|_| |_| |_|\___||___/ /_/   \_\__, |\___|_| |_|\__|",
         r"                                              |___/",
     ];
-    // the transcript's frames sit one column in; the art sat hard against the edge.
-    const PAD: usize = 3;
+    // the transcript's frames sit one column in (see `inset`), so the art takes the same
+    // margin: anything else and the greeting does not line up with the messages below it.
+    const PAD: usize = 1;
     let widest = ART
         .iter()
         .map(|line| line.chars().count())
