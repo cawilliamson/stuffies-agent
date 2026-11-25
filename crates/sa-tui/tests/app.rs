@@ -1343,6 +1343,28 @@ fn an_empty_session_opens_on_the_banner() {
 
 /// the art is 57 columns. a narrower pane gets the name plainly rather than art folded in
 /// half.
+/// the art is inset from the edge and starts at the very top of the pane: it was hard
+/// against the left and one row down.
+#[test]
+fn the_banner_is_inset_and_flush_to_the_top() {
+    let app = App::new("session-abcdef", "m");
+    let lines = transcript_lines(app.tab(), 100);
+    let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        first.starts_with("   ") && first.contains("____"),
+        "the art is inset from the edge and on the first row:\n{first:?}"
+    );
+    // the first entry follows the art directly: a blank row used to push it away.
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().push(Role::System, "context: nothing to load");
+    let lines = transcript_lines(app.tab(), 100);
+    let after_art: String = lines[6].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        after_art.trim_start().starts_with('\u{256d}'),
+        "the first entry sits against the art:\n{after_art:?}"
+    );
+}
+
 #[test]
 fn a_narrow_pane_gets_the_name_not_the_art() {
     let app = App::new("session-abcdef", "m");

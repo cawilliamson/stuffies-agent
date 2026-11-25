@@ -2438,8 +2438,8 @@ fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usi
     (out, used)
 }
 
-/// the banner a session opens on, before it has been asked anything: the wordmark, bold,
-/// with a ramp down it.
+/// the banner a session opens on, before it has been asked anything: the wordmark, with a
+/// ramp down it.
 ///
 /// the art is six rows and 67 columns. below that the pane cannot hold it without folding it
 /// in half, so the name is written plainly instead of being mangled.
@@ -2452,22 +2452,29 @@ fn banner(width: usize) -> Vec<Line<'static>> {
         r"|____/ \__|\__,_|_| |_| |_|\___||___/ /_/   \_\__, |\___|_| |_|\__|",
         r"                                              |___/",
     ];
+    // the transcript's frames sit one column in; the art sat hard against the edge.
+    const PAD: usize = 3;
+    let widest = ART
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
     let bold = Modifier::BOLD;
     let mut out = Vec::new();
-    if width >= 70 {
+    if width >= widest + PAD + 2 {
         // a flat colour on line art reads as a wireframe. the ramp, and the weight, are what
         // make a wordmark look solid.
         let last = ART.len().saturating_sub(1).max(1);
         for (index, line) in ART.iter().enumerate() {
             let shade = ramp(index, last);
             out.push(Line::from(Span::styled(
-                (*line).to_owned(),
+                format!("{}{line}", " ".repeat(PAD)),
                 Style::default().fg(shade).add_modifier(bold),
             )));
         }
     } else {
         out.push(Line::from(Span::styled(
-            "Stuffies Agent",
+            format!("{}Stuffies Agent", " ".repeat(PAD)),
             Style::default().fg(ACCENT).add_modifier(bold),
         )));
     }
@@ -2922,8 +2929,15 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     if fresh {
         out.extend(banner(inner));
-        out.push(Line::default());
     }
+    // the first entry follows the art directly: a blank rule between them reads as a gap in
+    // the greeting rather than as spacing between messages.
+    let mut after_banner = fresh;
+    let mut gap = |out: &mut Vec<Line<'static>>| {
+        if !std::mem::take(&mut after_banner) {
+            separate(out);
+        }
+    };
     let mut index = 0;
 
     while index < tab.transcript.len() {
@@ -2940,7 +2954,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
             }
             if next < tab.transcript.len() && tab.transcript[next].role == Role::Assistant {
                 let message = tab.transcript[next].text.clone();
-                separate(&mut out);
+                gap(&mut out);
                 out.extend(framed_split(
                     &tab.transcript[next],
                     &tab.status.model,
@@ -2950,7 +2964,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
                 ));
                 index = next + 1;
             } else {
-                separate(&mut out);
+                gap(&mut out);
                 out.extend(framed(
                     &Entry::new(Role::Thinking, thinking),
                     inner,
@@ -2967,7 +2981,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
                 && tab.transcript[index + 1].role == Role::ToolOutput
             {
                 let result = &tab.transcript[index + 1];
-                separate(&mut out);
+                gap(&mut out);
                 out.extend(framed_tool(
                     &tool,
                     &entry.text,
@@ -2981,7 +2995,7 @@ pub fn transcript_lines(tab: &Tab, width: u16) -> Vec<Line<'static>> {
             }
         }
 
-        separate(&mut out);
+        gap(&mut out);
         out.extend(framed(entry, inner, &tab.status.model));
         index += 1;
     }
