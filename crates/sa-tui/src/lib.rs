@@ -1578,6 +1578,30 @@ async fn run_command(
                 app.open_picker(app::PickerKind::Effort, format!("{model} effort"), items);
             }
         }
+        "/checkpoints" => match rpc(
+            client,
+            "checkpoint.list",
+            json!({"session_id": app.tab().session}),
+        )
+        .await
+        {
+            Ok(list) => {
+                let rows = list.as_array().cloned().unwrap_or_default();
+                if rows.is_empty() {
+                    app.tab_mut()
+                        .push(app::Role::System, "no checkpoints in this workspace");
+                }
+                for row in rows {
+                    let id = row["id"].as_str().unwrap_or("?");
+                    let at = row["at"].as_u64().unwrap_or_default();
+                    app.tab_mut().push(
+                        app::Role::System,
+                        format!("{} · {}", app::short_id(id), app::when(at)),
+                    );
+                }
+            }
+            Err(err) => app.tab_mut().push(app::Role::Error, err),
+        },
         "/effort" => set_effort(client, app, arg).await,
         "/exit" | "/quit" => return Ok(true),
         "/help" => {
@@ -1650,6 +1674,28 @@ async fn run_command(
                 Err(err) => app.tab_mut().push(app::Role::Error, err),
             }
         }
+        "/rewind" if !arg.is_empty() => {
+            let session = app.tab().session.clone();
+            match rpc(
+                client,
+                "checkpoint.rewind",
+                json!({"session_id": session, "id": arg}),
+            )
+            .await
+            {
+                Ok(done) => {
+                    let files = done["files"].as_u64().unwrap_or(0);
+                    app.tab_mut().push(
+                        app::Role::System,
+                        format!("rewound to {} · {files} files restored", app::short_id(arg)),
+                    );
+                }
+                Err(err) => app.tab_mut().push(app::Role::Error, err),
+            }
+        }
+        "/rewind" => app
+            .tab_mut()
+            .push(app::Role::System, "usage: /rewind <checkpoint id>"),
         "/resume" => {
             // every live session is already a tab, so what is worth bringing
             // back is a session that was closed while working in this directory.

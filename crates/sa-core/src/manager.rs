@@ -555,6 +555,40 @@ impl Manager {
         Ok(())
     }
 
+    /// every checkpoint of the session's workspace, newest first.
+    pub fn checkpoints(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::workspace::CheckpointEntry>, ManagerError> {
+        let Some(row) = self.store.get_session(id)? else {
+            return Err(ManagerError::Rpc(not_found(id)));
+        };
+        let workspace = std::path::PathBuf::from(&row.cwd);
+        Ok(
+            crate::workspace::list_checkpoints(&workspace, &self.config.checkpoint_dir)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// restores the workspace to a checkpoint and records that it happened, so the transcript
+    /// shows the rewind where it occurred rather than leaving the change unexplained.
+    pub fn rewind(&self, id: &str, checkpoint: &str) -> Result<usize, ManagerError> {
+        let Some(row) = self.store.get_session(id)? else {
+            return Err(ManagerError::Rpc(not_found(id)));
+        };
+        let workspace = std::path::PathBuf::from(&row.cwd);
+        let files = crate::workspace::rewind(&workspace, &self.config.checkpoint_dir, checkpoint)
+            .map_err(|err| {
+            ManagerError::Rpc(RpcError::new(code::INVALID_PARAMS, err.to_string()))
+        })?;
+        self.append(
+            id,
+            kinds::CHECKPOINT,
+            &json!({"rewound_to": checkpoint, "files": files}),
+        )?;
+        Ok(files)
+    }
+
     pub fn usage(&self, id: &str) -> Result<Usage, ManagerError> {
         let (events, _) = self.store.events_since(id, 0, 100_000)?;
         let mut usage = Usage {

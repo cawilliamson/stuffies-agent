@@ -102,6 +102,8 @@ impl Dispatcher {
         // alphabetical: this is the protocol surface, and the only way to see whether a
         // method is handled is to read it as a list.
         match req.method.as_str() {
+            "checkpoint.list" => self.checkpoint_list(&params),
+            "checkpoint.rewind" => self.checkpoint_rewind(&params),
             "events.replay" => self.events_replay(&params),
             "events.subscribe" => self.events_subscribe(conn, &params),
             "events.unsubscribe" => self.events_unsubscribe(&params),
@@ -248,6 +250,33 @@ impl Dispatcher {
             .usage(&session_id)
             .map_err(crate::manager::ManagerError::into_rpc)?;
         Ok(json!(usage))
+    }
+
+    fn checkpoint_list(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let entries = self
+            .manager
+            .checkpoints(&session_id)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!(entries
+            .into_iter()
+            .map(|entry| json!({
+                "id": entry.id,
+                "session_id": entry.session_id,
+                "seq": entry.seq,
+                "at": entry.at,
+            }))
+            .collect::<Vec<_>>()))
+    }
+
+    fn checkpoint_rewind(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let checkpoint = string_field(params, "id")?;
+        let files = self
+            .manager
+            .rewind(&session_id, &checkpoint)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!({"id": checkpoint, "files": files}))
     }
 
     fn session_restore(&self, params: &Value) -> Result<Value, RpcError> {

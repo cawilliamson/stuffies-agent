@@ -135,6 +135,9 @@ Session lifecycle:
 
 ```text
 session.create   {cwd, title?}                    -> {session_id, seq}
+checkpoint.list  {session_id}                     -> [{id, session_id, seq, at}]
+checkpoint.rewind {session_id, id}                -> {id, files}
+
 session.list     {include_deleted?}               -> [{id, title, state, cwd, owner, updated_at}]
 session.attach   {session_id, from_seq, limit?}  -> {session, events[], more, next_seq}
 session.rename   {session_id, title}              -> {}
@@ -793,6 +796,15 @@ git --git-dir=<store> update-ref refs/sa/checkpoints/<session_id>/<seq> <commit>
 
 The commit has no parent. A checkpoint is a tree to restore, not a history to walk, and an
 orphan commit means the store does not depend on the user's repository staying where it is.
+
+A workspace does not have to be a repository. The store is sa's own bare git directory, so a
+plain directory is checkpointed exactly as a repository is: the store is named for the
+repository's common git directory when there is one, and for the workspace path when there is
+not. `base_commit` is recorded when HEAD exists and omitted when it does not.
+
+A rewind restores the files the checkpoint holds and leaves files created after it alone: it
+restores what was there rather than deleting what was added. The commit id is the handle a
+user types, and a unique prefix of it is accepted.
 The first checkpoint of a repository copies its source tree into the store; later ones add
 only what changed, because the blobs they reuse are already there.
 

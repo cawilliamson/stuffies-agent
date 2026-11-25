@@ -123,6 +123,18 @@ impl Renderer {
                     .unwrap_or("interrupted");
                 println!("\n\x1b[31m[turn interrupted: {cause}]\x1b[0m");
             }
+            "checkpoint" => {
+                if let Some(id) = payload.get("id").and_then(Value::as_str) {
+                    let short = sa_tui::app::short_id(id);
+                    println!("\n\x1b[2m⏱ checkpoint {short} · /rewind {short}\x1b[0m");
+                } else if let Some(id) = payload.get("rewound_to").and_then(Value::as_str) {
+                    let files = payload.get("files").and_then(Value::as_u64).unwrap_or(0);
+                    println!(
+                        "\n\x1b[2m⏮ rewound to {} · {files} files restored\x1b[0m",
+                        sa_tui::app::short_id(id)
+                    );
+                }
+            }
             "compaction.applied" => {
                 println!("\x1b[2m[compacted: context summarised]\x1b[0m");
             }
@@ -496,8 +508,8 @@ enum Incoming {
 
 fn help() {
     println!(
-        "\x1b[2mcommands: /cancel /cost /exit /help /model <id> /new /reasoning \
-         /sessions\n\
+        "\x1b[2mcommands: /cancel /checkpoints /cost /exit /help /model <id> /new \
+         /reasoning /rewind <id> /sessions\n\
          ctrl-c cancels the running turn; at an idle prompt it exits.\x1b[0m"
     );
 }
@@ -630,6 +642,40 @@ pub async fn attach(
                         // the same connection, not a second one: a standalone run has
                         // exactly one backend and it is already held here.
                         ("sessions", _) => sessions_with(&mut client).await?,
+                        ("checkpoints", _) => {
+                            let list = client
+                                .call("checkpoint.list", json!({"session_id": session_id}))
+                                .await
+                                .map_err(|e| format!("checkpoint.list failed: {e}"))?;
+                            let rows = list.as_array().cloned().unwrap_or_default();
+                            if rows.is_empty() {
+                                println!("no checkpoints in this workspace");
+                            }
+                            for row in rows {
+                                let id = row["id"].as_str().unwrap_or("?");
+                                let at = row["at"].as_u64().unwrap_or_default();
+                                println!(
+                                    "{} · {}",
+                                    sa_tui::app::short_id(id),
+                                    sa_tui::app::when(at)
+                                );
+                            }
+                        }
+                        ("rewind", id) if !id.is_empty() => {
+                            let done = client
+                                .call(
+                                    "checkpoint.rewind",
+                                    json!({"session_id": session_id, "id": id}),
+                                )
+                                .await
+                                .map_err(|e| format!("checkpoint.rewind failed: {e}"))?;
+                            let files = done["files"].as_u64().unwrap_or(0);
+                            println!(
+                                "rewound to {} · {files} files restored",
+                                sa_tui::app::short_id(id)
+                            );
+                        }
+                        ("rewind", _) => println!("usage: /rewind <checkpoint id>"),
                         ("model", model) if !model.is_empty() => {
                             client
                                 .call(

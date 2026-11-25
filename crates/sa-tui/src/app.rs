@@ -257,8 +257,32 @@ fn with_thousands(value: u64) -> String {
 }
 
 /// every command the composer understands, with what it does.
+/// the short form of a checkpoint id: enough to type unambiguously, short enough to read in
+/// a transcript.
+#[must_use]
+pub fn short_id(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
+}
+
+/// how long ago a checkpoint was made, as a timeline shows it. relative rather than absolute:
+/// the question a timeline answers is "how far back is this", not "what date was that".
+#[must_use]
+pub fn when(at: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let ago = now.saturating_sub(at);
+    match ago {
+        0..=59 => "just now".to_owned(),
+        60..=3599 => format!("{}m ago", ago / 60),
+        3600..=86_399 => format!("{}h ago", ago / 3600),
+        _ => format!("{}d ago", ago / 86_400),
+    }
+}
+
 pub const HELP_COMMANDS: &str = "\
 /cancel — interrupt the turn that is running
+/checkpoints — list this workspace's checkpoints, newest first
 /cwd <dir> (alias /cd) — change the working directory; tab completes directories
 /effort [level] — show or set the reasoning effort; tab completes the levels
 /exit — quit
@@ -268,7 +292,8 @@ pub const HELP_COMMANDS: &str = "\
 /model <name> — switch the model for this tab
 /new — open a tab
 /pwd — print the working directory
-/resume — reopen a session that was closed";
+/resume — reopen a session that was closed
+/rewind <id> — restore the workspace to a checkpoint";
 
 /// a gap between text deltas longer than this is a stall, not generation: the clock stops
 /// for it, so thinking and tool time never dilute the figure.
@@ -1204,6 +1229,22 @@ impl Tab {
 
     fn apply_event(&mut self, kind: &str, payload: &Value, now: std::time::Instant, live: bool) {
         match kind {
+            "checkpoint" => {
+                // the transcript is the timeline: a checkpoint is drawn where the turn made
+                // it, and a rewind where it was asked for.
+                if let Some(id) = payload.get("id").and_then(Value::as_str) {
+                    self.push(
+                        Role::System,
+                        format!("⏱ checkpoint {} · /rewind {}", short_id(id), short_id(id)),
+                    );
+                } else if let Some(id) = payload.get("rewound_to").and_then(Value::as_str) {
+                    let files = payload.get("files").and_then(Value::as_u64).unwrap_or(0);
+                    self.push(
+                        Role::System,
+                        format!("⏮ rewound to {} · {files} files restored", short_id(id)),
+                    );
+                }
+            }
             "compaction.applied" => self.push(Role::System, "context compacted"),
             "context.loaded" => {
                 let cwd = payload["cwd"].as_str().unwrap_or_default();

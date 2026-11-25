@@ -366,6 +366,10 @@ pub enum WorkspaceError {
     Git(String),
     #[error("not a git repository: {0}")]
     NotARepository(String),
+    #[error("no checkpoint matches {0}")]
+    NoSuchCheckpoint(String),
+    #[error("{0} matches more than one checkpoint; give more of the id")]
+    AmbiguousCheckpoint(String),
 }
 
 /// an exclusive lock on a repository's git common directory.
@@ -408,11 +412,14 @@ pub fn lock(workspace: &Path, lock_dir: &Path) -> Result<WorkspaceLock, Workspac
     use nix::fcntl::{Flock, FlockArg};
     use sha2::{Digest, Sha256};
 
-    let common = git_common_dir(workspace)?;
+    // a repository is locked by its common git directory, so every worktree of it shares the
+    // lock. anywhere else is locked by its own path: two sessions in one directory must not
+    // write over each other just because that directory is not a repository.
+    let identity = git_common_dir(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     std::fs::create_dir_all(lock_dir)?;
 
     let mut hasher = Sha256::new();
-    hasher.update(common.display().to_string().as_bytes());
+    hasher.update(identity.display().to_string().as_bytes());
     let mut name = String::new();
     for byte in hasher.finalize() {
         let _ = write!(name, "{byte:02x}");
@@ -427,8 +434,10 @@ pub fn lock(workspace: &Path, lock_dir: &Path) -> Result<WorkspaceLock, Workspac
 /// a checkpoint commit built against a temporary index, so neither the worktree nor the real
 /// index is touched (spec 8.4).
 pub struct Checkpoint {
+    /// the commit's own id: what a user types to rewind to it.
+    pub commit: String,
     pub reference: String,
-    pub base_commit: String,
+    pub base_commit: Option<String>,
     pub tree: String,
     /// the shadow git directory the commit lives in, which is never the workspace's `.git`.
     pub store: PathBuf,
@@ -446,9 +455,13 @@ pub const CHECKPOINT_MAX_AGE: std::time::Duration = std::time::Duration::from_ho
 fn checkpoint_store(workspace: &Path, root: &Path) -> Result<PathBuf, WorkspaceError> {
     use sha2::{Digest, Sha256};
 
-    let common = git_common_dir(workspace)?;
+    // a repository is identified by its common git directory, so every worktree of it shares
+    // one store. a directory that is not a repository has no common git directory, and its
+    // own path identifies it just as well: the store is ours, and does not need git to exist
+    // in the workspace at all.
+    let identity = git_common_dir(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     let mut hasher = Sha256::new();
-    hasher.update(common.display().to_string().as_bytes());
+    hasher.update(identity.display().to_string().as_bytes());
     let mut name = String::new();
     for byte in hasher.finalize() {
         let _ = write!(name, "{byte:02x}");
@@ -544,9 +557,9 @@ pub fn checkpoint(
     session_id: &str,
     seq: u64,
 ) -> Result<Checkpoint, WorkspaceError> {
-    // a directory that is not a repository, or has no commits yet, cannot be checkpointed.
-    let base_commit = git(workspace, &["rev-parse", "HEAD"])
-        .map_err(|_| WorkspaceError::NotARepository(workspace.display().to_string()))?;
+    // where HEAD was, when there is one. it is recorded for the reader, not for the commit:
+    // the checkpoint has no parent, so a workspace with no history can still be checkpointed.
+    let base_commit = git(workspace, &["rev-parse", "HEAD"]).ok();
     let store = checkpoint_store(workspace, root)?;
 
     // unique per call: two sessions can share a session id prefix across repositories,
@@ -582,6 +595,7 @@ pub fn checkpoint(
     git_store(&store, workspace, &["update-ref", &reference, &commit], &[])?;
 
     Ok(Checkpoint {
+        commit,
         reference,
         base_commit,
         tree,
@@ -694,15 +708,101 @@ pub fn expire_checkpoints(root: &Path, max_age: std::time::Duration) -> usize {
     removed
 }
 
+/// one checkpoint a user can rewind to.
+#[derive(Debug, Clone)]
+pub struct CheckpointEntry {
+    /// the commit id, which is what a user types.
+    pub id: String,
+    pub session_id: String,
+    pub seq: u64,
+    /// unix seconds the checkpoint was made.
+    pub at: u64,
+}
+
+/// every checkpoint of a workspace, newest first.
+pub fn list_checkpoints(
+    workspace: &Path,
+    root: &Path,
+) -> Result<Vec<CheckpointEntry>, WorkspaceError> {
+    let store = checkpoint_store(workspace, root)?;
+    let raw = git_store(
+        &store,
+        workspace,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(committerdate:unix) %(objectname)",
+            "refs/sa/checkpoints/",
+        ],
+        &[],
+    )?;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let mut parts = line.rsplitn(3, ' ');
+        let (Some(id), Some(at), Some(reference)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let Some(tail) = reference.strip_prefix("refs/sa/checkpoints/") else {
+            continue;
+        };
+        let Some((session_id, seq)) = tail.rsplit_once('/') else {
+            continue;
+        };
+        out.push(CheckpointEntry {
+            id: id.to_owned(),
+            session_id: session_id.to_owned(),
+            seq: seq.parse().unwrap_or_default(),
+            at: at.parse().unwrap_or_default(),
+        });
+    }
+    // newest first: the one a user is most likely to want is at the top.
+    out.sort_by(|a, b| b.at.cmp(&a.at).then(b.seq.cmp(&a.seq)));
+    Ok(out)
+}
+
+/// restores the workspace to a checkpoint, given its commit id or a unique prefix of it.
+///
+/// files the checkpoint holds are written back over the working tree. files created after it
+/// are left alone: a rewind restores what was there, it does not delete what was added, and
+/// saying so is better than silently removing a file the operator made by hand.
+///
+/// returns how many files the checkpoint holds.
+pub fn rewind(workspace: &Path, root: &Path, id: &str) -> Result<usize, WorkspaceError> {
+    let store = checkpoint_store(workspace, root)?;
+    let all = list_checkpoints(workspace, root)?;
+    let matches: Vec<&CheckpointEntry> = all
+        .iter()
+        .filter(|entry| entry.id.starts_with(id))
+        .collect();
+    let entry = match matches.as_slice() {
+        [] => return Err(WorkspaceError::NoSuchCheckpoint(id.to_owned())),
+        [one] => *one,
+        _ => return Err(WorkspaceError::AmbiguousCheckpoint(id.to_owned())),
+    };
+
+    let files = git_store(
+        &store,
+        workspace,
+        &["ls-tree", "-r", "--name-only", &entry.id],
+        &[],
+    )?;
+    git_store(&store, workspace, &["checkout", &entry.id, "--", "."], &[])?;
+    Ok(files.lines().count())
+}
+
 #[must_use]
 pub fn checkpoint_payload(checkpoint: &Checkpoint) -> Value {
-    json!({
+    let mut payload = json!({
+        "id": checkpoint.commit,
         "ref": checkpoint.reference,
-        "base_commit": checkpoint.base_commit,
         "tree": checkpoint.tree,
         "store": checkpoint.store.display().to_string(),
         "includes_untracked": true,
-    })
+    });
+    if let Some(base) = &checkpoint.base_commit {
+        payload["base_commit"] = json!(base);
+    }
+    payload
 }
 
 #[cfg(test)]
@@ -887,6 +987,71 @@ mod tests {
         drop(first);
         let second = lock(dir.path(), locks.path()).expect("relock after release");
         drop(second);
+    }
+
+    /// a directory that is not a repository is a perfectly good place to work. the store is
+    /// ours, so a checkpoint does not need git to exist in the workspace at all.
+    #[test]
+    fn a_directory_that_is_not_a_repository_can_be_checkpointed() {
+        let dir = tempfile::tempdir().expect("plain dir");
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(dir.path().join("a.txt"), "one").expect("write");
+
+        let checkpoint =
+            checkpoint(dir.path(), root.path(), "s1", 1).expect("a plain directory checkpoints");
+        assert_eq!(checkpoint.base_commit, None, "there is no HEAD to record");
+
+        let listed = list_checkpoints(dir.path(), root.path()).expect("list");
+        assert_eq!(listed.len(), 1, "the checkpoint is listed");
+        assert_eq!(listed[0].id, checkpoint.commit);
+    }
+
+    /// a plain directory is locked by its own path, so two sessions there still serialise.
+    #[test]
+    fn a_directory_that_is_not_a_repository_can_be_locked() {
+        let dir = tempfile::tempdir().expect("plain dir");
+        let locks = tempfile::tempdir().expect("locks");
+        let first = lock(dir.path(), locks.path()).expect("a plain directory locks");
+        drop(first);
+        let second = lock(dir.path(), locks.path()).expect("relock after release");
+        drop(second);
+    }
+
+    #[test]
+    fn rewind_restores_the_checkpointed_files() {
+        let dir = repo();
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(dir.path().join("a.txt"), "before").expect("write");
+        let checkpoint = checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
+
+        std::fs::write(dir.path().join("a.txt"), "after").expect("write");
+        let restored = rewind(dir.path(), root.path(), &checkpoint.commit).expect("rewind");
+
+        assert_eq!(
+            restored, 1,
+            "the checkpoint holds the one file the repo has"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).expect("read"),
+            "before",
+            "the checkpoint's content is back"
+        );
+    }
+
+    #[test]
+    fn rewind_accepts_a_unique_prefix_and_refuses_a_missing_id() {
+        let dir = repo();
+        let root = tempfile::tempdir().expect("root");
+        let checkpoint = checkpoint(dir.path(), root.path(), "s1", 1).expect("checkpoint");
+        let prefix = &checkpoint.commit[..8];
+
+        rewind(dir.path(), root.path(), prefix).expect("a unique prefix rewinds");
+
+        let missing = rewind(dir.path(), root.path(), "deadbeef");
+        assert!(
+            matches!(missing, Err(WorkspaceError::NoSuchCheckpoint(_))),
+            "an unknown id is named, not guessed"
+        );
     }
 
     #[test]
