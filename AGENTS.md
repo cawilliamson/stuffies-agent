@@ -34,6 +34,11 @@ The only things that appear in a workspace are the changes the turn was asked to
 files it edited, and the files its tools created on purpose. Anything else is a trace, and a
 trace is a bug, not a detail.
 
+The line is between what the agent writes and what the user's own commands write. A test
+suite a turn runs leaves `__pycache__/`, `target/`, `.pytest_cache/`; those belong to the
+toolchain that made them, and a project's ignore file already covers them. What the agent
+must never do is add a cache, a marker or a directory of its own.
+
 This is why the agent has no permission system (spec 8) and why the one guard it keeps is a
 checkpoint: the user's defence against a bad turn is that their directory is exactly as they
 left it, plus the edits they wanted. A recovery point that lives in their `.git` is not that.

@@ -598,6 +598,7 @@ $XDG_CONFIG_HOME/stuffies-agent/        user-authored, deployable from dotfiles
   workspaces/<slug>/AGENTS.md           project context, read only
 
 $XDG_STATE_HOME/stuffies-agent/         runtime state, never hand-edited
+  checkpoints/<repo-id>/                checkpoint store, one bare git dir per repo (8.4)
   sa.db  sa.db-wal  sa.db-shm           session store
   knowledge.db                          derived knowledge index (spec 11.2)
   knowledge/                            knowledge content (spec 11.1)
@@ -616,6 +617,11 @@ Read-only exceptions, both permitted because they predate sa:
 - nothing else. In particular `.git` is the user's: a checkpoint does not add a ref or an
   object to it (spec 8.4), so the workspace after a turn differs from the one before it only
   by the edits the turn was asked to make.
+
+Build output is not sa's. A turn that runs `cargo test` or `pytest` leaves `target/` or
+`__pycache__/` behind, and those belong to the toolchain that produced them, which is the
+same thing the user's own invocation would leave. What sa never does is add a cache, a
+marker file or a directory of its own.
 
 There is no `sa init`. There is nothing to initialise: the daemon creates its own
 directories on first use, and per-workspace config is optional.
