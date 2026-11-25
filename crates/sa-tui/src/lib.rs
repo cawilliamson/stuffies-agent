@@ -1295,6 +1295,16 @@ mod daemon_tests {
         );
     }
 
+    /// a command that lists rows answers once. pushing one entry per row reads as several
+    /// answers to one question, which is what /lsp used to do.
+    #[test]
+    fn a_command_that_lists_rows_answers_once() {
+        let rows = ["a: running".to_owned(), "b: missing".to_owned()];
+        let text = answer("nothing here", &rows);
+        assert_eq!(text, "a: running\nb: missing", "rows join into one message");
+        assert_eq!(answer("nothing here", &[]), "nothing here");
+    }
+
     #[tokio::test]
     async fn cd_is_an_alias_for_cwd() {
         let (mut client, server) = daemon(startup_replies());
@@ -1586,19 +1596,19 @@ async fn run_command(
         .await
         {
             Ok(list) => {
-                let rows = list.as_array().cloned().unwrap_or_default();
-                if rows.is_empty() {
-                    app.tab_mut()
-                        .push(app::Role::System, "no checkpoints in this workspace");
-                }
-                for row in rows {
-                    let id = row["id"].as_str().unwrap_or("?");
-                    let at = row["at"].as_u64().unwrap_or_default();
-                    app.tab_mut().push(
-                        app::Role::System,
-                        format!("{} · {}", app::short_id(id), app::when(at)),
-                    );
-                }
+                let entries = list.as_array().cloned().unwrap_or_default();
+                let rows: Vec<String> = entries
+                    .iter()
+                    .map(|row| {
+                        let id = row["id"].as_str().unwrap_or("?");
+                        let at = row["at"].as_u64().unwrap_or_default();
+                        format!("{} · {}", app::short_id(id), app::when(at))
+                    })
+                    .collect();
+                app.tab_mut().push(
+                    app::Role::System,
+                    answer("no checkpoints in this workspace", &rows),
+                );
             }
             Err(err) => app.tab_mut().push(app::Role::Error, err),
         },
@@ -1607,56 +1617,61 @@ async fn run_command(
         "/help" => {
             app.tab_mut().push(app::Role::System, app::HELP_COMMANDS);
         }
+        // one command is one answer: a reply is a single entry, however many rows it lists.
         "/lsp" => match rpc(client, "lsp.list", json!({})).await {
             Ok(list) => {
-                let rows = list["servers"].as_array().cloned().unwrap_or_default();
-                if rows.is_empty() {
-                    app.tab_mut()
-                        .push(app::Role::System, "no language servers configured");
-                }
-                for row in rows {
-                    let name = row["name"].as_str().unwrap_or("?");
-                    let state = match (
-                        row["installed"].as_bool().unwrap_or(false),
-                        row["running"].as_bool().unwrap_or(false),
-                    ) {
-                        (_, true) => "running",
-                        (true, false) => "installed",
-                        (false, false) => "missing",
-                    };
-                    app.tab_mut()
-                        .push(app::Role::System, format!("{name}: {state}"));
-                }
+                let servers = list["servers"].as_array().cloned().unwrap_or_default();
+                let rows: Vec<String> = servers
+                    .iter()
+                    .map(|row| {
+                        let name = row["name"].as_str().unwrap_or("?");
+                        let state = match (
+                            row["installed"].as_bool().unwrap_or(false),
+                            row["running"].as_bool().unwrap_or(false),
+                        ) {
+                            (_, true) => "running",
+                            (true, false) => "installed",
+                            (false, false) => "missing",
+                        };
+                        format!("{name}: {state}")
+                    })
+                    .collect();
+                app.tab_mut().push(
+                    app::Role::System,
+                    answer("no language servers configured", &rows),
+                );
             }
             Err(err) => app.tab_mut().push(app::Role::Error, err),
         },
         "/mcp" => match rpc(client, "mcp.list", json!({})).await {
             Ok(list) => {
-                let rows = list.as_array().cloned().unwrap_or_default();
-                if rows.is_empty() {
-                    app.tab_mut()
-                        .push(app::Role::System, "no mcp servers configured");
-                }
-                for row in rows {
-                    let name = row["name"].as_str().unwrap_or("?");
-                    let text = row["error"].as_str().map_or_else(
-                        || {
-                            let tools = row["tools"]
-                                .as_array()
-                                .map(|tools| {
-                                    tools
-                                        .iter()
-                                        .filter_map(|tool| tool.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                })
-                                .unwrap_or_default();
-                            format!("{name}: {tools}")
-                        },
-                        |error| format!("{name}: {error}"),
-                    );
-                    app.tab_mut().push(app::Role::System, text);
-                }
+                let servers = list.as_array().cloned().unwrap_or_default();
+                let rows: Vec<String> = servers
+                    .iter()
+                    .map(|row| {
+                        let name = row["name"].as_str().unwrap_or("?");
+                        row["error"].as_str().map_or_else(
+                            || {
+                                let tools = row["tools"]
+                                    .as_array()
+                                    .map(|tools| {
+                                        tools
+                                            .iter()
+                                            .filter_map(|tool| tool.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    })
+                                    .unwrap_or_default();
+                                format!("{name}: {tools}")
+                            },
+                            |error| format!("{name}: {error}"),
+                        )
+                    })
+                    .collect();
+                app.tab_mut().push(
+                    app::Role::System,
+                    answer("no mcp servers configured", &rows),
+                );
             }
             Err(err) => app.tab_mut().push(app::Role::Error, err),
         },
@@ -1748,6 +1763,17 @@ async fn run_command(
             .push(app::Role::System, "unknown command, /help"),
     }
     Ok(false)
+}
+
+/// a command's answer is one message. rows are joined rather than pushed one at a time: a
+/// command that lists ten servers is still one reply, and ten separate entries in the
+/// transcript read as ten answers to ten questions.
+fn answer(empty: &str, rows: &[String]) -> String {
+    if rows.is_empty() {
+        empty.to_owned()
+    } else {
+        rows.join("\n")
+    }
 }
 
 /// sets the session's reasoning effort on the daemon, and says so in the transcript. the
