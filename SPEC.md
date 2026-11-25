@@ -618,10 +618,9 @@ Read-only exceptions, both permitted because they predate sa:
   object to it (spec 8.4), so the workspace after a turn differs from the one before it only
   by the edits the turn was asked to make.
 
-Build output is not sa's. A turn that runs `cargo test` or `pytest` leaves `target/` or
-`__pycache__/` behind, and those belong to the toolchain that produced them, which is the
-same thing the user's own invocation would leave. What sa never does is add a cache, a
-marker file or a directory of its own.
+Build output is not sa's. A command a turn runs leaves whatever that toolchain writes, which
+is the same thing the user's own invocation would leave. What sa never does is add a cache,
+a marker file or a directory of its own.
 
 There is no `sa init`. There is nothing to initialise: the daemon creates its own
 directories on first use, and per-workspace config is optional.
