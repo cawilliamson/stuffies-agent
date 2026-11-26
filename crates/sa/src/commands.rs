@@ -510,9 +510,65 @@ enum Incoming {
     Interrupt,
 }
 
+async fn start_turn(client: &mut Client, session_id: &str, prompt: &str) -> Result<()> {
+    client
+        .call(
+            "turn.start",
+            json!({"session_id": session_id, "prompt": prompt, "detach": false}),
+        )
+        .await
+        .map_err(|e| format!("turn.start failed: {e}"))?;
+    Ok(())
+}
+
+/// `/goal <text>` starts the loop and hands back the prompt that opens it; `status` and `stop`
+/// report and close it. the daemon owns the loop, so a restart or a second client picks it up.
+async fn goal_command(client: &mut Client, session_id: &str, arg: &str) -> Result<Option<String>> {
+    let arg = arg.trim();
+    if arg.is_empty() || arg == "status" {
+        let status = client
+            .call("goal.status", json!({"session_id": session_id}))
+            .await
+            .map_err(|e| format!("goal.status failed: {e}"))?;
+        println!("{}", describe_goal(&status));
+        return Ok(None);
+    }
+    if arg == "stop" {
+        let status = client
+            .call("goal.stop", json!({"session_id": session_id}))
+            .await
+            .map_err(|e| format!("goal.stop failed: {e}"))?;
+        let summary = status["summary"].as_str().unwrap_or("stopped by you");
+        println!("sa: goal loop stopped · {summary}");
+        return Ok(None);
+    }
+    let status = client
+        .call("goal.set", json!({"session_id": session_id, "text": arg}))
+        .await
+        .map_err(|e| format!("goal.set failed: {e}"))?;
+    let max = status["max_iterations"].as_u64().unwrap_or_default();
+    println!("sa: goal set · stops after {max} nudges · /goal status · /goal stop");
+    Ok(Some(arg.to_owned()))
+}
+
+fn describe_goal(status: &Value) -> String {
+    if !status["active"].as_bool().unwrap_or(false) {
+        return status["summary"].as_str().map_or_else(
+            || "no active goal · /goal <text> to set one".to_owned(),
+            |summary| format!("no active goal · last result: {summary}"),
+        );
+    }
+    format!(
+        "goal: {}\n  nudges: {} of {}",
+        status["text"].as_str().unwrap_or_default(),
+        status["iterations"].as_u64().unwrap_or_default(),
+        status["max_iterations"].as_u64().unwrap_or_default()
+    )
+}
+
 fn help() {
     println!(
-        "\x1b[2mcommands: /cancel /checkpoints /cost /exit /help /model <id> /new \
+        "\x1b[2mcommands: /cancel /checkpoints /cost /exit /goal /help /model <id> /new \
          /reasoning /rewind <id> /sessions\n\
          ctrl-c cancels the running turn; at an idle prompt it exits.\x1b[0m"
     );
@@ -520,6 +576,127 @@ fn help() {
 
 // the tui it hands off to holds an `Rc` editor clipboard, so this future is not `Send`.
 // it is awaited by `main` directly and never spawned.
+#[allow(clippy::future_not_send)]
+/// what a slash command asked the loop to do next.
+enum Slash {
+    /// done; carry on reading input.
+    Handled,
+    /// leave the session, or once the running turn has finished.
+    Quit,
+    /// start a turn with this prompt.
+    Start(String),
+}
+
+/// every `/command`. it takes the loop's own state by reference, so a command can change the
+/// session (`/new`) or the renderer (`/reasoning`) and answer with what the loop should do.
+async fn slash_command(
+    client: &mut Client,
+    session_id: &mut String,
+    renderer: &mut Renderer,
+    command: &str,
+) -> Result<Slash> {
+    match command
+        .split_once(' ')
+        .map_or((command, ""), |(a, b)| (a, b.trim()))
+    {
+        ("exit" | "quit" | "q", _) => return Ok(Slash::Quit),
+        ("goal", arg) => {
+            if let Some(prompt) = goal_command(client, session_id.as_str(), arg).await? {
+                return Ok(Slash::Start(prompt));
+            }
+        }
+        ("help", _) => help(),
+        ("new", _) => {
+            *session_id = create_session(client).await?;
+            client
+                .call(
+                    "events.subscribe",
+                    json!({"session_id": session_id.as_str(), "from_seq": 0}),
+                )
+                .await
+                .map_err(|e| format!("subscribe failed: {e}"))?;
+            println!("sa: new session {}", session_id.as_str());
+        }
+        // the same connection, not a second one: a standalone run has exactly one backend
+        // and it is already held here.
+        ("sessions", _) => sessions_with(client).await?,
+        ("checkpoints", _) => {
+            let list = client
+                .call(
+                    "checkpoint.list",
+                    json!({"session_id": session_id.as_str()}),
+                )
+                .await
+                .map_err(|e| format!("checkpoint.list failed: {e}"))?;
+            let rows = list.as_array().cloned().unwrap_or_default();
+            if rows.is_empty() {
+                println!("no checkpoints in this workspace");
+            }
+            for row in rows {
+                let id = row["id"].as_str().unwrap_or("?");
+                let at = row["at"].as_u64().unwrap_or_default();
+                println!(
+                    "{} \u{b7} {}",
+                    sa_tui::app::short_id(id),
+                    sa_tui::app::when(at)
+                );
+            }
+        }
+        ("rewind", id) if !id.is_empty() => {
+            let done = client
+                .call(
+                    "checkpoint.rewind",
+                    json!({"session_id": session_id.as_str(), "id": id}),
+                )
+                .await
+                .map_err(|e| format!("checkpoint.rewind failed: {e}"))?;
+            let files = done["files"].as_u64().unwrap_or(0);
+            println!(
+                "rewound to {} \u{b7} {files} files restored",
+                sa_tui::app::short_id(id)
+            );
+        }
+        ("rewind", _) => println!("usage: /rewind <checkpoint id>"),
+        ("model", model) if !model.is_empty() => {
+            client
+                .call(
+                    "model.select",
+                    json!({"session_id": session_id.as_str(), "model": model}),
+                )
+                .await
+                .map_err(|e| format!("model.select failed: {e}"))?;
+            println!("sa: model set to {model}");
+        }
+        ("cancel", _) => {
+            client
+                .call("turn.cancel", json!({"session_id": session_id.as_str()}))
+                .await
+                .map_err(|e| format!("turn.cancel failed: {e}"))?;
+        }
+        ("cost", _) => {
+            let usage = client
+                .call("session.usage", json!({"session_id": session_id.as_str()}))
+                .await
+                .map_err(|e| format!("session.usage failed: {e}"))?;
+            println!(
+                "{} in ({} cached) / {} out",
+                usage["prompt_tokens"], usage["cached_tokens"], usage["completion_tokens"]
+            );
+        }
+        ("reasoning", arg) => {
+            renderer.show_reasoning = matches!(arg, "on" | "true" | "1");
+            println!(
+                "sa: reasoning {}",
+                if renderer.show_reasoning { "on" } else { "off" }
+            );
+        }
+        (other, _) => println!("sa: unknown command /{other}, try /help"),
+    }
+    Ok(Slash::Handled)
+}
+
+// the tui editor holds an `Rc` clipboard, so awaiting it makes this future non-send. it is
+// awaited from `main` on the current task and never spawned, so that costs nothing.
 #[allow(clippy::future_not_send)]
 pub async fn attach(
     standalone: bool,
@@ -620,102 +797,21 @@ pub async fn attach(
                     continue;
                 }
                 if let Some(command) = text.strip_prefix('/') {
-                    match command
-                        .split_once(' ')
-                        .map_or((command, ""), |(a, b)| (a, b.trim()))
+                    match slash_command(&mut client, &mut session_id, &mut renderer, command)
+                        .await?
                     {
-                        ("exit" | "quit" | "q", _) => {
+                        Slash::Handled => {}
+                        Slash::Quit => {
                             if turn_running {
                                 quit_after_turn = true;
                             } else {
                                 break;
                             }
                         }
-                        ("help", _) => help(),
-                        ("new", _) => {
-                            session_id = create_session(&mut client).await?;
-                            client
-                                .call(
-                                    "events.subscribe",
-                                    json!({"session_id": session_id, "from_seq": 0}),
-                                )
-                                .await
-                                .map_err(|e| format!("subscribe failed: {e}"))?;
-                            println!("sa: new session {session_id}");
+                        Slash::Start(prompt) => {
+                            start_turn(&mut client, &session_id, &prompt).await?;
+                            turn_running = true;
                         }
-                        // the same connection, not a second one: a standalone run has
-                        // exactly one backend and it is already held here.
-                        ("sessions", _) => sessions_with(&mut client).await?,
-                        ("checkpoints", _) => {
-                            let list = client
-                                .call("checkpoint.list", json!({"session_id": session_id}))
-                                .await
-                                .map_err(|e| format!("checkpoint.list failed: {e}"))?;
-                            let rows = list.as_array().cloned().unwrap_or_default();
-                            if rows.is_empty() {
-                                println!("no checkpoints in this workspace");
-                            }
-                            for row in rows {
-                                let id = row["id"].as_str().unwrap_or("?");
-                                let at = row["at"].as_u64().unwrap_or_default();
-                                println!(
-                                    "{} · {}",
-                                    sa_tui::app::short_id(id),
-                                    sa_tui::app::when(at)
-                                );
-                            }
-                        }
-                        ("rewind", id) if !id.is_empty() => {
-                            let done = client
-                                .call(
-                                    "checkpoint.rewind",
-                                    json!({"session_id": session_id, "id": id}),
-                                )
-                                .await
-                                .map_err(|e| format!("checkpoint.rewind failed: {e}"))?;
-                            let files = done["files"].as_u64().unwrap_or(0);
-                            println!(
-                                "rewound to {} · {files} files restored",
-                                sa_tui::app::short_id(id)
-                            );
-                        }
-                        ("rewind", _) => println!("usage: /rewind <checkpoint id>"),
-                        ("model", model) if !model.is_empty() => {
-                            client
-                                .call(
-                                    "model.select",
-                                    json!({"session_id": session_id, "model": model}),
-                                )
-                                .await
-                                .map_err(|e| format!("model.select failed: {e}"))?;
-                            println!("sa: model set to {model}");
-                        }
-                        ("cancel", _) => {
-                            client
-                                .call("turn.cancel", json!({"session_id": session_id}))
-                                .await
-                                .map_err(|e| format!("turn.cancel failed: {e}"))?;
-                        }
-                        ("cost", _) => {
-                            let usage = client
-                                .call("session.usage", json!({"session_id": session_id}))
-                                .await
-                                .map_err(|e| format!("session.usage failed: {e}"))?;
-                            println!(
-                                "{} in ({} cached) / {} out",
-                                usage["prompt_tokens"],
-                                usage["cached_tokens"],
-                                usage["completion_tokens"]
-                            );
-                        }
-                        ("reasoning", arg) => {
-                            renderer.show_reasoning = matches!(arg, "on" | "true" | "1");
-                            println!(
-                                "sa: reasoning {}",
-                                if renderer.show_reasoning { "on" } else { "off" }
-                            );
-                        }
-                        (other, _) => println!("sa: unknown command /{other}, try /help"),
                     }
                     continue;
                 }
@@ -732,17 +828,7 @@ pub async fn attach(
                     println!("\x1b[2m[steering the running turn]\x1b[0m");
                     continue;
                 }
-                client
-                    .call(
-                        "turn.start",
-                        json!({
-                            "session_id": session_id,
-                            "prompt": text,
-                            "detach": false,
-                        }),
-                    )
-                    .await
-                    .map_err(|e| format!("turn.start failed: {e}"))?;
+                start_turn(&mut client, &session_id, text).await?;
                 turn_running = true;
             }
             Incoming::Frame(frame) => {
@@ -758,6 +844,11 @@ pub async fn attach(
                             .and_then(Value::as_str)
                             .unwrap_or_default();
                         renderer.event(kind, &params["payload"]);
+                        // a turn the daemon started by itself, as a goal nudge does, is
+                        // still a turn: typing during it steers rather than queueing.
+                        if kind == "turn.started" {
+                            turn_running = true;
+                        }
                         if kind == "turn.completed" || kind == "turn.interrupted" {
                             turn_running = false;
                             if quit_after_turn {

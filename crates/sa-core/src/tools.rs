@@ -34,6 +34,12 @@ pub const MAX_WALKED: usize = 5000;
 /// how many matches a search returns.
 pub const MAX_MATCHES: usize = 500;
 
+/// the most items a plan may carry, so the rendering stays bounded.
+pub const MAX_TODOS: usize = 50;
+
+/// the states a plan item can be in.
+const TODO_STATES: [&str; 3] = ["completed", "in_progress", "pending"];
+
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("path escapes the workspace: {0}")]
@@ -111,9 +117,11 @@ impl ToolRegistry {
             }
             "edit" => self.edit(&args).await.map(text),
             "find" => self.find(&args).await.map(text),
+            "goal_done" => Self::goal_done(&args, None).map(text),
             "grep" => self.grep(&args).await.map(text),
             "lsp" => self.lsp_call(&args).await.map(text),
             "read" => self.read(&args).await.map(text),
+            "todo" => Self::todo(&args).map(text),
             "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
             "web_search" => {
                 let query = required(&args, "query")?;
@@ -445,6 +453,76 @@ impl ToolRegistry {
             exit_code: status.code(),
         })
     }
+
+    /// marks the active goal done. the whole effect is the event it records: the daemon
+    /// reads its own log to decide whether another nudge is owed, so there is no second copy
+    /// of "is this finished" that can disagree with the transcript.
+    fn goal_done(
+        args: &Value,
+        sink: Option<&dyn crate::agent::OutputSink>,
+    ) -> Result<String, ToolError> {
+        let summary = required(args, "summary")?.trim();
+        if summary.is_empty() {
+            return Err(ToolError::Args("summary is empty".to_owned()));
+        }
+        if let Some(sink) = sink {
+            sink.event(
+                sa_proto::session::kinds::GOAL_DONE,
+                &json!({"summary": summary}),
+            );
+        }
+        Ok(format!("goal marked done: {summary}"))
+    }
+
+    /// renders the plan the model is working to. nothing is stored: the model sends the
+    /// whole list each time and the transcript is where it lives, so a restart or a second
+    /// client costs nothing and there is no second copy of the truth.
+    fn todo(args: &Value) -> Result<String, ToolError> {
+        let items = args
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ToolError::Args("missing argument: items".to_owned()))?;
+        if items.len() > MAX_TODOS {
+            return Err(ToolError::Args(format!(
+                "at most {MAX_TODOS} items, got {}",
+                items.len()
+            )));
+        }
+        if items.is_empty() {
+            return Ok("no items".to_owned());
+        }
+        let mut out = String::new();
+        let mut done = 0usize;
+        for (index, item) in items.iter().enumerate() {
+            let content = item
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|content| !content.is_empty())
+                .ok_or_else(|| ToolError::Args(format!("item {index} has no content")))?;
+            let status = item
+                .get("status")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::Args(format!("item {index} has no status")))?;
+            let mark = match status {
+                "completed" => {
+                    done += 1;
+                    "[x]"
+                }
+                "in_progress" => "[~]",
+                "pending" => "[ ]",
+                other => {
+                    return Err(ToolError::Args(format!(
+                        "item {index}: status {other:?} is not one of {}",
+                        TODO_STATES.join(", ")
+                    )))
+                }
+            };
+            let _ = writeln!(out, "{}. {mark} {content}", index + 1);
+        }
+        let _ = write!(out, "{done}/{} done", items.len());
+        Ok(out)
+    }
 }
 
 impl ToolExecutor for ToolRegistry {
@@ -477,6 +555,14 @@ impl ToolExecutor for ToolRegistry {
                 json!({"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
             ),
             spec(
+                "goal_done",
+                "Signal that the active goal is genuinely achieved, or that impossibility is \
+                 confirmed. Give an honest one-line summary: exploratory progress (\"investigated\", \
+                 \"explored as far as possible\") is not completion. A blocker is a result too, so \
+                 say exactly what blocks it.",
+                json!({"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}),
+            ),
+            spec(
                 "grep",
                 &format!(
                     "Search file contents with a regular expression. Walks at most {MAX_WALKED} \
@@ -506,6 +592,17 @@ impl ToolExecutor for ToolRegistry {
                     MAX_READ_BYTES / 1024
                 ),
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "hashline": {"type": "boolean"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, "required": ["path"]}),
+            ),
+            spec(
+                "todo",
+                &format!(
+                    "Record the plan for a multi-step task and get it back as a checklist. Send \
+                     the whole list every time: it replaces the previous one. `items` is a list \
+                     of `{{content, status}}` where status is one of: `completed`, \
+                     `in_progress`, `pending`. Keep at most one item `in_progress`. At most \
+                     {MAX_TODOS} items."
+                ),
+                json!({"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string"}}, "required": ["content", "status"]}}}, "required": ["items"]}),
             ),
             spec(
                 "web_fetch",
@@ -550,6 +647,13 @@ impl ToolExecutor for ToolRegistry {
                 return self
                     .bash_streaming(&args, &call.id, sink)
                     .await
+                    .map_err(|e| e.to_string());
+            }
+            // a tool whose effect is an event rather than output needs the log the sink writes to.
+            if call.name == "goal_done" {
+                let args = parse_args(&call.arguments).map_err(|e| e.to_string())?;
+                return Self::goal_done(&args, Some(sink))
+                    .map(text)
                     .map_err(|e| e.to_string());
             }
             self.call(&call).await.map_err(|e| e.to_string())

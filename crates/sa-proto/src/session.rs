@@ -213,6 +213,11 @@ pub mod kinds {
     /// the context files the session's working directory provides.
     pub const CONTEXT_LOADED: &str = "context.loaded";
     pub const ERROR: &str = "error";
+    /// the goal loop: what was asked for, each nudge, and how it ended.
+    pub const GOAL_DONE: &str = "goal.done";
+    pub const GOAL_NUDGED: &str = "goal.nudged";
+    pub const GOAL_SET: &str = "goal.set";
+    pub const GOAL_STOPPED: &str = "goal.stopped";
     pub const LLM_COMPLETED: &str = "llm.completed";
     pub const LLM_DELTA: &str = "llm.delta";
     pub const LLM_REASONING: &str = "llm.reasoning";

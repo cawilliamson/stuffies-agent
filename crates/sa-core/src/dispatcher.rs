@@ -107,6 +107,9 @@ impl Dispatcher {
             "events.replay" => self.events_replay(&params),
             "events.subscribe" => self.events_subscribe(conn, &params),
             "events.unsubscribe" => self.events_unsubscribe(&params),
+            "goal.set" => self.goal_set(&params),
+            "goal.status" => self.goal_status(&params),
+            "goal.stop" => self.goal_stop(&params),
             "handoff.accept" | "handoff.export" | "handoff.import" => Err(RpcError::new(
                 code::NOT_IMPLEMENTED,
                 "handoff arrives at v4.0",
@@ -436,6 +439,41 @@ impl Dispatcher {
                 })
             })
             .collect::<Vec<_>>()))
+    }
+
+    /// sets the goal a session keeps working toward, and hands back the loop's state.
+    fn goal_set(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let text = string_field(params, "text")?;
+        let max = params
+            .get("max_iterations")
+            .and_then(Value::as_u64)
+            .map_or(Manager::GOAL_MAX_NUDGES, |asked| {
+                u32::try_from(asked).unwrap_or(u32::MAX)
+            });
+        let status = self
+            .manager
+            .set_goal(&session_id, &text, max)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!(status))
+    }
+
+    fn goal_status(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let status = self
+            .manager
+            .goal_status(&session_id)
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!(status))
+    }
+
+    fn goal_stop(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = string_field(params, "session_id")?;
+        let status = self
+            .manager
+            .stop_goal(&session_id, "user")
+            .map_err(crate::manager::ManagerError::into_rpc)?;
+        Ok(json!(status))
     }
 
     #[allow(clippy::unnecessary_wraps)]

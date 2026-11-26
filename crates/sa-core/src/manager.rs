@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use sa_proto::error::{code, RpcError};
 use sa_proto::session::kinds;
 use sa_proto::session::{
-    AttachResult, CreateSessionResult, ReplayResult, SessionState, SessionSummary, TurnStartResult,
-    TurnStatus, Usage,
+    AttachResult, CreateSessionResult, Event, ReplayResult, SessionState, SessionSummary,
+    TurnStartResult, TurnStatus, Usage,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -117,6 +117,16 @@ struct Inner {
     subs: HashMap<u64, Subscription>,
     turns: HashMap<String, RunningTurn>,
     queues: HashMap<String, Queue>,
+}
+
+/// what the goal loop knows about a session, read back from its own log.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct GoalStatus {
+    pub active: bool,
+    pub text: String,
+    pub iterations: u32,
+    pub max_iterations: u32,
+    pub summary: Option<String>,
 }
 
 /// what a caller asks a turn to be.
@@ -876,7 +886,7 @@ impl Manager {
                     if let Ok(mut inner) = self.inner.lock() {
                         inner.turns.remove(&session_id);
                     }
-                    self.continue_with_follow_up(&session_id, detach);
+                    self.continue_with_follow_up(&session_id, detach, false);
                     return;
                 }
             }
@@ -960,11 +970,11 @@ impl Manager {
                     "cause": format!("timeout after {}s", self.config.turn_timeout_secs),
                 }),
             );
-            self.continue_with_follow_up(&session_id, detach);
+            self.continue_with_follow_up(&session_id, detach, false);
             return;
         };
 
-        match outcome {
+        let completed = match outcome {
             Ok(outcome) => {
                 let _ = self.append(
                     &session_id,
@@ -985,6 +995,7 @@ impl Manager {
                         },
                     }),
                 );
+                true
             }
             Err(err) => {
                 let _ = self.append(
@@ -992,11 +1003,12 @@ impl Manager {
                     kinds::TURN_INTERRUPTED,
                     &json!({"turn_id": turn_id, "cause": err.to_string()}),
                 );
+                false
             }
-        }
+        };
 
         // a queued follow-up continues the session as its next turn (spec 3.7).
-        self.continue_with_follow_up(&session_id, detach);
+        self.continue_with_follow_up(&session_id, detach, completed);
     }
 
     /// hands a message to the turn that is already running, rather than refusing it.
@@ -1137,7 +1149,16 @@ impl Manager {
     }
 
     /// ends the turn, and runs whatever is still queued as the session's next one.
-    fn continue_with_follow_up(self: &Arc<Self>, session_id: &str, detach: bool) {
+    ///
+    /// `completed` says whether the turn actually finished. a cancel, a timeout or a failed
+    /// checkpoint is not a reason to press on with a goal, so a nudge is only queued after a
+    /// turn that ran to its own end.
+    fn continue_with_follow_up(self: &Arc<Self>, session_id: &str, detach: bool, completed: bool) {
+        if completed {
+            if let Some(nudge) = self.nudge_goal(session_id) {
+                let _ = self.enqueue(session_id, &nudge, true);
+            }
+        }
         if let Some(prompt) = self.settle_turn(session_id) {
             let turn = NewTurn {
                 detach,
@@ -1172,6 +1193,109 @@ impl Manager {
                 .map_or_else(crate::store::now_seconds, |(_, since)| *since),
             turn_id: running.map(|(turn_id, _)| turn_id),
         }
+    }
+
+    // ---- goals ------------------------------------------------------
+
+    /// a goal that has not converged in this many nudges is not going to. the loop stops and
+    /// says so rather than spending the rest of the session circling the same wall.
+    pub const GOAL_MAX_NUDGES: u32 = 20;
+
+    /// the goal loop's state, derived from the log rather than held beside it: the last thing
+    /// that was asked for, and whatever ended it afterwards.
+    pub fn goal_status(&self, session_id: &str) -> Result<GoalStatus, ManagerError> {
+        let Some(set) = self
+            .store
+            .last_event_of_kind(session_id, &[kinds::GOAL_SET])?
+        else {
+            return Ok(GoalStatus::default());
+        };
+        let done = self
+            .store
+            .last_event_of_kind(session_id, &[kinds::GOAL_DONE])?;
+        let stopped = self
+            .store
+            .last_event_of_kind(session_id, &[kinds::GOAL_STOPPED])?;
+        let nudged = self
+            .store
+            .last_event_of_kind(session_id, &[kinds::GOAL_NUDGED])?;
+
+        // only an event newer than the goal itself belongs to it; one from a goal that was
+        // already closed is history, not state.
+        let after = |event: &Option<Event>| event.as_ref().is_some_and(|event| event.seq > set.seq);
+        let mut status = GoalStatus {
+            active: !after(&done) && !after(&stopped),
+            text: set.payload["text"].as_str().unwrap_or_default().to_owned(),
+            max_iterations: u32::try_from(
+                set.payload["max_iterations"]
+                    .as_u64()
+                    .unwrap_or_else(|| u64::from(Self::GOAL_MAX_NUDGES)),
+            )
+            .unwrap_or(Self::GOAL_MAX_NUDGES),
+            ..GoalStatus::default()
+        };
+        if let Some(nudge) = nudged.as_ref().filter(|event| event.seq > set.seq) {
+            let spent = nudge.payload["iteration"].as_u64().unwrap_or_default();
+            status.iterations = u32::try_from(spent).unwrap_or(u32::MAX);
+        }
+        if let Some(done) = done.as_ref().filter(|event| event.seq > set.seq) {
+            status.summary = done.payload["summary"].as_str().map(str::to_owned);
+        }
+        Ok(status)
+    }
+
+    /// asks a session to keep working until `goal_done`. nothing is started here: the caller
+    /// opens the turn, and the loop only ever continues a turn that ended on its own.
+    pub fn set_goal(
+        &self,
+        session_id: &str,
+        text: &str,
+        max_iterations: u32,
+    ) -> Result<GoalStatus, ManagerError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(ManagerError::Rpc(RpcError::new(
+                code::INVALID_PARAMS,
+                "a goal needs text",
+            )));
+        }
+        self.append(
+            session_id,
+            kinds::GOAL_SET,
+            &json!({"text": text, "max_iterations": max_iterations.max(1)}),
+        )?;
+        self.goal_status(session_id)
+    }
+
+    /// closes the loop. the reason is recorded so the log says who ended it.
+    pub fn stop_goal(&self, session_id: &str, reason: &str) -> Result<GoalStatus, ManagerError> {
+        self.append(session_id, kinds::GOAL_STOPPED, &json!({"reason": reason}))?;
+        self.goal_status(session_id)
+    }
+
+    /// queues the next nudge for an open goal and hands back its text. the count comes from
+    /// the log, so a nudge that was already spent is never spent twice, even across a restart.
+    fn nudge_goal(&self, session_id: &str) -> Option<String> {
+        let status = self.goal_status(session_id).ok()?;
+        if !status.active {
+            return None;
+        }
+        if status.iterations >= status.max_iterations {
+            let _ = self.append(
+                session_id,
+                kinds::GOAL_STOPPED,
+                &json!({"reason": "exhausted"}),
+            );
+            return None;
+        }
+        let iteration = status.iterations.saturating_add(1);
+        self.append(
+            session_id,
+            kinds::GOAL_NUDGED,
+            &json!({"iteration": iteration, "max_iterations": status.max_iterations}),
+        )
+        .ok()?;
+        Some(nudge_text(&status.text, iteration, status.max_iterations))
     }
 
     // ---- compaction --------------------------------------------------
@@ -1434,6 +1558,34 @@ impl EventSink for TurnSink {
     fn take_steering(&self) -> Option<String> {
         self.manager.take_steering(&self.session_id)
     }
+}
+
+/// what the loop says when the agent has stopped without finishing. the first nudge is plain;
+/// later ones carry the count, name the failure mode, and say when the loop gives up.
+fn nudge_text(goal: &str, iteration: u32, max: u32) -> String {
+    let mut out = String::new();
+    if iteration > 1 {
+        let _ = write!(out, "Nudge {iteration} of {max}. ");
+    }
+    let _ = write!(out, "Keep working on the goal: {goal}\n\n");
+    out.push_str(
+        "Do not report exploratory progress (\"investigated\", \"explored as far as possible\") \
+         as an outcome. Either keep working toward the goal, or -- when it is genuinely solved \
+         -- call the goal_done tool with a one-line summary of the result. If a blocker makes \
+         the goal impossible, call goal_done and say exactly what blocks it.\n",
+    );
+    if iteration > 1 {
+        out.push_str(
+            "If the same approach has already failed, change it rather than repeating it.\n",
+        );
+    }
+    if max.saturating_sub(iteration) <= 2 {
+        let _ = writeln!(
+            out,
+            "The loop stops after {max} nudges; this is one of the last."
+        );
+    }
+    out
 }
 
 /// the last component of a working directory: what a session is called when nothing has

@@ -78,6 +78,9 @@ pub trait ToolExecutor: Send + Sync {
 /// command working rather than a blank frame until it ends.
 pub trait OutputSink: Send + Sync {
     fn output(&self, call_id: &str, chunk: &str);
+    /// a tool that has something to record beyond its output, like the end of a goal. a
+    /// sink that only carries text keeps the default and loses nothing.
+    fn event(&self, _kind: &str, _payload: &Value) {}
 }
 
 /// a sink that keeps nothing, for a call nobody is watching live.
@@ -95,6 +98,10 @@ struct ToolStream<'a> {
 }
 
 impl OutputSink for ToolStream<'_> {
+    fn event(&self, kind: &str, payload: &Value) {
+        let _ = self.sink.append(kind, payload);
+    }
+
     fn output(&self, call_id: &str, chunk: &str) {
         // a dropped chunk costs a line of the live view, never the recorded output: the
         // tool's result is appended whole when it finishes.

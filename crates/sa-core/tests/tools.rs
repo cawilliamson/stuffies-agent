@@ -723,3 +723,74 @@ async fn an_edit_reports_what_the_language_server_says() {
         outcome.output
     );
 }
+
+#[tokio::test]
+async fn todo_renders_the_plan() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let out = run(
+        &reg,
+        "todo",
+        json!({"items": [
+            {"content": "read the registry", "status": "completed"},
+            {"content": "add the tool", "status": "in_progress"},
+            {"content": "write the test", "status": "pending"}
+        ]}),
+    )
+    .await
+    .expect("todo");
+    assert!(out.contains("1. [x] read the registry"), "{out}");
+    assert!(out.contains("2. [~] add the tool"), "{out}");
+    assert!(out.contains("3. [ ] write the test"), "{out}");
+    assert!(out.contains("1/3 done"), "{out}");
+}
+
+#[tokio::test]
+async fn todo_clears_on_an_empty_list() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let out = run(&reg, "todo", json!({"items": []})).await.expect("todo");
+    assert_eq!(out, "no items");
+}
+
+#[tokio::test]
+async fn todo_refuses_a_status_it_does_not_know() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let err = run(
+        &reg,
+        "todo",
+        json!({"items": [{"content": "x", "status": "doing"}]}),
+    )
+    .await
+    .expect_err("bad status");
+    assert!(err.contains("doing"), "{err}");
+    assert!(err.contains("in_progress"), "{err}");
+}
+
+#[tokio::test]
+async fn todo_refuses_an_item_without_content() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let err = run(
+        &reg,
+        "todo",
+        json!({"items": [{"content": "  ", "status": "pending"}]}),
+    )
+    .await
+    .expect_err("empty content");
+    assert!(err.contains("item 0 has no content"), "{err}");
+}
+
+#[tokio::test]
+async fn todo_is_reachable_by_name_and_capped() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    let too_many: Vec<serde_json::Value> = (0..=sa_core::tools::MAX_TODOS)
+        .map(|i| json!({"content": format!("item {i}"), "status": "pending"}))
+        .collect();
+    let err = run(&reg, "todo", json!({"items": too_many}))
+        .await
+        .expect_err("over the cap");
+    assert!(err.contains("at most"), "{err}");
+}
