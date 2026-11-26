@@ -339,6 +339,7 @@ where
             Action::None => {}
             Action::Quit => break,
             Action::NextTab => app.next_tab(),
+            Action::PrevTab => app.prev_tab(),
             Action::SwitchTab(index) => app.switch_tab(index),
             Action::NewTab => {
                 // a new tab starts where the current one works, not where the process

@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 budget=50
-allowlist="sa-tui/src/lib.rs::run sa-core/src/llm.rs::stream"
+allowlist="sa-tui/src/app.rs::apply_event sa-tui/src/lib.rs::run sa-core/src/llm.rs::stream"
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT

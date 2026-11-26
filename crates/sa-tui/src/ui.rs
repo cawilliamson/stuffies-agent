@@ -53,6 +53,7 @@ pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         });
     }
 
+    let hovered = app.scrollbar_hovered;
     let tab = app.tab_mut();
     let content = tab
         .cache
@@ -80,7 +81,10 @@ pub fn transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
     let scroll = tab.scroll;
     let span = tab.max_scroll;
-    let visible = tab.scroll_touched.is_some() && span > 0;
+    // the bar is a hint that fades after a scroll, but a bar under the pointer is what the
+    // pointer is aiming at: while it is hovered it stays up, however long the operator
+    // takes to click it.
+    let visible = span > 0 && (tab.scroll_touched.is_some() || hovered);
     frame.render_widget(Paragraph::new(content).scroll((scroll, 0)), area);
 
     if visible {
@@ -171,16 +175,20 @@ fn tab_text(app: &App, index: usize, cap: usize) -> String {
     fit_label(&format!("{prefix}{name}"), cap)
 }
 
-/// how wide a label may be, so the active tab always fits beside its markers. the marquee
-/// measures against the same number, or a name would scroll that already fits.
+/// how wide a label may be, so the active tab always fits beside its markers.
+///
+/// the marquee measures against the same number, or a name would scroll that already fits.
+/// the width it takes is the whole strip, including the new-tab button's cells.
 #[must_use]
-pub fn tab_label_cap(room: usize) -> usize {
+pub fn tab_label_cap(width: usize) -> usize {
+    let room = width.saturating_sub(NEW_TAB_CELLS);
     TAB_LABEL_MAX.min(room.saturating_sub(6).max(8))
 }
 
-/// the cells one tab occupies: its chip padding and its text, before any divider.
+/// the cells one tab occupies: its chip padding, its text and its close button, before any
+/// divider.
 fn tab_cells(label: &str) -> usize {
-    label.chars().count() + 2
+    label.chars().count() + CLOSE_CELLS
 }
 
 /// the cells a run of tabs needs, including the divider between each and the marker on
@@ -292,20 +300,28 @@ fn suggestion_list(frame: &mut Frame<'_>, above: Rect, title: &str, items: Vec<S
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// one cell run in the tab strip: a tab's chip, or one of the markers that says more tabs
-/// are hidden behind an edge.
+/// the glyph a tab's close button is drawn with, and the cells it and the new-tab button
+/// spend on the strip.
+pub const CLOSE_GLYPH: &str = "\u{2715}";
+const CLOSE_CELLS: usize = 4;
+const NEW_TAB: &str = "+";
+const NEW_TAB_CELLS: usize = 2;
+
+/// one cell run in the tab strip: a tab's chip, its close button, the new-tab button, or one
+/// of the markers that says more tabs are hidden behind an edge.
 struct Chip {
     text: String,
     style: Style,
-    /// the tab this chip draws, when it draws one.
-    tab: Option<usize>,
+    /// what a click on this run does, when it does anything.
+    hit: Option<Hit>,
 }
 
 /// the session tab strip's chips. it slides to keep the active tab visible and marks that
 /// tabs are hidden on either side, the way a browser does.
 fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
-    let room = usize::from(width);
-    let cap = tab_label_cap(room);
+    // the new-tab button keeps its cells at the right edge whatever the tabs need.
+    let room = usize::from(width).saturating_sub(NEW_TAB_CELLS);
+    let cap = tab_label_cap(usize::from(width));
     let labels: Vec<String> = (0..app.tabs.len())
         .map(|index| tab_text(app, index, cap))
         .collect();
@@ -317,7 +333,7 @@ fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
         chips.push(Chip {
             text: "\u{2039}".to_owned(),
             style: Style::default().fg(app::FAINT),
-            tab: None,
+            hit: None,
         });
     }
     for (offset, label) in labels[start..end].iter().enumerate() {
@@ -325,21 +341,18 @@ fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
             chips.push(Chip {
                 text: "\u{2502}".to_owned(),
                 style: Style::default().fg(app::FAINT),
-                tab: None,
+                hit: None,
             });
         }
+        let index = start + offset;
         // the chip against a marker loses the padding the marker already provides, so the
         // strip reads `\u{2039}12 ... 18\u{203a}` rather than `\u{2039} 12 ... 18 \u{203a}`.
         let first = offset == 0 && start > 0;
-        let last = start + offset + 1 == end && end < labels.len();
-        let text = match (first, last) {
-            (true, true) => label.clone(),
-            (true, false) => format!("{label} "),
-            (false, true) => format!(" {label}"),
-            (false, false) => format!(" {label} "),
-        };
-        let index = start + offset;
-        let style = if index == app.active {
+        let last = index + 1 == end && end < labels.len();
+        let lead = if first { "" } else { " " };
+        let trail = if last { "" } else { " " };
+        let active = index == app.active;
+        let style = if active {
             Style::default()
                 .fg(Color::Rgb(0x10, 0x14, 0x1a))
                 .bg(app::ACCENT)
@@ -348,18 +361,45 @@ fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
             Style::default().fg(app::DIM)
         };
         chips.push(Chip {
-            text,
+            text: format!("{lead}{label}"),
             style,
-            tab: Some(index),
+            hit: Some(Hit::Tab(index)),
+        });
+        // the close button belongs to the tab it sits in, so a click closes that tab rather
+        // than switching to it.
+        chips.push(Chip {
+            text: format!(" {CLOSE_GLYPH}{trail}"),
+            style: if active {
+                style
+            } else {
+                Style::default().fg(app::FAINT)
+            },
+            hit: Some(Hit::CloseTab(index)),
         });
     }
     if end < labels.len() {
         chips.push(Chip {
             text: "\u{203a}".to_owned(),
             style: Style::default().fg(app::FAINT),
-            tab: None,
+            hit: None,
         });
     }
+    // the new-tab button sits at the strip's right edge, with the cells it needs kept clear
+    // of the tabs above.
+    let drawn: usize = chips.iter().map(|chip| chip.text.chars().count()).sum();
+    let pad = room.saturating_sub(drawn);
+    if pad > 0 {
+        chips.push(Chip {
+            text: " ".repeat(pad),
+            style: Style::default(),
+            hit: None,
+        });
+    }
+    chips.push(Chip {
+        text: format!(" {NEW_TAB}"),
+        style: Style::default().fg(app::FAINT),
+        hit: Some(Hit::NewTab),
+    });
     chips
 }
 
@@ -372,15 +412,15 @@ pub fn tab_bar(app: &App, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// the column range of each drawn tab, so a click lands on the tab it hit.
+/// the column range of each clickable run in the strip, so a click lands on the thing it hit.
 #[must_use]
-pub fn tab_hits(app: &App, width: u16) -> Vec<(u16, u16, usize)> {
+pub fn tab_hits(app: &App, width: u16) -> Vec<(u16, u16, Hit)> {
     let mut hits = Vec::new();
     let mut column = 0u16;
     for chip in tab_chips(app, width) {
         let cells = u16::try_from(chip.text.chars().count()).unwrap_or(0);
-        if let Some(tab) = chip.tab {
-            hits.push((column, column.saturating_add(cells), tab));
+        if let Some(hit) = chip.hit {
+            hits.push((column, column.saturating_add(cells), hit));
         }
         column = column.saturating_add(cells);
     }
@@ -893,6 +933,10 @@ pub fn regions(app: &App, area: Rect) -> Regions {
 pub enum Hit {
     /// the tab at this index.
     Tab(usize),
+    /// the close button inside the tab at this index.
+    CloseTab(usize),
+    /// the button that opens a new tab.
+    NewTab,
     /// the picker item at this index.
     Picker(usize),
     /// the scrollbar column, which can be grabbed and dragged.
@@ -947,7 +991,7 @@ pub fn hit(app: &App, area: Rect, column: u16, row: u16) -> Option<Hit> {
         return tab_hits(app, screen.tabs.width)
             .into_iter()
             .find(|(start, end, _)| within >= *start && within < *end)
-            .map(|(_, _, tab)| Hit::Tab(tab));
+            .map(|(_, _, hit)| hit);
     }
     if screen.transcript.contains(point) {
         return Some(Hit::Transcript);

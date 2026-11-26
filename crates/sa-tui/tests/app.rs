@@ -91,6 +91,39 @@ fn shift_tab_requests_the_next_tab() {
         app.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
         Action::NextTab
     );
+    // ctrl+tab is the same next tab, reported as a tab with the modifier.
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL)),
+        Action::NextTab
+    );
+    // and ctrl+shift+tab walks the same strip backwards.
+    assert_eq!(
+        app.on_key(KeyEvent::new(
+            KeyCode::Tab,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )),
+        Action::PrevTab
+    );
+    assert_eq!(
+        app.on_key(KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )),
+        Action::PrevTab
+    );
+}
+
+#[test]
+fn previous_tab_wraps_to_the_last_one() {
+    let mut app = App::new("first", "m");
+    app.add_tab("second", "m");
+    app.add_tab("third", "m");
+    app.prev_tab();
+    assert_eq!(app.active, 1);
+    app.prev_tab();
+    assert_eq!(app.active, 0);
+    app.prev_tab();
+    assert_eq!(app.active, 2, "the walk wraps rather than sticking");
 }
 
 #[test]
@@ -98,8 +131,10 @@ fn ctrl_t_opens_and_ctrl_w_closes() {
     let mut app = App::new("s", "m");
     assert_eq!(app.on_key(ctrl('t')), Action::NewTab);
     assert_eq!(app.on_key(ctrl('w')), Action::CloseTab);
-    // the shifted forms stay accepted as aliases.
+    // ctrl+n is the same new tab, and the shifted forms stay accepted as aliases.
+    assert_eq!(app.on_key(ctrl('n')), Action::NewTab);
     assert_eq!(app.on_key(ctrl_shift('T')), Action::NewTab);
+    assert_eq!(app.on_key(ctrl_shift('N')), Action::NewTab);
 }
 
 #[test]
@@ -1467,6 +1502,51 @@ fn a_short_transcript_never_shows_a_scrollbar() {
 }
 
 #[test]
+fn hovering_the_scrollbar_keeps_it_up_however_long_the_pointer_rests() {
+    let mut app = App::new("session-abcdef", "m");
+    for line in 0..60 {
+        app.tab_mut().push(Role::System, format!("line {line}"));
+    }
+    // the bar is not up because of a scroll: only the pointer holds it.
+    app.tab_mut().scroll_touched = None;
+    let area = screen_area(80, 12);
+    let _ = screen(&mut app, 80, 12);
+    let track = sa_tui::ui::scrollbar_track(&app, area).expect("a track to hover");
+    app.on_mouse(
+        area,
+        mouse(
+            crossterm::event::MouseEventKind::Moved,
+            track.x,
+            track.y + 1,
+        ),
+    );
+    let hovered = screen(&mut app, 80, 12);
+    assert!(
+        hovered.contains('\u{2503}'),
+        "a hovered bar is up:\n{hovered}"
+    );
+
+    // it stays up past the hold the scroll sets, because the pointer is still on it.
+    app.tab_mut()
+        .tick_at(std::time::Instant::now() + std::time::Duration::from_secs(5));
+    let later = screen(&mut app, 80, 12);
+    assert!(
+        later.contains('\u{2503}'),
+        "no fade under the pointer:\n{later}"
+    );
+
+    // leaving the bar lets it go.
+    app.on_mouse(area, mouse(crossterm::event::MouseEventKind::Moved, 10, 6));
+    app.tab_mut()
+        .tick_at(std::time::Instant::now() + std::time::Duration::from_secs(5));
+    let gone = screen(&mut app, 80, 12);
+    assert!(
+        !gone.contains('\u{2503}'),
+        "the bar clears once left:\n{gone}"
+    );
+}
+
+#[test]
 fn the_picker_routes_keys_and_returns_the_chosen_session() {
     let mut app = App::new("session-abcdef", "m");
     app.open_picker(
@@ -1968,12 +2048,18 @@ fn the_tab_strip_never_draws_wider_than_its_room() {
 fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
     let mut app = many_tabs();
 
-    // at the last tab the strip ends against the right edge, with no dead margin after it.
+    // at the last tab the run of tabs ends against the new-tab button, with nothing hidden
+    // behind the right edge.
     app.switch_tab(29);
     let row = strip(&mut app, 80);
     assert!(
-        row.trim_end().ends_with("tab30"),
-        "the strip must end on the last tab, not leave a gap:\n[{row}]"
+        row.contains(&format!("tab30 {}", sa_tui::ui::CLOSE_GLYPH))
+            && row.trim_end().ends_with('+'),
+        "the strip must end on the last tab and its button:\n[{row}]"
+    );
+    assert!(
+        !row.contains('\u{203a}'),
+        "nothing is hidden to the right:\n[{row}]"
     );
 
     // and at the first tab it starts against the left edge.
@@ -1986,16 +2072,66 @@ fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
 }
 
 #[test]
-fn the_tab_strip_has_no_new_tab_button() {
+fn the_tab_strip_offers_a_new_tab_button() {
     let mut app = many_tabs();
     for active in [0usize, 14, 29] {
         app.switch_tab(active);
         let row = strip(&mut app, 80);
         assert!(
-            !row.contains('+'),
-            "no dead affordance in the strip:\n{row}"
+            row.trim_end().ends_with('+'),
+            "the new-tab button sits at the right edge:\n{row}"
         );
     }
+}
+
+#[test]
+fn a_click_on_the_new_tab_button_opens_one() {
+    let mut app = many_tabs();
+    let (start, end, _) = *tab_hits(&app, 100)
+        .iter()
+        .find(|(_, _, hit)| *hit == sa_tui::ui::Hit::NewTab)
+        .expect("a new-tab button");
+    let column = start + (end - start) / 2;
+    let action = app.on_mouse(
+        screen_area(100, 24),
+        mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            0,
+        ),
+    );
+    assert_eq!(action, Action::NewTab);
+}
+
+#[test]
+fn every_tab_carries_a_close_button_that_closes_that_tab() {
+    let mut app = App::new("session-abcdef", "m");
+    app.add_tab("session-second", "m");
+    app.switch_tab(0);
+    assert!(
+        strip(&mut app, 100).contains(sa_tui::ui::CLOSE_GLYPH),
+        "a close button"
+    );
+
+    // the button on the second tab closes the second tab, not the one that was active.
+    let (start, end, _) = *tab_hits(&app, 100)
+        .iter()
+        .find(|(_, _, hit)| *hit == sa_tui::ui::Hit::CloseTab(1))
+        .expect("a close button on tab 2");
+    let column = start + (end - start) / 2;
+    let action = app.on_mouse(
+        screen_area(100, 24),
+        mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            0,
+        ),
+    );
+    assert_eq!(action, Action::CloseTab);
+    assert_eq!(
+        app.active, 1,
+        "the tab under the button is the one that goes"
+    );
 }
 
 #[test]
@@ -2013,14 +2149,16 @@ fn the_overflow_markers_carry_no_numbers() {
             && trimmed.chars().nth(1).is_some_and(char::is_alphanumeric),
         "the left marker must be bare and flush against a name:\n{row}"
     );
+    // the chip ends with its close button, so the marker abuts the bracket rather than a
+    // letter; what matters is that no number is wedged against it.
     assert!(
-        trimmed.ends_with('\u{203a}')
+        trimmed.contains("\u{203a}")
             && trimmed
-                .chars()
-                .rev()
-                .nth(1)
-                .is_some_and(char::is_alphanumeric),
-        "the right marker must be bare and flush against a name:\n{row}"
+                .split('\u{203a}')
+                .next()
+                .and_then(|before| before.chars().next_back())
+                .is_some_and(|edge| !edge.is_ascii_digit() && edge != ' '),
+        "the right marker must be bare and flush against a chip:\n{row}"
     );
 }
 
@@ -3392,9 +3530,9 @@ fn a_click_on_a_tab_switches_to_it() {
 
     // the second chip is somewhere on the strip; find the column it occupies.
     let hits = tab_hits(&app, 100);
-    let (start, end, index) = *hits
+    let (start, end, _) = *hits
         .iter()
-        .find(|(_, _, tab)| *tab == 1)
+        .find(|(_, _, hit)| *hit == sa_tui::ui::Hit::Tab(1))
         .expect("a chip for tab 2");
     assert!(end > start);
     let column = start + (end - start) / 2;
@@ -3407,7 +3545,7 @@ fn a_click_on_a_tab_switches_to_it() {
             0,
         ),
     );
-    assert_eq!(action, Action::SwitchTab(index));
+    assert_eq!(action, Action::SwitchTab(1));
 }
 
 #[test]
@@ -3419,7 +3557,7 @@ fn a_middle_click_on_a_tab_closes_it() {
     let hits = tab_hits(&app, 100);
     let (start, end, _) = *hits
         .iter()
-        .find(|(_, _, tab)| *tab == 1)
+        .find(|(_, _, hit)| *hit == sa_tui::ui::Hit::Tab(1))
         .expect("a chip for tab 2");
     let column = start + (end - start) / 2;
 
@@ -3855,17 +3993,16 @@ fn the_pointer_tells_the_strip_which_tab_it_is_over() {
     app.tab_mut().cwd = "/tmp/two".to_owned();
 
     let hits = tab_hits(&app, 100);
-    let (start, end, index) = *hits.iter().find(|(_, _, tab)| *tab == 1).expect("a chip");
+    let (start, end, _) = *hits
+        .iter()
+        .find(|(_, _, hit)| *hit == sa_tui::ui::Hit::Tab(1))
+        .expect("a chip");
     let column = start + (end - start) / 2;
     app.on_mouse(
         screen_area(100, 24),
         mouse(crossterm::event::MouseEventKind::Moved, column, 0),
     );
-    assert_eq!(
-        app.hovered_tab,
-        Some(index),
-        "the hover follows the pointer"
-    );
+    assert_eq!(app.hovered_tab, Some(1), "the hover follows the pointer");
 
     // off the strip: nothing is hovered, so nothing scrolls.
     app.on_mouse(

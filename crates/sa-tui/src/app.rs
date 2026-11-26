@@ -1703,6 +1703,7 @@ pub enum Action {
     Quit,
     Command(String),
     NextTab,
+    PrevTab,
     NewTab,
     CloseTab,
     /// jump straight to a tab by index.
@@ -1743,6 +1744,9 @@ pub struct App {
     /// the scrollbar is being dragged: the thumb follows the pointer until the button is
     /// released, the way a real scrollbar does.
     pub dragging: bool,
+    /// the pointer is over the scrollbar. a bar under the pointer is not a hint that may
+    /// fade: it is the thing being aimed at, so it stays up while it is hovered.
+    pub scrollbar_hovered: bool,
 }
 
 impl App {
@@ -1764,6 +1768,7 @@ impl App {
             ctrl_held: false,
             served: std::collections::HashMap::new(),
             dragging: false,
+            scrollbar_hovered: false,
         }
     }
 
@@ -1903,6 +1908,13 @@ impl App {
     pub fn next_tab(&mut self) {
         if self.tabs.len() > 1 {
             self.active = (self.active + 1) % self.tabs.len();
+            self.touch();
+        }
+    }
+
+    pub fn prev_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
             self.touch();
         }
     }
@@ -2155,9 +2167,17 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => match hit {
                 Some(crate::ui::Hit::Tab(index)) => Action::SwitchTab(index),
+                // the close button closes the tab it belongs to, and the confirm it may
+                // raise names the tab under the pointer rather than whatever was active.
+                Some(crate::ui::Hit::CloseTab(index)) => {
+                    self.switch_tab(index);
+                    self.request_close()
+                }
+                Some(crate::ui::Hit::NewTab) => Action::NewTab,
                 Some(crate::ui::Hit::Picker(index)) => self.pick_at(index),
                 // a press on the bar grabs it where it was pressed, and holding drags it.
                 Some(crate::ui::Hit::Scrollbar) => {
+                    self.scrollbar_hovered = true;
                     self.dragging = true;
                     self.scroll_to(area, mouse.row);
                     Action::None
@@ -2175,19 +2195,28 @@ impl App {
             }
             // a middle click closes the tab it lands on, as a browser does.
             MouseEventKind::Down(MouseButton::Middle) => match hit {
-                Some(crate::ui::Hit::Tab(index)) => {
+                Some(crate::ui::Hit::Tab(index) | crate::ui::Hit::CloseTab(index)) => {
                     self.switch_tab(index);
                     Action::CloseTab
                 }
                 _ => Action::None,
             },
             MouseEventKind::Moved => {
-                // hovering the bar keeps it up, so it can be grabbed at all.
-                if hit == Some(crate::ui::Hit::Scrollbar) {
+                // hovering the bar keeps it up, so it can be grabbed at all, and keeps it up
+                // for as long as the pointer is on it rather than for the hold after the
+                // last scroll.
+                let on_bar = hit == Some(crate::ui::Hit::Scrollbar);
+                if on_bar {
                     self.tab_mut().scrolled();
                 }
+                if self.scrollbar_hovered != on_bar {
+                    self.scrollbar_hovered = on_bar;
+                    self.touch();
+                }
                 let tab = match hit {
-                    Some(crate::ui::Hit::Tab(index)) => Some(index),
+                    Some(crate::ui::Hit::Tab(index) | crate::ui::Hit::CloseTab(index)) => {
+                        Some(index)
+                    }
                     _ => None,
                 };
                 self.hover(tab);
@@ -2258,7 +2287,11 @@ impl App {
             return match key.code {
                 KeyCode::Char('c' | 'd') => Action::Quit,
                 // plain ctrl+n / ctrl+w, with the shifted forms accepted as aliases.
-                KeyCode::Char('t' | 'T') => Action::NewTab,
+                KeyCode::Char('n' | 'N' | 't' | 'T') => Action::NewTab,
+                // ctrl+tab walks the tabs forward and ctrl+shift+tab back, for terminals
+                // that report a tab with the modifier rather than a back tab.
+                KeyCode::Tab | KeyCode::Char('\t') | KeyCode::BackTab if shift => Action::PrevTab,
+                KeyCode::Tab | KeyCode::Char('\t') | KeyCode::BackTab => Action::NextTab,
                 KeyCode::Char('-' | 'z') => {
                     self.tab_mut().undo();
                     Action::None
