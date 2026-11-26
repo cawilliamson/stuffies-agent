@@ -63,6 +63,30 @@ SHALL NOT create any of them.
 - **WHEN** a home-level context file and a project-level one both exist
 - **THEN** both are injected, outermost first
 
+### Requirement: A spec tree is announced when it can be read
+
+When the workspace carries an `openspec/` directory and the `openspec` program is installed,
+the system prompt SHALL carry a section describing the tree: where the specs and the changes
+live, that the specs are the source of truth for the project's behaviour, and that the
+`openspec` tool runs the program. The tree SHALL NOT be read into the prompt, and neither half
+alone SHALL add the section.
+
+#### Scenario: Both halves are required
+
+- **WHEN** a turn starts in a workspace with an `openspec/` directory and the program
+  installed
+- **THEN** the prompt carries the section and no document text from the tree
+
+#### Scenario: A tree nobody can read adds nothing
+
+- **WHEN** the workspace has an `openspec/` directory but the program is not installed
+- **THEN** the prompt carries no spec section
+
+#### Scenario: An absent tree adds no section
+
+- **WHEN** a turn starts in a workspace without an `openspec/` directory
+- **THEN** the prompt carries no spec section
+
 ### Requirement: The injected context is announced
 
 Creating a session or changing its directory SHALL append `context.loaded` naming the
@@ -108,21 +132,28 @@ checkpoint failure SHALL abort the turn before any tool runs.
 - **WHEN** a detached turn runs in a directory that is not a git repository
 - **THEN** the store is named for the directory's path and the checkpoint succeeds
 
-### Requirement: Checkpoints are written with gix
+### Requirement: Checkpoints are written by git
 
-The store SHALL be written by `gix` rather than by running `git`, so the daemon needs no git
-binary and inherits none of the user's git configuration. A store sa creates SHALL be readable
-by `git`.
-
-#### Scenario: The daemon works without git installed
-
-- **WHEN** no git binary is on the path
-- **THEN** checkpoints are still created
+The store SHALL be a bare git repository written by the `git` program, so what sa records is
+exactly what git reads back, and the worktree's bytes, file modes and symlinks SHALL be
+recorded as they are whatever the machine's git configuration says. The commit SHALL be
+written under sa's own identity rather than the user's. A machine with no `git` on the path
+SHALL fail the checkpoint rather than skip it, so the turn it guards does not start.
 
 #### Scenario: A checkpoint is readable by git
 
 - **WHEN** the shadow store is opened with the git binary
 - **THEN** the checkpoint commit and its tree are readable
+
+#### Scenario: A machine's configuration does not decide what is stored
+
+- **WHEN** the machine's git configuration disables symlinks
+- **THEN** a symlink in the worktree is still checkpointed as a symlink and restored as one
+
+#### Scenario: No git means no checkpoint, and no unattended turn
+
+- **WHEN** no git binary is on the path
+- **THEN** the checkpoint fails and the detached turn is interrupted rather than run unguarded
 
 ### Requirement: Checkpoint shape
 

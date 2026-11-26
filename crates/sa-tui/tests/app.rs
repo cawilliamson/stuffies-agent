@@ -592,6 +592,91 @@ fn the_layout_renders_at_several_sizes() {
     }
 }
 
+/// the branch the worktree is on, with the commit it is at: what the operator needs to know
+/// where the turn is happening.
+#[test]
+fn the_status_bar_names_the_branch_and_the_commit() {
+    let git = |dir: &std::path::Path, args: &[&str]| -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    // an unborn branch has a name and no commit yet.
+    assert_eq!(
+        sa_tui::app::git_head(&dir.path().display().to_string()).as_deref(),
+        Some("main")
+    );
+    git(
+        dir.path(),
+        &[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ],
+    );
+    let short = git(dir.path(), &["rev-parse", "--short=7", "HEAD"]);
+    assert_eq!(
+        sa_tui::app::git_head(&dir.path().display().to_string()),
+        Some(format!("main:{short}")),
+        "the branch and the commit it is at"
+    );
+
+    // a detached HEAD has no branch to name, so the commit stands alone.
+    git(dir.path(), &["checkout", "-q", "--detach"]);
+    assert_eq!(
+        sa_tui::app::git_head(&dir.path().display().to_string()),
+        Some(short)
+    );
+
+    let plain = tempfile::tempdir().expect("tempdir");
+    assert_eq!(
+        sa_tui::app::git_head(&plain.path().display().to_string()),
+        None,
+        "a directory that is not a repository has no segment"
+    );
+}
+
+/// a machine with no git, and a directory that is not a repository, both read as "no branch".
+/// the segment is then absent rather than empty, which is what keeps a git-less machine from
+/// showing a gap in the status bar.
+#[test]
+fn an_absent_branch_draws_no_segment() {
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().cwd = "/tmp".to_owned();
+    app.tab_mut().branch = None;
+    let without = screen(&mut app, 120, 12);
+    assert!(
+        !without.contains('\u{e725}'),
+        "no branch means no branch segment:\n{without}"
+    );
+
+    app.tab_mut().branch = Some("main".to_owned());
+    let with = screen(&mut app, 120, 12);
+    assert!(
+        with.contains("main"),
+        "a branch is drawn when there is one:\n{with}"
+    );
+}
+
 #[test]
 fn the_composer_is_just_a_box_with_the_text() {
     let mut app = App::new("session-abcdef", "m");

@@ -116,7 +116,7 @@ async fn serve_inner(
             }
         };
 
-        if let Some(response) = dispatcher.handle(&mut state, request) {
+        if let Some(response) = dispatcher.handle(&mut state, request).await {
             framed
                 .send(encode(&response)?)
                 .await

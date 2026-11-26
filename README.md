@@ -5,7 +5,8 @@ one-shot CLI and web surface are disposable clients of it.
 
 Behaviour lives in `openspec/specs/` and is the source of truth for what `sa` does. The
 reasoning behind it is in `docs/design.md`, and the work not yet built is in
-`openspec/changes/`. Check a change with `openspec validate`.
+`openspec/changes/`. Check the tree with `sa openspec validate`, or with `openspec validate`
+where the CLI is installed.
 
 Build with `cargo build`, test with `cargo test`, and run the full gate with `./ci/gate.sh`.
 

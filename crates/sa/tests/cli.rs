@@ -321,3 +321,77 @@ fn opening_sa_where_a_session_runs_returns_to_that_session() {
         "a new directory must not reuse {id}: {third}"
     );
 }
+
+/// the program owns the tree's format, so the command passes the arguments through and needs
+/// neither a daemon nor a session: the tree belongs to the directory it sits in (spec 14).
+fn openspec_installed() -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join("openspec").is_file())
+    })
+}
+
+fn spec_tree() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("openspec/specs/cli");
+    std::fs::create_dir_all(&root).expect("specs");
+    std::fs::write(
+        root.join("spec.md"),
+        "# cli\n\n## Purpose\n\nThe command surface, described at the length the program \
+         asks for so the purpose is not a stub.\n\n## Requirements\n\n\
+         ### Requirement: Command surface\n\nEvery subcommand is a client.\n\n\
+         #### Scenario: A subcommand runs\n\n- **WHEN** a subcommand runs\n\
+         - **THEN** it reaches the daemon\n",
+    )
+    .expect("spec");
+    dir
+}
+
+#[test]
+fn openspec_runs_the_program_in_this_directory() {
+    if !openspec_installed() {
+        return;
+    }
+    let dir = spec_tree();
+    let out = Command::new(SA)
+        .args(["openspec", "list", "--specs"])
+        .current_dir(dir.path())
+        .env("SA_SOCKET", dir.path().join("nope.sock"))
+        .output()
+        .expect("run sa openspec list");
+    assert!(
+        out.status.success(),
+        "the listing must not need a daemon: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cli"), "{stdout}");
+}
+
+#[test]
+fn openspec_reports_the_programs_exit_code() {
+    if !openspec_installed() {
+        return;
+    }
+    let dir = spec_tree();
+    let out = Command::new(SA)
+        .args(["openspec", "nonsense"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run sa openspec nonsense");
+    assert!(!out.status.success(), "a bad subcommand must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("exited"), "{stderr}");
+}
+
+#[test]
+fn openspec_says_so_when_there_is_no_tree() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(SA)
+        .arg("openspec")
+        .current_dir(dir.path())
+        .output()
+        .expect("run sa openspec");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no openspec/ directory in"), "{stderr}");
+}

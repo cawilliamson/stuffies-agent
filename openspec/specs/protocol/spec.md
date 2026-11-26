@@ -90,11 +90,12 @@ with `-32601`.
 checkpoint.list      checkpoint.rewind   events.replay        events.subscribe
 events.unsubscribe   goal.set            goal.status          goal.stop
 hello                lsp.list            mcp.list             model.effort
-model.list           model.select        ping                 session.attach
-session.create       session.cwd         session.delete       session.fork
-session.list         session.rename      session.restore      session.usage
-turn.cancel          turn.dequeue        turn.follow_up       turn.queue_drop
-turn.resume          turn.start          turn.status          turn.steer
+model.list           model.select        openspec.run         ping
+session.attach       session.create      session.cwd          session.delete
+session.fork         session.list        session.rename       session.restore
+session.usage        turn.cancel         turn.dequeue         turn.follow_up
+turn.queue_drop      turn.resume         turn.start           turn.status
+turn.steer
 ```
 
 `handoff.accept`, `handoff.export` and `handoff.import` SHALL answer `-32014` rather than

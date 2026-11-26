@@ -291,9 +291,22 @@ pub const HELP_COMMANDS: &str = "\
 /mcp — list the mcp servers and their tools
 /model <name> — switch the model for this tab
 /new — open a tab
+/openspec <command> — read the workspace's spec tree; /openspec for the list
 /pwd — print the working directory
 /resume — reopen a session that was closed
 /rewind <id> — restore the workspace to a checkpoint";
+
+/// what `/openspec` does, and the calls worth knowing. the program's own arguments are passed
+/// through, so this is a shortlist rather than the surface.
+pub const HELP_OPENSPEC: &str = "\
+/openspec <args> — run the openspec program in this workspace and show what it printed
+
+  /openspec list            the open changes and their task progress
+  /openspec list --specs    the capabilities the specs define
+  /openspec show <name>     one spec or change
+  /openspec validate        what is malformed
+
+the arguments go to the program as written; `openspec --help` lists the rest.";
 
 /// a gap between text deltas longer than this is a stall, not generation: the clock stops
 /// for it, so thinking and tool time never dilute the figure.
@@ -552,7 +565,7 @@ pub struct Tab {
     /// whether history has been replayed and the event stream subscribed. a tab that is not
     /// hydrated is deaf: it shows nothing and never learns that its turn finished.
     pub hydrated: bool,
-    /// the git branch of `cwd`, for the status bar. absent outside a repository.
+    /// the branch and short commit of `cwd`, for the status bar. absent outside a repository.
     pub branch: Option<String>,
     pub transcript: Vec<Entry>,
     editor: edtui::EditorState,
@@ -1202,7 +1215,7 @@ impl Tab {
         let cwd = row["cwd"].as_str().unwrap_or_default();
         if cwd != self.cwd {
             self.cwd = cwd.to_owned();
-            self.branch = git_branch(&self.cwd);
+            self.branch = git_head(&self.cwd);
         }
         self.status.effort = row["effort"].as_str().unwrap_or_default().to_owned();
         if let Some(model) = row["model"].as_str().filter(|model| !model.is_empty()) {
@@ -1641,23 +1654,39 @@ fn scrolled(name: &str, offset: usize, cap: usize) -> String {
         .collect()
 }
 
-/// the git branch of a directory, for the status bar. absent outside a repository.
+/// the branch and short commit of a directory, for the status bar: `main:6213c57`.
 ///
-/// read with gix rather than the git binary: the status bar must not depend on git being
-/// installed, and a detached HEAD has no branch name to show.
+/// absent outside a repository, and on a machine with no git installed, where the bar draws
+/// no segment at all rather than an empty one. a detached HEAD has no branch to name, so it
+/// shows the commit alone, and a branch with no commit yet shows the branch alone.
 #[must_use]
-pub fn git_branch(cwd: &str) -> Option<String> {
+pub fn git_head(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    let repo = gix::discover(cwd).ok()?;
-    let name = repo.head_name().ok()??;
-    let branch = name.shorten().to_string();
-    if branch.is_empty() {
-        None
-    } else {
-        Some(branch)
+    let branch = git(cwd, &["symbolic-ref", "--short", "HEAD"]);
+    let commit = git(cwd, &["rev-parse", "--short=7", "HEAD"]);
+    match (branch, commit) {
+        (Some(branch), Some(commit)) => Some(format!("{branch}:{commit}")),
+        (Some(branch), None) => Some(branch),
+        (None, Some(commit)) => Some(commit),
+        (None, None) => None,
     }
+}
+
+/// one git answer for a directory, trimmed, or nothing when git refused or is not installed.
+fn git(cwd: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 /// one selectable row in a picker.

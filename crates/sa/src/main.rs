@@ -56,6 +56,7 @@ async fn main() -> ExitCode {
         Some(Command::Sessions) => commands::sessions(parsed.standalone).await,
         Some(Command::Lsp) => commands::lsp(parsed.standalone).await,
         Some(Command::Mcp) => commands::mcp(parsed.standalone).await,
+        Some(Command::Openspec { args }) => commands::openspec(&args).await,
         Some(Command::Context { dir }) => commands::context(dir),
         Some(Command::Export { session, format }) => {
             commands::export(parsed.standalone, session, &format).await
@@ -222,6 +223,7 @@ mod tests {
             Command::Daemon,
             Command::Lsp,
             Command::Mcp,
+            Command::Openspec { args: Vec::new() },
             Command::Ping,
             Command::Sessions,
         ] {

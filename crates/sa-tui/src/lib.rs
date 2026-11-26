@@ -1212,8 +1212,19 @@ mod daemon_tests {
     #[test]
     fn help_lists_every_command() {
         for command in [
-            "/cancel", "/cd", "/cwd", "/effort", "/exit", "/help", "/lsp", "/mcp", "/model",
-            "/new", "/pwd", "/resume",
+            "/cancel",
+            "/cd",
+            "/cwd",
+            "/effort",
+            "/exit",
+            "/help",
+            "/lsp",
+            "/mcp",
+            "/model",
+            "/new",
+            "/openspec",
+            "/pwd",
+            "/resume",
         ] {
             assert!(
                 app::HELP_COMMANDS.contains(command),
@@ -1293,6 +1304,72 @@ mod daemon_tests {
         assert!(
             !seen.iter().any(|r| r["method"] == "turn.start"),
             "/pwd prints, it does not prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn openspec_passes_its_arguments_through() {
+        let (mut client, server) = daemon(vec![(
+            "openspec.run",
+            json!({"exit_code": 0, "output": "Specs:\n  cli  requirements 10"}),
+        )]);
+        let mut app = App::new("s1", "m");
+
+        run_command(&mut client, &mut app, "m", "/openspec list --specs")
+            .await
+            .expect("command");
+
+        let entries = &app.tab().transcript;
+        assert_eq!(entries.len(), 1, "one answer: {entries:?}");
+        assert_eq!(entries[0].text, "Specs:\n  cli  requirements 10");
+
+        drop(client);
+        let seen = server.await.expect("server");
+        let sent = seen
+            .iter()
+            .find(|request| request["method"] == "openspec.run")
+            .expect("the program is run by the daemon");
+        assert_eq!(sent["params"]["args"], json!(["list", "--specs"]));
+        assert_eq!(sent["params"]["session_id"], "s1");
+    }
+
+    #[tokio::test]
+    async fn a_failed_openspec_call_is_an_error_entry() {
+        let (mut client, _server) = daemon(vec![(
+            "openspec.run",
+            json!({"exit_code": 1, "output": "error: unknown command 'nope'"}),
+        )]);
+        let mut app = App::new("s1", "m");
+
+        run_command(&mut client, &mut app, "m", "/openspec nope")
+            .await
+            .expect("command");
+
+        let entries = &app.tab().transcript;
+        assert_eq!(entries[0].role, app::Role::Error, "a failure reads as one");
+        assert!(entries[0].text.contains("unknown command"), "{entries:?}");
+    }
+
+    #[tokio::test]
+    async fn a_bare_openspec_lists_what_it_can_do() {
+        let (mut client, server) = daemon(startup_replies());
+        let mut app = App::new("s1", "m");
+
+        run_command(&mut client, &mut app, "m", "/openspec")
+            .await
+            .expect("command");
+
+        let entries = &app.tab().transcript;
+        assert_eq!(entries[0].text, app::HELP_OPENSPEC);
+        assert_eq!(entries.len(), 1);
+
+        drop(client);
+        let seen = server.await.expect("server");
+        assert!(
+            !seen
+                .iter()
+                .any(|request| request["method"] == "openspec.run"),
+            "help is local: {seen:?}"
         );
     }
 
@@ -1545,7 +1622,7 @@ async fn run_command(
                 {
                     Ok(result) => {
                         let cwd = result["cwd"].as_str().unwrap_or(&cwd).to_owned();
-                        let branch = app::git_branch(&cwd);
+                        let branch = app::git_head(&cwd);
                         let tab = app.tab_mut();
                         tab.cwd = cwd.clone();
                         tab.branch = branch;
@@ -1697,6 +1774,7 @@ async fn run_command(
                 Err(err) => app.tab_mut().push(app::Role::Error, err),
             }
         }
+        "/openspec" => openspec(client, app, arg).await,
         "/rewind" if !arg.is_empty() => {
             let session = app.tab().session.clone();
             match rpc(
@@ -1771,6 +1849,41 @@ async fn run_command(
             .push(app::Role::System, "unknown command, /help"),
     }
     Ok(false)
+}
+
+/// `/openspec <args>`: the program that owns the spec tree, run in the workspace. its answer
+/// is the answer, so nothing here interprets what it printed.
+#[allow(clippy::future_not_send)]
+async fn openspec(client: &mut Client, app: &mut App, arg: &str) {
+    // the client is not the backend: no quoting rules of its own, just the words the
+    // operator typed.
+    let args: Vec<String> = arg.split_whitespace().map(str::to_owned).collect();
+    if args.is_empty() {
+        app.tab_mut().push(app::Role::System, app::HELP_OPENSPEC);
+        return;
+    }
+    let sid = app.tab().session.clone();
+    match rpc(
+        client,
+        "openspec.run",
+        json!({"session_id": sid, "args": args}),
+    )
+    .await
+    {
+        Ok(result) => {
+            let exit = result["exit_code"].as_i64().unwrap_or_default();
+            let output = result["output"].as_str().unwrap_or_default().to_owned();
+            // a non-zero exit is a failure the operator must see as one, with what the
+            // program said about it attached.
+            let role = if exit == 0 {
+                app::Role::System
+            } else {
+                app::Role::Error
+            };
+            app.tab_mut().push(role, output);
+        }
+        Err(err) => app.tab_mut().push(app::Role::Error, err),
+    }
 }
 
 /// the colours a listing uses for a state: green for a server that is there, red for one

@@ -438,8 +438,10 @@ fn installed(command: &str) -> bool {
     resolve(command).is_some()
 }
 
-/// where a configured command actually is, the way a shell would find it.
-fn resolve(command: &str) -> Option<PathBuf> {
+/// where a configured command actually is, the way a shell would find it. a caller other
+/// than the language servers uses this too: it is the only answer to "is this installed".
+#[must_use]
+pub fn resolve(command: &str) -> Option<PathBuf> {
     if command.contains('/') {
         let path = PathBuf::from(command);
         return path.is_file().then_some(path);

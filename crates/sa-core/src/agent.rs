@@ -550,30 +550,49 @@ fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
         let _ = writeln!(tools_text, "- {}: {}", tool.name, tool.description);
     }
 
+    let mut sections = vec![
+        Section::new("tools", tools_text),
+        Section::new(
+            "rules",
+            // bash is the fallback, not the default: every built-in tool is bounded,
+            // structured and needs no external program, which is what makes the agent
+            // work on a machine that has none of them.
+            "- prefer the built-in tools: read a file before editing it, search with \
+             grep and find, and change code with edit rather than rewriting the file\n\
+             - use bash for what no built-in tool does: running the project's tests, \
+             builds and its own commands\n\
+             - every edit and write reports what the language server says about the \
+             file it changed: fix an error before moving on\n\
+             - use lsp references and lsp rename rather than a text search when a \
+             symbol is renamed, so every use changes and nothing else does\n\
+             - run the project's own checks after changing code\n\
+             - keep replies short",
+        ),
+    ];
+    // the spec tree is the project's own statement of what it does, so the model is told it
+    // is there before it changes behaviour. announced only when the tree and the program that
+    // owns it are both present: a tree nobody can read is not worth a paragraph. nothing is
+    // run here, so the prompt costs no subprocess.
+    if crate::openspec::available(std::path::Path::new(workspace)).is_some() {
+        sections.push(Section::new(
+            "openspec",
+            "This workspace carries an openspec tree at `openspec/`, and the `openspec` program \
+             is installed. The specs under `openspec/specs/<capability>/spec.md` are the source \
+             of truth for what this project does; a change under `openspec/changes/<name>/` \
+             proposes against them, in `proposal.md`, `design.md`, `tasks.md` and delta specs. \
+             Read the spec a change touches before changing behaviour, and change the spec in \
+             the same turn as the code. The `openspec` tool runs the program in the workspace: \
+             `list --specs` for the capability inventory, `list` for the open changes, `show \
+             <name>` for one item, `validate` for what is malformed.",
+        ));
+    }
+
     SystemPrompt {
         role: format!(
             "You are stuffies-agent, a coding agent working in the workspace at {workspace}. \
              Tool paths resolve inside it; a path outside it is an error."
         ),
-        sections: vec![
-            Section::new("tools", tools_text),
-            Section::new(
-                "rules",
-                // bash is the fallback, not the default: every built-in tool is bounded,
-                // structured and needs no external program, which is what makes the agent
-                // work on a machine that has none of them.
-                "- prefer the built-in tools: read a file before editing it, search with \
-                 grep and find, and change code with edit rather than rewriting the file\n\
-                 - use bash for what no built-in tool does: running the project's tests, \
-                 builds and its own commands\n\
-                 - every edit and write reports what the language server says about the \
-                 file it changed: fix an error before moving on\n\
-                 - use lsp references and lsp rename rather than a text search when a \
-                 symbol is renamed, so every use changes and nothing else does\n\
-                 - run the project's own checks after changing code\n\
-                 - keep replies short",
-            ),
-        ],
+        sections,
     }
 }
 

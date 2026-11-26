@@ -117,8 +117,8 @@ dropping it, and taking the whole queue back SHALL all be possible from the keyb
 
 The client SHALL handle these commands without sending them as prompts: `/cancel`,
 `/checkpoints`, `/cwd <dir>` (alias `/cd`), `/effort [level]`, `/exit`, `/help`, `/lsp`,
-`/mcp`, `/model <name>`, `/new`, `/pwd`, `/resume` and `/rewind <id>`. `/help` SHALL list
-every command.
+`/mcp`, `/model <name>`, `/new`, `/openspec <args>`, `/pwd`, `/resume` and `/rewind <id>`.
+`/help` SHALL list every command, and a bare `/openspec` SHALL list the calls worth knowing.
 
 #### Scenario: A command is not a prompt
 
@@ -135,16 +135,42 @@ every command.
 - **WHEN** a partial directory is typed after `/cwd`
 - **THEN** completion offers the matching directories
 
+#### Scenario: The arguments reach the program
+
+- **WHEN** `/openspec list --specs` is submitted
+- **THEN** the daemon runs the program with those arguments and its output is one entry
+
+#### Scenario: A failure reads as one
+
+- **WHEN** the program exits non-zero
+- **THEN** its output is shown as an error rather than a notice
+
+#### Scenario: A bare command teaches its calls
+
+- **WHEN** `/openspec` is submitted with no argument
+- **THEN** the calls worth knowing are listed and no request is sent
+
 ### Requirement: Status bar
 
 The status bar SHALL be powerline-style: solid coloured areas joined by arrow separators, one
-area per field — working directory, state, branch, model, throughput and tokens — with
-nerdfont glyphs and no bracketed text.
+area per field — working directory, state, branch and short commit, model, throughput and
+tokens — with nerdfont glyphs and no bracketed text. The branch area SHALL be absent rather
+than empty when there is no branch to name.
 
 #### Scenario: The bar carries the session's identity
 
 - **WHEN** a tab is rendered
 - **THEN** the bar shows its working directory, state, model and token counts
+
+#### Scenario: The bar names the commit alongside the branch
+
+- **WHEN** a tab whose directory is a repository is rendered
+- **THEN** the branch area reads `main:6213c57`, and a detached HEAD shows the commit alone
+
+#### Scenario: A machine without git has no branch area
+
+- **WHEN** no git binary is on the path, or the directory is not a repository
+- **THEN** the branch area is absent rather than empty
 
 #### Scenario: Throughput reflects generation only
 

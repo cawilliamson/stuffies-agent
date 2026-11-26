@@ -11,8 +11,8 @@ outlive their turn.
 ### Requirement: Built-in tool set
 
 The daemon SHALL offer exactly these built-in tools: `bash`, `edit`, `find`, `goal_done`,
-`grep`, `lsp`, `read`, `todo`, `web_fetch`, `web_search` and `write`. A connected MCP
-server's tools SHALL be offered alongside them under a `mcp__` prefix.
+`grep`, `lsp`, `openspec`, `read`, `todo`, `web_fetch`, `web_search` and `write`. A connected
+MCP server's tools SHALL be offered alongside them under a `mcp__` prefix.
 
 #### Scenario: The tool list matches the callable set
 
@@ -199,3 +199,32 @@ SHALL be an argument error.
 
 - **WHEN** the model calls `goal_done`
 - **THEN** `goal.done` is in the log and the loop reads it from there
+
+### Requirement: OpenSpec is fronted, not reimplemented
+
+The `openspec` tool SHALL run the `openspec` program in the workspace with the arguments as
+written and return what it printed, with its exit code. The program SHALL be resolved the way
+a shell would find it, and a call SHALL fail naming what is missing when the workspace carries
+no `openspec/` directory or the machine carries no program. A call SHALL be bounded in time
+and output, and the child SHALL be killed when the call is abandoned.
+
+#### Scenario: The program's answer is the answer
+
+- **WHEN** the tool is called with `args: ["validate"]`
+- **THEN** the output is what the program printed and the exit code is what it exited with
+
+#### Scenario: A failure is a failure, not a success with findings
+
+- **WHEN** the program exits non-zero
+- **THEN** the tool result carries that exit code
+
+#### Scenario: No tree or no program is named
+
+- **WHEN** the workspace has no `openspec/` directory, or nothing named `openspec` is on the
+  path
+- **THEN** the call fails naming which of the two is missing
+
+#### Scenario: A hung call cannot outlive the request
+
+- **WHEN** the program runs past its budget
+- **THEN** the call fails as a timeout and the child is killed

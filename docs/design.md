@@ -60,13 +60,23 @@ files, which is exactly what an agent writes. A commit over a tree built from th
 captures tracked and untracked files, changes nothing in place, and is removed by deleting a
 ref.
 
-### why `gix` and not the git binary
+### why the git binary and not `gix`
 
-Shelling out meant inheriting whatever git configuration the process happened to see: a
-checkpoint failed outright for a user who sets `user.name` per repository rather than
-globally. It also made a subprocess the price of every snapshot. The object format is the
-contract, and `gix` writes it; a store `sa` creates is readable by `git`, and the tests check
-that by running `git` against what `sa` wrote.
+This was `gix`, for two reasons: no subprocess per snapshot, and no inherited git
+configuration. The second reason was real but small — a checkpoint failed for a user who sets
+`user.name` per repository rather than globally — and it is answered by committing under sa's
+own identity rather than by owning an object writer. The first was never load-bearing: a
+checkpoint is taken before an unattended turn, not per tool call.
+
+What is left is a choice between git's implementation of the object format and ours. git
+decides what a worktree holds — ignore rules, file modes, symlinks — and a checkpoint's only
+job is to record exactly that. `gix` is a second implementation of those rules, 198 lines of
+tree plumbing here and about thirty crates, and every subtlety it gets slightly differently
+from git is a checkpoint that does not restore what the user had. The store is a real
+repository, written by git, and the tests check it by reading it back with git.
+
+The cost is named and accepted: a machine with no git cannot checkpoint, and a checkpoint that
+cannot be taken aborts the unattended turn rather than letting it run unguarded.
 
 ## why no permission system
 
@@ -96,10 +106,12 @@ server must not be load-bearing, and a lease that expires is a lease that can ex
 
 ## why lean on the dependencies
 
-`rig-core`, `rig-rmcp`, `lspf`, `gix`, `ratatui` and the rest already implement the protocol,
-the process supervision, the object format and the layout. Anything a dependency does
-correctly is not our job. What stays ours is what nothing else knows: the event log, the
-daemon, the turn state machine, the checkpoint store's placement, and the UI.
+`rig-core`, `rig-rmcp`, `lspf`, `ratatui` and the rest already implement the protocol, the
+process supervision and the layout, and where a program owns a format — `git` for the
+checkpoint store, `openspec` for the spec tree — the program is what we call rather than
+reimplement. Anything a dependency does correctly is not our job. What stays ours is what
+nothing else knows: the event log, the daemon, the turn state machine, the checkpoint store's
+placement, and the UI.
 
 ## rejected alternatives, by decision
 
@@ -107,7 +119,7 @@ daemon, the turn state machine, the checkpoint store's placement, and the UI.
 | --- | --- | --- |
 | checkpoint in a shadow store | private refs in the workspace's `.git` | a trace in the user's repository |
 | checkpoint by tree snapshot | `git stash push` / `git stash create` | cleans the worktree; ignores untracked files |
-| checkpoints written with `gix` | running the `git` binary | inherited user config; a subprocess per snapshot |
+| checkpoints written by `git` | `gix` writing the object format ourselves | a second implementation of what a worktree holds |
 | move by default, fork on request | one mode with a `--fork` flag | an accidental fork diverges silently |
 | epoch counter for fencing | lease timestamps | clock skew must not be load-bearing |
 | bundle as one file | tar stream over the JSON-RPC channel | would need base64 and a framing exception |

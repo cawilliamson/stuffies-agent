@@ -35,9 +35,6 @@ htmd = "0.6"
 # ripgrep's walker: what a project's own ignore files exclude is not searched, so a
 # coding agent sees the files the developer sees rather than the build output.
 ignore = "0.4"
-# gitoxide: the object store, refs and repository discovery a checkpoint needs, in rust.
-# no git binary, no inherited user config, no subprocess per snapshot.
-gix = { version = "0.91", default-features = false, features = ["index", "revision", "sha1"] }
 # the language server protocol: framing, handshake, request typing and child supervision.
 # what stays ours is the server table, discovery and what a finding means.
 lspf = "1.0.3"
@@ -61,9 +58,6 @@ sa-daemon = { path = "crates/sa-daemon", version = "0.1.0" }
 sa-proto = { path = "crates/sa-proto", version = "0.1.0" }
 sa-tui = { path = "crates/sa-tui", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
-# the container gix stores a commit's parents in, so the field can be named rather than
-# inferred through Default::default().
-smallvec = "1"
 serde_json = "1"
 sha2 = "0.10"
 # the diff an edit reports, so a change is reviewable in place rather than as two blobs.

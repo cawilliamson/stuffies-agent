@@ -13,6 +13,7 @@ pub mod llm;
 pub mod lsp;
 pub mod manager;
 pub mod mcp;
+pub mod openspec;
 pub mod peer;
 pub mod store;
 pub use sa_proto::tokens;

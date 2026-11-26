@@ -120,6 +120,7 @@ impl ToolRegistry {
             "goal_done" => Self::goal_done(&args, None).map(text),
             "grep" => self.grep(&args).await.map(text),
             "lsp" => self.lsp_call(&args).await.map(text),
+            "openspec" => self.openspec_call(&args).await,
             "read" => self.read(&args).await.map(text),
             "todo" => Self::todo(&args).map(text),
             "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
@@ -243,6 +244,35 @@ impl ToolRegistry {
             }
             _ => String::new(),
         }
+    }
+
+    /// the openspec program, run in the workspace with the arguments as written. the tree's
+    /// format is the program's to define, so its answer is the answer.
+    async fn openspec_call(&self, args: &Value) -> Result<ToolOutcome, ToolError> {
+        let args = match args.get("args") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| ToolError::Args("`args` must be strings".to_owned()))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(Value::String(line)) => split_args(line),
+            Some(other) => {
+                return Err(ToolError::Args(format!(
+                    "`args` must be a list of strings, got {other}"
+                )))
+            }
+            None => Vec::new(),
+        };
+        let output = crate::openspec::run(&self.workspace, &args)
+            .await
+            .map_err(|err| ToolError::Args(err.to_string()))?;
+        Ok(ToolOutcome {
+            output: output.text,
+            exit_code: Some(output.exit_code),
+        })
     }
 
     /// the queries an editor makes: what a symbol is, where it is defined, who uses it, and
@@ -583,6 +613,18 @@ impl ToolExecutor for ToolRegistry {
                 json!({"type": "object", "properties": {"action": {"type": "string"}, "path": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "new_name": {"type": "string"}}, "required": ["action"]}),
             ),
             spec(
+                "openspec",
+                "Run the `openspec` program in the workspace and return what it printed. \
+                 `args` is the program's own arguments, as a list: `[\"list\", \"--specs\"]` \
+                 for the capability inventory, `[\"list\"]` for the open changes, \
+                 `[\"show\", \"<name>\"]` for one item, `[\"validate\"]` for what is \
+                 malformed, `[\"status\", \"<change>\"]` for one change's artifact state. The \
+                 exit code is reported, so a failed validation reads as a failure. A workspace \
+                 without an `openspec/` directory, or a machine without the program, fails the \
+                 call naming which is missing.",
+                json!({"type": "object", "properties": {"args": {"type": "array", "items": {"type": "string"}}}, "required": ["args"]}),
+            ),
+            spec(
                 "read",
                 &format!(
                     "Read a file as text, each line prefixed with `hhhhhh|`: the hash names that \
@@ -659,6 +701,38 @@ impl ToolExecutor for ToolRegistry {
             self.call(&call).await.map_err(|e| e.to_string())
         })
     }
+}
+
+/// splits a command line the way a shell would for the simple case: whitespace between
+/// arguments, single or double quotes around one that contains it.
+fn split_args(line: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    for ch in line.chars() {
+        match (quote, ch) {
+            (Some(open), close) if open == close => quote = None,
+            (None, '\'' | '"') => {
+                quote = Some(ch);
+                started = true;
+            }
+            (None, ch) if ch.is_whitespace() => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            (_, ch) => {
+                current.push(ch);
+                started = true;
+            }
+        }
+    }
+    if started {
+        args.push(current);
+    }
+    args
 }
 
 /// wraps plain text output as a tool outcome.

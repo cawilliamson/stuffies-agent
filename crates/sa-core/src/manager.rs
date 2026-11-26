@@ -580,6 +580,15 @@ impl Manager {
         )
     }
 
+    /// the directory the session works in. the only thing a client needs to run a project's
+    /// own tool against it.
+    pub fn session_workspace(&self, id: &str) -> Result<PathBuf, ManagerError> {
+        let Some(row) = self.store.get_session(id)? else {
+            return Err(ManagerError::Rpc(not_found(id)));
+        };
+        Ok(PathBuf::from(row.cwd))
+    }
+
     /// restores the workspace to a checkpoint and records that it happened, so the transcript
     /// shows the rewind where it occurred rather than leaving the change unexplained.
     pub fn rewind(&self, id: &str, checkpoint: &str) -> Result<usize, ManagerError> {
@@ -860,17 +869,6 @@ impl Manager {
                         &self.config.checkpoint_dir,
                         &session_id,
                         10,
-                    );
-                }
-                // a non-git workspace cannot be checkpointed; that is recorded, not fatal.
-                Err(crate::workspace::WorkspaceError::NotARepository(_)) => {
-                    let _ = self.append(
-                        &session_id,
-                        kinds::SESSION_STATE,
-                        &json!({
-                            "state": "active",
-                            "reason": "checkpoint_unavailable: workspace is not a git repository",
-                        }),
                     );
                 }
                 Err(err) => {

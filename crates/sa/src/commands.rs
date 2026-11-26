@@ -317,6 +317,30 @@ pub fn context(dir: Option<String>) -> Result<()> {
     Ok(())
 }
 
+// ---- openspec -----------------------------------------------------------
+
+/// runs the openspec program in the current directory. the tree's format is the program's to
+/// define, so this passes the arguments through and reports what it said: no daemon, no
+/// session and no second implementation.
+pub async fn openspec(args: &[String]) -> Result<()> {
+    let cwd = std::path::PathBuf::from(cwd()?);
+    let output = sa_core::openspec::run(&cwd, args)
+        .await
+        .map_err(|err| err.to_string())?;
+    if !output.text.is_empty() {
+        println!("{}", output.text);
+    }
+    // a non-zero exit is what makes this usable in a pre-commit hook.
+    if !output.ok() {
+        return Err(format!(
+            "{} exited {}",
+            sa_core::openspec::PROGRAM,
+            output.exit_code
+        ));
+    }
+    Ok(())
+}
+
 // ---- sessions -----------------------------------------------------------
 
 pub async fn sessions(standalone: bool) -> Result<()> {

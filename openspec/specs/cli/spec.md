@@ -107,8 +107,10 @@ carrier. It SHALL exit non-zero when the daemon is absent.
 ### Requirement: Inspection commands
 
 `sa context` SHALL show the context and skills that would be injected for a directory,
-`sa lsp` SHALL list the language servers with their installed and running state, and
-`sa mcp` SHALL list the configured servers with their tools and errors.
+`sa lsp` SHALL list the language servers with their installed and running state,
+`sa mcp` SHALL list the configured servers with their tools and errors, and
+`sa openspec <args>` SHALL run the `openspec` program in the current directory with those
+arguments: no daemon and no session, and no second implementation of the tree's format.
 
 #### Scenario: Context is inspectable before a session exists
 
@@ -119,6 +121,21 @@ carrier. It SHALL exit non-zero when the daemon is absent.
 
 - **WHEN** `sa lsp` lists a server that is configured but not found
 - **THEN** the output shows it as missing and names the path searched
+
+#### Scenario: The tree is readable with no daemon
+
+- **WHEN** `sa openspec list --specs` runs in a directory that carries an `openspec/` tree
+- **THEN** the program's output is printed and no socket is contacted
+
+#### Scenario: A failure is a failure a hook can see
+
+- **WHEN** the program exits non-zero
+- **THEN** `sa openspec` exits non-zero naming the code it exited with
+
+#### Scenario: An absent tree is named
+
+- **WHEN** `sa openspec` runs where there is no `openspec/` directory
+- **THEN** it exits non-zero naming the directory it looked for
 
 ### Requirement: Environment overrides
 
