@@ -1,7 +1,9 @@
 # stuffies-agent
 
 A daemon-first coding agent. The daemon owns session state; the terminal client, one-shot
-CLI and web surface are disposable clients of it. The design lives in `SPEC.md`.
+CLI and web surface are disposable clients of it. The behaviour lives in
+`openspec/specs/`, the reasoning in `docs/design.md`, and the open work in
+`openspec/changes/`.
 
 ## the build goal: lean on the modules we already depend on
 
@@ -57,8 +59,8 @@ tests. When a new need appears, the answer is a tool, not a command line.
 ## ordering
 
 Alphabetical, everywhere a collection is written down: tool specs, slash commands, help
-text, enum variants, match arms over a fixed set, config keys, imports, `SPEC.md` listings,
-test fixtures. If a list can be sorted without changing behaviour, it is sorted.
+text, enum variants, match arms over a fixed set, config keys, imports, `openspec/specs`
+listings, test fixtures. If a list can be sorted without changing behaviour, it is sorted.
 
 The exceptions are the ones where order carries meaning, and they are narrow: a wire
 protocol that defines the sequence, a dependency's own required order, a ranking or a

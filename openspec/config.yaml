@@ -1,0 +1,41 @@
+schema: spec-driven
+
+# Project context (optional)
+context: |
+  sa is a daemon-first coding agent in Rust. The daemon owns every piece of
+  session state; the terminal client, the one-shot CLI and the web surface are
+  disposable clients of it.
+
+  British English throughout. Every collection written down is alphabetical
+  unless order carries meaning (a wire sequence, a dependency's required order,
+  a ranking, a procedure).
+
+  The workspace is the user's. Nothing sa writes for its own bookkeeping may
+  live in a workspace: runtime state belongs under
+  $XDG_STATE_HOME/stuffies-agent and $XDG_RUNTIME_DIR. A turn leaves only the
+  edits it was asked to make.
+
+  Lean on the dependencies. rig-core, rig-rmcp, lspf, gix, ratatui, edtui and
+  the rest are already in the tree; anything one of them implements is not ours
+  to reimplement. Delete before adding, and never keep a second shape of data
+  we already control.
+
+  There is no permission system. The one guard is a checkpoint before an
+  unattended turn.
+
+# Per-artifact rules (optional)
+rules:
+  proposal:
+    - State what is out of scope, not only what is in it
+  specs:
+    - One requirement per behaviour a test could name
+    - Scenarios describe observable wire or filesystem effects
+  tasks:
+    - One task per behaviour that can be checked on its own
+
+# Per-operation guidance (optional)
+operations:
+  apply:
+    guidance:
+      - Run cargo test --workspace before claiming a task is done
+      - Exercise the change with `sa --standalone` and again against `sa daemon`
