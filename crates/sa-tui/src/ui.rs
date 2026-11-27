@@ -225,13 +225,22 @@ fn visible_tabs(widths: &[usize], active: usize, room: usize) -> (usize, usize) 
     (active, active + 1)
 }
 
+/// the word the composer's edge announces while the model works, or `None` when there is
+/// nothing to announce: no turn is running, a tool is what is running, or the model has not
+/// said what it is doing. the moving run below it is the same indicator, so both come from
+/// here: a bar sliding along an edge with no word on it says that something is happening
+/// and never what.
+fn working_word(tab: &app::Tab) -> Option<&str> {
+    if !tab.status.turn_running || tab.tool_running {
+        return None;
+    }
+    tab.working.as_deref().filter(|word| !word.is_empty())
+}
+
 /// the cells the working label occupies on the composer's top edge. the activity run starts
 /// after it rather than sweeping through the word.
 fn working_label_cells(tab: &app::Tab) -> u16 {
-    if tab.tool_running {
-        return 0;
-    }
-    tab.working.as_ref().map_or(0, |word| {
+    working_word(tab).map_or(0, |word| {
         u16::try_from(word.chars().count() + 5).unwrap_or(0)
     })
 }
@@ -300,11 +309,10 @@ fn suggestion_list(frame: &mut Frame<'_>, above: Rect, title: &str, items: Vec<S
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// the glyph a tab's close button is drawn with, and the cells it and the new-tab button
-/// spend on the strip.
+/// the glyph a tab's close button is drawn with, and the new-tab button's own.
 pub const CLOSE_GLYPH: &str = "\u{2715}";
 const CLOSE_CELLS: usize = 4;
-const NEW_TAB: &str = "+";
+pub const NEW_TAB_GLYPH: &str = "+";
 const NEW_TAB_CELLS: usize = 2;
 
 /// one cell run in the tab strip: a tab's chip, its close button, the new-tab button, or one
@@ -384,8 +392,18 @@ fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
             hit: None,
         });
     }
-    // the new-tab button sits at the strip's right edge, with the cells it needs kept clear
-    // of the tabs above.
+    // the new-tab button follows the last tab on the strip, so it is beside the tabs rather
+    // than stranded at the far edge of an empty bar. the cells it needs are kept clear of the
+    // tabs above, whatever the bar's width.
+    //
+    // a tab's close button already closes the run with a space, so the button only supplies
+    // its own where the hidden-tabs marker sits in front of it.
+    let lead = if end < labels.len() { " " } else { "" };
+    chips.push(Chip {
+        text: format!("{lead}{NEW_TAB_GLYPH}"),
+        style: Style::default().fg(app::FAINT),
+        hit: Some(Hit::NewTab),
+    });
     let drawn: usize = chips.iter().map(|chip| chip.text.chars().count()).sum();
     let pad = room.saturating_sub(drawn);
     if pad > 0 {
@@ -395,11 +413,6 @@ fn tab_chips(app: &App, width: u16) -> Vec<Chip> {
             hit: None,
         });
     }
-    chips.push(Chip {
-        text: format!(" {NEW_TAB}"),
-        style: Style::default().fg(app::FAINT),
-        hit: Some(Hit::NewTab),
-    });
     chips
 }
 
@@ -693,13 +706,11 @@ pub fn composer(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<(u16, u1
 
     // what the model is doing, on the edge the operator is already looking at. the moving
     // bar below says it is alive; this says what it is.
-    if tab.status.turn_running && !tab.tool_running {
-        if let Some(word) = &tab.working {
-            block = block.title(
-                Line::from(format!(" {} {word}\u{2026} ", busy_frame(app.spinner)))
-                    .style(Style::default().fg(app::ACCENT)),
-            );
-        }
+    if let Some(word) = working_word(tab) {
+        block = block.title(
+            Line::from(format!(" {} {word}\u{2026} ", busy_frame(app.spinner)))
+                .style(Style::default().fg(app::ACCENT)),
+        );
     }
 
     let mut rendered: Vec<Line<'static>> = lines
@@ -855,7 +866,7 @@ pub fn confirm_prompt(frame: &mut Frame<'_>, app: &App) {
 /// draws the queued attachment over the interface, so the operator sees what is about to
 /// be sent. skipped when the terminal has no image protocol.
 pub fn attachment_preview(frame: &mut Frame<'_>, app: &mut App) {
-    let Some(attachment) = app.tab_mut().attachments.last_mut() else {
+    let Some(attachment) = app.shown_attachment() else {
         return;
     };
     let Some(protocol) = attachment.protocol.as_mut() else {
@@ -1018,8 +1029,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) -> Option<(u16, u16)> {
 
     let cursor = composer(frame, screen.composer, app);
     // work in progress reads as a moving bar along the composer's edge, the way a browser
-    // shows an indeterminate load, rather than as a character spinning in place.
-    if app.tab().status.turn_running {
+    // shows an indeterminate load, rather than as a character spinning in place. it rides
+    // with the word that says what the work is, so it is never drawn on its own.
+    if working_word(app.tab()).is_some() {
         activity_bar(frame, screen.composer, app, working_label_cells(app.tab()));
     }
     queue_panel(frame, screen.queue, app);

@@ -396,6 +396,8 @@ where
             Action::QueueDrop(index) => drop_selected(client, &app, index).await,
             Action::FollowUp(prompt) => {
                 let sid = app.tab().session.clone();
+                // the composer was emptied when this was queued, so its pictures go with it.
+                app.tab_mut().attachments.clear();
                 match rpc(
                     client,
                     "turn.follow_up",
@@ -1964,6 +1966,10 @@ async fn send_prompt(client: &mut Client, app: &mut App, prompt: &str) -> Result
         .iter()
         .map(|a| json!({"media_type": a.media_type, "data": a.data, "name": a.name}))
         .collect();
+    // the composer is empty by now, so the pictures are cleared here: whatever happens to
+    // the send, nothing on screen may still claim an image is attached. steering carries no
+    // image, so it is the one path that used to leave the preview up for good.
+    app.tab_mut().attachments.clear();
     // a prompt sent while a turn runs redirects it rather than being refused.
     if app.tab().status.turn_running {
         match rpc(
@@ -2002,7 +2008,7 @@ async fn send_prompt(client: &mut Client, app: &mut App, prompt: &str) -> Result
     )
     .await
     {
-        Ok(_) => app.tab_mut().attachments.clear(),
+        Ok(_) => {}
         Err(err) => {
             app.tab_mut().status.turn_running = false;
             app.tab_mut().working = None;

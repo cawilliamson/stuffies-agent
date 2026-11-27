@@ -894,10 +894,14 @@ fn a_tool_call_and_its_output_share_one_split_frame() {
         1,
         "the call and its output must share a frame:\n{screen}"
     );
-    // the title says what the tool was pointed at, and how it went.
+    // the title says how the tool went, and the command is the body above it.
     assert!(
-        screen.contains("\u{256d}\u{2500} bash ls -la (exit 1)"),
-        "the title names the command and the exit code:\n{screen}"
+        screen.contains("\u{256d}\u{2500} bash (exit 1)"),
+        "the title names the tool and the exit code:\n{screen}"
+    );
+    assert!(
+        !screen.contains("\u{256d}\u{2500} bash ls -la"),
+        "the command is not repeated in the title:\n{screen}"
     );
     assert!(screen.contains("$ ls -la"), "bash gets a prompt:\n{screen}");
     assert!(
@@ -926,6 +930,26 @@ fn a_tool_without_output_yet_is_its_own_frame() {
     assert!(
         !screen.contains("\u{251c}"),
         "no split without a result:\n{screen}"
+    );
+}
+
+#[test]
+fn a_web_fetch_names_the_url_it_was_pointed_at() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "web_fetch", "args": {"url": "https://example.com/a"}}),
+    );
+    let screen = screen(&mut app, 100, 20);
+    assert!(
+        screen.contains("\u{256d}\u{2500} web_fetch https://example.com/a"),
+        "the title names the url:\n{screen}"
+    );
+    // and the url is still the invocation below the title, not an empty row.
+    assert_eq!(
+        screen.matches("https://example.com/a").count(),
+        2,
+        "the url belongs in the title and the body:\n{screen}"
     );
 }
 
@@ -2138,9 +2162,12 @@ fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
     app.switch_tab(29);
     let row = strip(&mut app, 80);
     assert!(
-        row.contains(&format!("tab30 {}", sa_tui::ui::CLOSE_GLYPH))
-            && row.trim_end().ends_with('+'),
-        "the strip must end on the last tab and its button:\n[{row}]"
+        row.contains(&format!(
+            "tab30 {} {}",
+            sa_tui::ui::CLOSE_GLYPH,
+            sa_tui::ui::NEW_TAB_GLYPH
+        )),
+        "the button follows the last tab, on the strip rather than at the bar's end:\n[{row}]"
     );
     assert!(
         !row.contains('\u{203a}'),
@@ -2157,14 +2184,24 @@ fn the_tab_strip_sits_flush_against_the_end_it_has_reached() {
 }
 
 #[test]
-fn the_tab_strip_offers_a_new_tab_button() {
+fn the_new_tab_button_follows_the_last_tab() {
     let mut app = many_tabs();
     for active in [0usize, 14, 29] {
         app.switch_tab(active);
         let row = strip(&mut app, 80);
+        // the button is on the strip, right after the tabs: not pushed to the far edge of an
+        // empty bar, where it sits a screen away from what it adds to.
+        let at = row
+            .find(sa_tui::ui::NEW_TAB_GLYPH)
+            .expect("a new-tab button");
+        let before = row[..at].trim_end();
         assert!(
-            row.trim_end().ends_with('+'),
-            "the new-tab button sits at the right edge:\n{row}"
+            before.ends_with(sa_tui::ui::CLOSE_GLYPH) || before.ends_with('\u{203a}'),
+            "the button follows the last drawn tab:\n[{row}]"
+        );
+        assert!(
+            row[at + 1..].trim().is_empty(),
+            "nothing is drawn after the button:\n[{row}]"
         );
     }
 }
@@ -2995,26 +3032,51 @@ fn typing_an_effort_lists_and_completes_the_levels_the_endpoint_offers() {
 
 #[test]
 fn a_busy_tab_animates_the_composer_edge() {
-    use ratatui::style::Color;
+    let mut app = App::new("session-abcdef", "m");
+    app.tab_mut().status.turn_running = true;
+    app.tab_mut().working = Some("working".to_owned());
+    app.spinner = 2;
+    assert!(
+        accent_runs(&mut app) > 0,
+        "the loading run must be drawn on the composer edge"
+    );
+}
+
+/// the moving run is the same indicator as the word on the edge, so it never runs on its
+/// own: an edge with no word on it says that something is happening and never what.
+#[test]
+fn the_edge_never_animates_without_a_word() {
+    // a turn is running but nothing has said what it is doing: a client that attached to a
+    // turn already in flight knows no more than that.
     let mut app = App::new("session-abcdef", "m");
     app.tab_mut().status.turn_running = true;
     app.spinner = 2;
+    assert_eq!(accent_runs(&mut app), 0, "no word, no run");
 
+    // a tool is what is running, so the word is off the edge and the run goes with it.
+    app.tab_mut().working = Some("working".to_owned());
+    app.tab_mut().tool_running = true;
+    assert_eq!(accent_runs(&mut app), 0, "no word, no run");
+
+    // and an idle tab animates nothing.
+    app.tab_mut().tool_running = false;
+    app.tab_mut().status.turn_running = false;
+    assert_eq!(accent_runs(&mut app), 0, "no turn, no run");
+}
+
+/// the cells the composer edge lights as the moving run.
+fn accent_runs(app: &mut App) -> usize {
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
-    sa_tui::draw(&mut terminal, &mut app).expect("draw");
-    let buffer = terminal.backend().buffer();
-
-    let accent = Color::Rgb(0x8a, 0xc8, 0xff);
-    let lit = buffer
+    sa_tui::draw(&mut terminal, app).expect("draw");
+    let accent = ratatui::style::Color::Rgb(0x8a, 0xc8, 0xff);
+    terminal
+        .backend()
+        .buffer()
         .content()
         .iter()
         .filter(|cell| cell.fg == accent && cell.symbol() == "\u{2500}")
-        .count();
-    assert!(
-        lit > 0,
-        "the loading run must be drawn on the composer edge"
-    );
+        .count()
 }
 
 #[test]
@@ -4328,4 +4390,86 @@ fn a_diff_in_a_tool_output_is_coloured_by_what_it_does() {
         sa_tui::app::DIM,
         "a file header is neither an addition nor a removal"
     );
+}
+
+/// `web_fetch` returns markdown by its own contract. drawn as it came, the preview is a wall
+/// of `#` and `[text](url)`; laid out, it is the page. the model still gets the markdown.
+#[test]
+fn a_fetched_page_is_laid_out_as_prose() {
+    let mut app = App::new("s", "m");
+    app.tab_mut().on_event(
+        "tool.requested",
+        &json!({"tool": "web_fetch", "args": {"url": "https://example.com/a"}}),
+    );
+    app.tab_mut().on_event(
+        "tool.completed",
+        &json!({"output": "url: https://example.com/a\nstatus: 200\n\n# Notes\n\nThe **prose** that matters.\n\n- one\n- two\n\n## Second\n\nmore text\n\nfooter line", "exit_code": 0}),
+    );
+
+    let collapsed = screen(&mut app, 100, 40);
+    assert!(
+        collapsed.contains("Notes"),
+        "the page's title is drawn:\n{collapsed}"
+    );
+    assert!(
+        collapsed.contains("The prose that matters."),
+        "the emphasis is drawn, not printed:\n{collapsed}"
+    );
+    for marker in ["**", "## "] {
+        assert!(
+            !collapsed.contains(marker),
+            "{marker} is markup, not text:\n{collapsed}"
+        );
+    }
+
+    // the preview is the page's opening: a page is read from the top and its last rows are
+    // the footer.
+    assert!(
+        !collapsed.contains("footer line"),
+        "the footer is folded away:\n{collapsed}"
+    );
+    assert!(
+        collapsed.contains("ctrl+x"),
+        "and the key that opens the rest is on screen:\n{collapsed}"
+    );
+
+    // ctrl+x opens the whole page.
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('x'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+    let opened = screen(&mut app, 100, 60);
+    assert!(opened.contains("footer line"), "{opened}");
+}
+
+/// the preview shows what the composer will send, so it cannot outlive the text it came
+/// from. a picture left on screen after the message went is a picture attached to nothing,
+/// whether the prompt started a turn, steered one, or was queued for after it.
+#[test]
+fn the_attachment_preview_goes_when_the_prompt_does() {
+    let dir = std::env::temp_dir().join("sa-tui-attach-sent");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("sent.png");
+    std::fs::write(&path, [0x89, b'P', b'N', b'G']).expect("write png");
+
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &path.display().to_string());
+    assert!(
+        app.shown_attachment().is_some(),
+        "the path on screen is previewed"
+    );
+
+    app.on_key(key(KeyCode::Enter));
+    assert!(
+        app.shown_attachment().is_none(),
+        "the preview goes with the prompt"
+    );
+
+    // and the send still carries the bytes: the prompt is read before the preview is
+    // dropped, which is why the list is emptied where the send happens rather than here.
+    let mut app = App::new("session-abcdef", "m");
+    type_text(&mut app, &path.display().to_string());
+    assert_eq!(app.tab().attachments.len(), 1);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.tab().attachments.len(), 1, "the bytes are still there");
 }

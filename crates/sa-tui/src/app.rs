@@ -318,6 +318,9 @@ const SCROLLBAR_HOLD: std::time::Duration = std::time::Duration::from_millis(120
 /// lines moved per page key.
 const PAGE_STEP: u16 = 20;
 
+/// the rows of a fetched page the transcript shows before `ctrl+x` opens the rest.
+const PROSE_PREVIEW: usize = 12;
+
 /// lines moved per wheel notch.
 const WHEEL_STEP: i32 = 3;
 
@@ -1964,6 +1967,18 @@ impl App {
         self.touch();
     }
 
+    /// the attachment the composer still names, if any. the preview shows what will be
+    /// sent, so it cannot outlive the text it was read from: a picture left on screen after
+    /// the message went is a picture attached to nothing.
+    pub fn shown_attachment(&mut self) -> Option<&mut Attachment> {
+        let wanted = attachment_paths(&self.tab().input_text());
+        self.tab_mut()
+            .attachments
+            .iter_mut()
+            .rev()
+            .find(|held| wanted.contains(&held.path))
+    }
+
     /// keeps attachments in step with the image paths in the composer, so the operator
     /// just types a filename rather than running a command.
     fn refresh_attachments(&mut self) {
@@ -2430,7 +2445,7 @@ impl App {
 }
 
 fn summarise(args: &Value) -> String {
-    for key in ["path", "command", "pattern"] {
+    for key in ["command", "path", "pattern", "query", "url"] {
         if let Some(value) = args.get(key).and_then(Value::as_str) {
             return value.to_owned();
         }
@@ -2674,6 +2689,12 @@ impl tui_markdown::StyleSheet for ListingStyle {
     fn code_block_fence(&self) -> &'static str {
         ""
     }
+
+    // a heading is already set apart by its style, so the marker that produced it is one more
+    // piece of markup on screen than the reader needs.
+    fn heading_marker(&self, _level: u8) -> &'static str {
+        ""
+    }
 }
 
 /// splits styled text into rows that fit `room`, breaking at a space where one is close
@@ -2801,10 +2822,15 @@ fn inset(out: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// the frame title for an entry: the tool's own name, or `output (exit N)`.
-fn entry_label(entry: &Entry, model: &str) -> String {
+/// the frame title for an entry: the tool and what it was pointed at, or `output (exit N)`.
+fn entry_label(entry: &Entry, model: &str, width: usize) -> String {
     match entry.role {
-        Role::Tool => entry.tool.clone().unwrap_or_else(|| "tool".to_owned()),
+        Role::Tool => tool_title(
+            entry.tool.as_deref().unwrap_or("tool"),
+            &entry.text,
+            entry.exit_code,
+            width,
+        ),
         Role::ToolOutput => entry.exit_code.map_or_else(
             || "output".to_owned(),
             |code| format!("output (exit {code})"),
@@ -2823,6 +2849,26 @@ fn entry_label(entry: &Entry, model: &str) -> String {
     }
 }
 
+/// the title of a tool's frame: what the tool was pointed at belongs there. "grep" on its
+/// own says nothing about what was searched, and the title is what the operator reads first.
+///
+/// the target is only named when it fits whole. a title cut short teaches nothing the
+/// invocation below does not already say, and an ellipsis in a heading is just noise.
+///
+/// `bash` is the exception: a command is a line, not a word, so the heading carries the tool
+/// and how it went while the command itself stays in the body above the output.
+fn tool_title(tool: &str, call: &str, exit_code: Option<i32>, width: usize) -> String {
+    let suffix = exit_code.map_or_else(String::new, |code| format!(" (exit {code})"));
+    // `top` spends five columns on the frame: `╭─ `, the space after the label, and `╮`.
+    let room = width.saturating_sub(tool.chars().count() + suffix.chars().count() + 6);
+    let first = call.lines().next().unwrap_or_default().trim();
+    if tool != "bash" && first.chars().count() <= room && !first.is_empty() {
+        format!("{tool} {first}{suffix}")
+    } else {
+        format!("{tool}{suffix}")
+    }
+}
+
 /// the body text for an entry, with a shell prompt in front of a command.
 fn entry_body(entry: &Entry) -> String {
     if entry.role == Role::Tool && entry.tool.as_deref() == Some("bash") {
@@ -2837,7 +2883,7 @@ fn framed(entry: &Entry, width: usize, model: &str) -> Vec<Line<'static>> {
     let (_, edge, ink) = role_style(entry.role, model);
     let width = width.saturating_sub(2);
     let mut out = Vec::new();
-    top(&mut out, &entry_label(entry, model), width, edge);
+    top(&mut out, &entry_label(entry, model, width), width, edge);
     // only prose the model wrote is markdown. our own notices are laid out by us, and a
     // listing whose lines matter must not be folded into one paragraph.
     let markdown = !matches!(entry.role, Role::System | Role::Tool | Role::ToolOutput);
@@ -2878,22 +2924,13 @@ fn framed_tool(
     let (_, _, out_ink) = role_style(Role::ToolOutput, "");
     let width = width.saturating_sub(2);
 
-    // what the tool was pointed at belongs in the title. "grep" on its own says nothing
-    // about what was searched, and the title is what the operator reads first.
-    //
-    // the target is only named when it fits whole. a title cut short teaches nothing the
-    // invocation below does not already say, and an ellipsis in a heading is just noise.
-    let suffix = exit_code.map_or_else(String::new, |code| format!(" (exit {code})"));
-    // `top` spends five columns on the frame: `╭─ `, the space after the label, and `╮`.
-    let room = width.saturating_sub(tool.chars().count() + suffix.chars().count() + 6);
-    let first = call.lines().next().unwrap_or_default().trim();
-    let title = if first.chars().count() <= room && !first.is_empty() {
-        format!("{tool} {first}{suffix}")
-    } else {
-        format!("{tool}{suffix}")
-    };
     let mut out = Vec::new();
-    top(&mut out, &title, width, edge);
+    top(
+        &mut out,
+        &tool_title(tool, call, exit_code, width),
+        width,
+        edge,
+    );
 
     // the invocation in full, always: it is what was run, and a command that wraps or does
     // not fit a heading is still shown above its output.
@@ -2906,26 +2943,52 @@ fn framed_tool(
     divider(&mut out, width, edge);
 
     // collapsed, the tail is what says how the command went; ctrl+x shows the rest.
-    let (shown, hidden) = if expanded {
-        (output.to_owned(), 0)
-    } else {
-        tail(output)
-    };
-    if hidden > 0 {
-        body(
-            &mut out,
-            &format!("\u{2026} {hidden} earlier line(s) \u{00b7} ctrl+x to expand"),
-            width,
-            out_ink,
-            false,
-            edge,
-            false,
-        );
-    }
-    if shown.trim().is_empty() {
+    //
+    // `web_fetch` is the other way up. it returns markdown by its own contract, so it is
+    // laid out rather than printed: as it came, the preview is a wall of `#` and
+    // `[text](url)` that nobody reads. its preview is the page's opening, because a page is
+    // read from the top and its last rows are the footer.
+    let prose = tool == "web_fetch";
+    if output.trim().is_empty() {
         // a command that printed nothing is a result, not a panel that failed to draw.
         body(&mut out, "<no output>", width, out_ink, false, edge, false);
+    } else if prose {
+        // the window is taken over the drawn rows, so it is a slice of the page rather than
+        // of its markup.
+        let mut rows = Vec::new();
+        body(&mut rows, output, width, out_ink, true, edge, false);
+        let hidden = rows.len().saturating_sub(PROSE_PREVIEW);
+        if !expanded && hidden > 0 {
+            body(
+                &mut out,
+                &format!("\u{2026} {hidden} later line(s) \u{00b7} ctrl+x to expand"),
+                width,
+                out_ink,
+                false,
+                edge,
+                false,
+            );
+            out.extend(rows.into_iter().take(PROSE_PREVIEW));
+        } else {
+            out.extend(rows);
+        }
     } else {
+        let (shown, hidden) = if expanded {
+            (output.to_owned(), 0)
+        } else {
+            tail(output)
+        };
+        if hidden > 0 {
+            body(
+                &mut out,
+                &format!("\u{2026} {hidden} earlier line(s) \u{00b7} ctrl+x to expand"),
+                width,
+                out_ink,
+                false,
+                edge,
+                false,
+            );
+        }
         body_ansi(&mut out, &shown, width, out_ink, edge);
     }
     bottom(&mut out, width, edge);
@@ -2953,7 +3016,7 @@ fn framed_split(
     width: usize,
 ) -> Vec<Line<'static>> {
     let (_, edge, reply_ink) = role_style(Role::Assistant, model);
-    let label = entry_label(entry, model);
+    let label = entry_label(entry, model, width);
     let (_, _, think_ink) = role_style(Role::Thinking, model);
     let width = width.saturating_sub(2);
     let mut out = Vec::new();
