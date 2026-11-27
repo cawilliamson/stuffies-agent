@@ -24,8 +24,19 @@ use std::fmt::Write as _;
 pub const CLIENT_QUEUE: usize = 4096;
 /// compaction fires at this fraction of the model context limit (spec 10.4).
 pub const COMPACTION_TRIGGER: f64 = 0.80;
-/// turns kept verbatim across a compaction.
+/// turns kept verbatim across a compaction, whatever the size of them (spec 10.4).
 pub const COMPACTION_RETAIN_TURNS: usize = 4;
+/// what the retained turns may add up to, as a fraction of the window.
+///
+/// a compaction that leaves a tail this size has bought many turns of headroom; one that
+/// leaves the tail over the trigger fires again on the next turn and never gets anywhere.
+pub const COMPACTION_RETAIN: f64 = 0.50;
+/// the newest events the model's view is built from.
+///
+/// a window taken from seq 0 is the oldest events, which on a long session is the beginning
+/// of a conversation that has moved on: the model then answers with the first few turns and
+/// never sees the work in hand.
+pub const VIEW_EVENTS: usize = 100_000;
 /// rough token estimate. ponytail: four characters per token, no tokeniser dependency.
 pub const CHARS_PER_TOKEN: u64 = 4;
 
@@ -911,24 +922,9 @@ impl Manager {
         let agent = Agent::new(Arc::clone(&self.config.provider), tools, sink);
         let all = self
             .store
-            .events_since(&session_id, 0, 100_000)
-            .map(|(events, _)| events)
+            .events_tail(&session_id, VIEW_EVENTS)
             .unwrap_or_default();
-        let compaction = all
-            .iter()
-            .rev()
-            .find(|e| e.kind == kinds::COMPACTION_APPLIED)
-            .map(|e| {
-                (
-                    e.payload.get("to_seq").and_then(Value::as_u64).unwrap_or(0),
-                    e.payload
-                        .get("summary")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                )
-            });
-        let (history, compaction_summary) = match compaction {
+        let (history, compaction_summary) = match self.last_compaction(&session_id) {
             Some((to_seq, summary)) => (
                 all.iter().filter(|e| e.seq > to_seq).cloned().collect(),
                 Some(summary),
@@ -1301,7 +1297,7 @@ impl Manager {
     /// the size of the model's view as the provider last reported it. this is the prompt
     /// the endpoint actually counted, not an estimate of the log's bytes.
     #[must_use]
-    pub fn context_used(&self, session_id: &str) -> u64 {
+    pub fn context_used(&self, session_id: &str) -> Option<u64> {
         self.store
             .last_event_of_kind(session_id, &[kinds::LLM_COMPLETED])
             .ok()
@@ -1313,30 +1309,55 @@ impl Manager {
                     .and_then(|usage| usage.get("prompt_tokens"))
                     .and_then(Value::as_u64)
             })
-            .unwrap_or_default()
     }
 
-    /// estimates the token cost of the log, used only where a provider figure does not
-    /// exist yet.
+    /// the summary the last compaction left, and the sequence it reached.
+    fn last_compaction(&self, session_id: &str) -> Option<(u64, String)> {
+        self.store
+            .last_event_of_kind(session_id, &[kinds::COMPACTION_APPLIED])
+            .ok()
+            .flatten()
+            .map(|event| {
+                (
+                    event
+                        .payload
+                        .get("to_seq")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    event
+                        .payload
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+    }
+
+    /// how far the last compaction reached, so the next one folds only what is new.
+    fn last_compaction_to(&self, session_id: &str) -> u64 {
+        self.last_compaction(session_id)
+            .map_or(0, |(to_seq, _)| to_seq)
+    }
+
+    /// the summary the model's view carries in place of the turns a compaction replaced.
+    fn compaction_summary(&self, session_id: &str) -> Option<String> {
+        self.last_compaction(session_id).map(|(_, summary)| summary)
+    }
+
+    /// estimates the token cost of the model's view, for the case where the endpoint has not
+    /// counted a prompt yet.
+    ///
+    /// only what the transcript rebuild replays is counted: prompts, the text of each answer,
+    /// the calls and their results. reasoning is streamed to the operator and never replayed,
+    /// and it is most of the log, so counting it made a session read as many times its real
+    /// size and tripped compaction on every turn.
     #[must_use]
     pub fn estimate_tokens(&self, session_id: &str) -> u64 {
-        let Ok((events, _)) = self.store.events_since(session_id, 0, 100_000) else {
+        let Ok(events) = self.store.events_tail(session_id, VIEW_EVENTS) else {
             return 0;
         };
-        let mut tokens = 0_u64;
-        for event in &events {
-            // attached pictures live in the log so the transcript can draw them, but the
-            // model's view carries only the prompt: counting base64 would show a few
-            // screenshots as most of the window.
-            let mut payload = event.payload.clone();
-            if let Value::Object(map) = &mut payload {
-                if map.get("images").is_some_and(Value::is_array) {
-                    map.insert("images".to_owned(), Value::Array(Vec::new()));
-                }
-            }
-            tokens += crate::tokens::estimate_rounded(&payload.to_string());
-        }
-        tokens
+        events.iter().map(replayed_tokens).sum()
     }
 
     /// summarises the oldest turns when the session approaches the context limit (spec 10.4).
@@ -1353,30 +1374,67 @@ impl Manager {
             return Ok(None);
         };
         let threshold = (limit as f64 * COMPACTION_TRIGGER) as u64;
+        // the provider's own count of the prompt it was sent is the only figure that
+        // measures the model's view; an estimate stands in only where the endpoint has not
+        // counted one yet. taking the larger of the two let an estimate over the whole log —
+        // which never shrinks — outvote the real number for the life of the session.
         let before = self
             .context_used(session_id)
-            .max(self.estimate_tokens(session_id));
+            .unwrap_or_else(|| self.estimate_tokens(session_id));
         if before < threshold {
             return Ok(None);
         }
 
-        let (events, _) = self.store.events_since(session_id, 0, 100_000)?;
-        let starts: Vec<u64> = events
+        // where the last compaction reached, so a second one folds what is new rather than
+        // the same turns again.
+        let done_to = self.last_compaction_to(session_id);
+        let events = self.store.events_tail(session_id, VIEW_EVENTS)?;
+        let starts: Vec<usize> = events
             .iter()
-            .filter(|e| e.kind == kinds::TURN_STARTED)
-            .map(|e| e.seq)
+            .enumerate()
+            .filter(|(_, e)| e.kind == kinds::TURN_STARTED)
+            .map(|(index, _)| index)
             .collect();
         if starts.len() <= COMPACTION_RETAIN_TURNS {
             return Ok(None);
         }
-        let cutoff = starts[starts.len() - COMPACTION_RETAIN_TURNS];
-        let to_seq = cutoff.saturating_sub(1);
-        if to_seq == 0 {
+        // what each event costs the model's view, so the tail a candidate keeps is one
+        // lookup rather than a rescan.
+        let mut suffix = vec![0_u64; events.len() + 1];
+        for index in (0..events.len()).rev() {
+            suffix[index] = suffix[index + 1].saturating_add(replayed_tokens(&events[index]));
+        }
+        let budget = (limit as f64 * COMPACTION_RETAIN) as u64;
+        // the newest turn that may be summarised: the last `COMPACTION_RETAIN_TURNS` are kept
+        // verbatim, and beyond that the tail has to fit the budget or the next turn fires
+        // again on the same oversize view.
+        let oldest = starts[0];
+        let newest = starts[starts.len() - COMPACTION_RETAIN_TURNS];
+        // the newest candidate that fits keeps the most verbatim; when the tail is too big
+        // to fit at all, fold as far as the floor allows.
+        let chosen = (oldest..=newest)
+            .rev()
+            .filter(|index| events[*index].kind == kinds::TURN_STARTED)
+            .find(|index| suffix[*index] <= budget)
+            .unwrap_or(oldest);
+        let to_seq = events[chosen].seq.saturating_sub(1);
+        // nothing new to fold: summarising the same range again costs a call and changes
+        // nothing.
+        if to_seq == 0 || to_seq <= done_to {
             return Ok(None);
         }
 
+        // only the events the last summary did not already cover, so the work of folding is
+        // done once rather than once per turn.
+        let (folding, _) =
+            self.store
+                .events_between(session_id, done_to, Some(to_seq), VIEW_EVENTS)?;
         let mut transcript = String::new();
-        for event in events.iter().filter(|e| e.seq <= to_seq) {
+        let previous = self.compaction_summary(session_id);
+        if let Some(summary) = &previous {
+            let _ = writeln!(transcript, "summary so far: {summary}");
+        }
+        for event in &folding {
             match event.kind.as_str() {
                 kinds::TURN_STARTED => {
                     if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
@@ -1593,4 +1651,27 @@ fn default_title(cwd: &std::path::Path) -> String {
         || "session".to_owned(),
         |n| n.to_string_lossy().into_owned(),
     )
+}
+
+/// what an event adds to the model's view, in tokens.
+///
+/// only the kinds the transcript rebuild replays count. reasoning is streamed to the
+/// operator and never replayed, and it is most of the log: counting it made a session read as
+/// many times its real size.
+fn replayed_tokens(event: &Event) -> u64 {
+    let field = match event.kind.as_str() {
+        kinds::TOOL_COMPLETED => "output",
+        kinds::TOOL_FAILED => "error",
+        kinds::TOOL_REQUESTED => "args",
+        kinds::TURN_STARTED | kinds::TURN_STEERED => "prompt",
+        kinds::LLM_COMPLETED => "text",
+        _ => return 0,
+    };
+    let Some(value) = event.payload.get(field) else {
+        return 0;
+    };
+    match value {
+        Value::String(text) => crate::tokens::estimate_rounded(text),
+        other => crate::tokens::estimate_rounded(&other.to_string()),
+    }
 }

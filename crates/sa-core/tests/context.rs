@@ -76,7 +76,7 @@ fn the_used_figure_is_the_prompt_the_provider_counted() {
         .expect("create")
         .session_id;
 
-    assert_eq!(manager.context_used(&session), 0, "nothing measured yet");
+    assert_eq!(manager.context_used(&session), None, "nothing measured yet");
 
     manager
         .append(
@@ -88,7 +88,7 @@ fn the_used_figure_is_the_prompt_the_provider_counted() {
 
     assert_eq!(
         manager.context_used(&session),
-        1234,
+        Some(1234),
         "the figure must be the provider's own count, not an estimate"
     );
 }
@@ -272,5 +272,186 @@ fn changing_directory_records_the_context_for_the_new_one() {
     assert!(
         !files.iter().any(|file| file.ends_with("AGENTS.md")),
         "the old directory's files must not carry over: {files:?}"
+    );
+}
+
+/// reasoning is streamed to the operator and never replayed, and it is most of the log.
+/// counting it made a session read as many times its real size, and every turn compacted.
+#[test]
+fn reasoning_is_not_part_of_the_context_estimate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = manager(dir.path(), vec![model("big", Some(1_000_000), &[])]);
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+
+    manager
+        .append(
+            &session,
+            sa_proto::session::kinds::TURN_STARTED,
+            &json!({"prompt": "look at the repo"}),
+        )
+        .expect("append");
+    for _ in 0..200 {
+        manager
+            .append(
+                &session,
+                sa_proto::session::kinds::LLM_REASONING,
+                &json!({"text": "x".repeat(4000)}),
+            )
+            .expect("append");
+    }
+
+    let estimate = manager.estimate_tokens(&session);
+    assert!(
+        estimate < 100,
+        "800k characters of reasoning must not read as 200k tokens: {estimate}"
+    );
+}
+
+/// a window taken from seq 0 is the oldest events, which on a long session is the beginning
+/// of a conversation that has moved on.
+#[test]
+fn the_history_window_is_the_newest_events() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = manager(dir.path(), vec![model("big", Some(1_000_000), &[])]);
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+    for n in 0..40 {
+        manager
+            .append(
+                &session,
+                sa_proto::session::kinds::TURN_STARTED,
+                &json!({"prompt": format!("step {n}")}),
+            )
+            .expect("append");
+    }
+
+    let tail = manager.store().events_tail(&session, 5).expect("tail");
+    assert_eq!(tail.len(), 5, "five events were asked for");
+    assert_eq!(
+        tail.last().expect("an event").payload["prompt"],
+        "step 39",
+        "the window ends on the newest event"
+    );
+    assert_eq!(
+        tail.first().expect("an event").payload["prompt"],
+        "step 35",
+        "and starts five events back, not at the beginning"
+    );
+}
+
+/// a manager whose provider replays a script, for the calls that summarise.
+fn manager_scripted(
+    dir: &std::path::Path,
+    models: Vec<ModelInfo>,
+    script: Vec<Vec<Delta>>,
+) -> (Arc<Manager>, Arc<ScriptedProvider>) {
+    let store = Store::open(&dir.join("sa.db")).expect("store");
+    let scripted = Arc::new(ScriptedProvider::new(script));
+    let provider: Arc<dyn Provider> = scripted.clone();
+    let manager = Arc::new(Manager::new(
+        store,
+        Arc::new(ManagerConfig {
+            host_fingerprint: "test-host".to_owned(),
+            provider,
+            max_tokens: None,
+            lock_dir: dir.join("locks"),
+            checkpoint_dir: dir.join("checkpoints"),
+            turn_timeout_secs: 30,
+            aux_budget_secs: 5,
+            models: Arc::new(Mutex::new(models)),
+            mcp: Arc::new(sa_core::mcp::Hub::empty()),
+            lsp: Arc::new(sa_core::lsp::Hub::new()),
+        }),
+    ));
+    (manager, scripted)
+}
+
+fn summary_stream() -> Vec<Delta> {
+    vec![
+        Delta::Text("earlier: the operator asked for a change and it was made.".to_owned()),
+        Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 40,
+            completion_tokens: 12,
+            cached_tokens: 0,
+        },
+    ]
+}
+
+/// a compaction folds the old turns into a summary and then stops: the next turn finds
+/// nothing new to fold, so it does not summarise the same range again and again.
+#[tokio::test]
+async fn a_compaction_folds_the_old_turns_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // a small window, so a handful of turns trips the trigger.
+    let (manager, scripted) = manager_scripted(
+        dir.path(),
+        vec![model("small", Some(4_000), &[])],
+        vec![summary_stream(), summary_stream()],
+    );
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+    for n in 0..8 {
+        manager
+            .append(
+                &session,
+                sa_proto::session::kinds::TURN_STARTED,
+                &json!({"prompt": format!("step {n}")}),
+            )
+            .expect("append");
+        manager
+            .append(
+                &session,
+                sa_proto::session::kinds::TOOL_COMPLETED,
+                &json!({"output": "y".repeat(3_000)}),
+            )
+            .expect("append");
+    }
+
+    let summary = manager
+        .maybe_compact(&session, "small")
+        .await
+        .expect("compaction");
+    assert!(summary.is_some(), "the window was over the trigger");
+
+    let applied = manager
+        .store()
+        .last_event_of_kind(&session, &[sa_proto::session::kinds::COMPACTION_APPLIED])
+        .expect("read")
+        .expect("a compaction event");
+    let to_seq = applied.payload["to_seq"].as_u64().expect("to_seq");
+    assert!(to_seq > 0, "the folded range is not empty");
+    assert_eq!(
+        applied.payload["from_seq"],
+        json!(1),
+        "it starts at the top"
+    );
+    assert!(
+        applied.payload["summary"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "the summary is in the event"
+    );
+
+    // nothing new to fold: the second check must not call the model again.
+    let again = manager
+        .maybe_compact(&session, "small")
+        .await
+        .expect("compaction");
+    assert!(
+        again.is_none(),
+        "the same range must not be summarised twice"
+    );
+    assert_eq!(
+        scripted.seen_requests().len(),
+        1,
+        "one summarisation, not one per turn"
     );
 }

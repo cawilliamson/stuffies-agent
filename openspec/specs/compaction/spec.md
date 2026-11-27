@@ -26,7 +26,11 @@ limit, compaction SHALL NOT fire on a guess.
 ### Requirement: What is retained
 
 A compaction SHALL retain at least the last 4 complete turns verbatim and SHALL summarise
-only events before them. A session with 4 or fewer turns SHALL NOT be compacted.
+only events before them. A session with 4 or fewer turns SHALL NOT be compacted. It SHALL
+fold enough turns that what remains fits the window: a compaction that leaves the retained
+turns over the trigger fires again on the next turn and never gets anywhere. It SHALL fold
+only events the previous compaction did not already cover, and SHALL NOT summarise the same
+range twice.
 
 #### Scenario: The recent turns stay verbatim
 
@@ -37,6 +41,16 @@ only events before them. A session with 4 or fewer turns SHALL NOT be compacted.
 
 - **WHEN** the session has four or fewer turns
 - **THEN** no compaction event is appended
+
+#### Scenario: A compaction is not repeated
+
+- **WHEN** a session is checked again with nothing new before the retained turns
+- **THEN** no summarisation call is made and no event is appended
+
+#### Scenario: The folded range advances
+
+- **WHEN** a second compaction runs after new turns have pushed the view over the trigger
+- **THEN** it summarises from where the last one reached, not from the top again
 
 ### Requirement: The summarisation is recorded
 

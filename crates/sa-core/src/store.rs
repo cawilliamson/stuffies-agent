@@ -363,6 +363,19 @@ impl Store {
         Ok(u64::try_from(seq).unwrap_or(u64::MAX))
     }
 
+    /// the newest `limit` events, in order.
+    ///
+    /// a window taken from seq 0 is the *oldest* events, which on a long session is the
+    /// beginning of a conversation that has long since moved on: the model then answers with
+    /// the first few turns and never sees the work it is in the middle of.
+    pub fn events_tail(&self, session_id: &str, limit: usize) -> Result<Vec<Event>, StoreError> {
+        let last = self.last_seq(session_id)?;
+        let span = u64::try_from(limit).unwrap_or(u64::MAX);
+        let from = last.saturating_sub(span);
+        self.events_between(session_id, from, None, limit)
+            .map(|(events, _)| events)
+    }
+
     /// the last event of any of `kinds` for a session.
     pub fn last_event_of_kind(
         &self,
