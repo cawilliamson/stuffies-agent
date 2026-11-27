@@ -45,6 +45,7 @@ impl ToolExecutor for FixedTool {
             Ok(ToolOutcome {
                 output: "file contents".to_owned(),
                 exit_code: None,
+                images: Vec::new(),
             })
         })
     }
@@ -344,6 +345,7 @@ async fn a_flooding_tool_result_is_capped_and_marked() {
                     // multi-byte throughout, so a naive byte cut would panic.
                     output: "é".repeat(sa_core::tools::MAX_TOOL_OUTPUT),
                     exit_code: Some(0),
+                    images: Vec::new(),
                 })
             })
         }
@@ -545,6 +547,7 @@ impl ToolExecutor for HangingTool {
             Ok(ToolOutcome {
                 output: "never".to_owned(),
                 exit_code: None,
+                images: Vec::new(),
             })
         })
     }
@@ -1052,5 +1055,82 @@ async fn a_cancelled_turn_records_what_it_had_written() {
     assert_eq!(
         completed.1["text"], "an old",
         "with the text it had written"
+    );
+}
+
+/// a tool that answers with a picture.
+struct PictureTool;
+
+impl ToolExecutor for PictureTool {
+    fn specs(&self) -> Vec<ToolSpec> {
+        FixedTool.specs()
+    }
+
+    fn execute(&self, _call: ToolCall) -> BoxFuture<'_, Result<ToolOutcome, String>> {
+        Box::pin(async {
+            Ok(ToolOutcome {
+                output: "image: shot.png (image/png, 1 KiB)".to_owned(),
+                exit_code: None,
+                images: vec![sa_proto::session::ImageAttachment {
+                    media_type: "image/png".to_owned(),
+                    data: "iVBORw0KGgo=".to_owned(),
+                    name: Some("shot.png".to_owned()),
+                }],
+            })
+        })
+    }
+}
+
+/// the picture a tool produced is part of what it said: the log keeps it, so the next round
+/// — and the next turn, which is rebuilt from the log — still has it rather than a line
+/// saying there was one.
+#[tokio::test]
+async fn a_tool_image_reaches_the_model_and_the_log() {
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            Delta::ToolCall(ToolCall {
+                id: "call_img".to_owned(),
+                name: "read".to_owned(),
+                arguments: json!({"path": "shot.png"}).to_string(),
+            }),
+            Delta::Done {
+                stop_reason: "tool_calls".to_owned(),
+                prompt_tokens: 5,
+                completion_tokens: 5,
+                cached_tokens: 0,
+            },
+        ],
+        vec![
+            Delta::Text("a screenshot".to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 5,
+                completion_tokens: 5,
+                cached_tokens: 0,
+            },
+        ],
+    ]));
+    let sink = Arc::new(RecordingSink::default());
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(PictureTool),
+        Arc::clone(&sink) as Arc<dyn EventSink>,
+    );
+    agent.run_turn(request()).await.expect("turn");
+
+    let seen = provider.seen_requests();
+    assert_eq!(seen.len(), 2, "the agent must continue after the call");
+    let carried: usize = seen[1].messages.iter().map(|m| m.images().count()).sum();
+    assert_eq!(carried, 1, "the picture rides with the tool result");
+
+    let events = sink.events.lock().expect("events");
+    let completed = events
+        .iter()
+        .find(|(kind, _)| kind == "tool.completed")
+        .expect("a tool.completed event");
+    assert_eq!(
+        completed.1["images"][0]["name"],
+        json!("shot.png"),
+        "the log keeps the picture for the next turn"
     );
 }

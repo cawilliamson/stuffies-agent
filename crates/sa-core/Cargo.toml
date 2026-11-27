@@ -11,6 +11,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64.workspace = true
 command-group.workspace = true
 dom_query.workspace = true
 dom_smoothie.workspace = true

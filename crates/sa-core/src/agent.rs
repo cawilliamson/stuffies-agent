@@ -55,6 +55,9 @@ pub trait EventSink: Send + Sync {
 pub struct ToolOutcome {
     pub output: String,
     pub exit_code: Option<i32>,
+    /// pictures the call produced. a tool that answers with an image answers with the image,
+    /// not with a description of it, and the log keeps it so the next turn still has it.
+    pub images: Vec<sa_proto::session::ImageAttachment>,
 }
 
 pub trait ToolExecutor: Send + Sync {
@@ -244,6 +247,12 @@ impl Agent {
             let mut text = String::new();
             let mut tool_calls = Vec::new();
             let mut done = false;
+            // what this round-trip cost on its own. the turn's running total is not the size
+            // of the prompt: recording that as the prompt made one turn's log read 2.8m
+            // tokens and then 88k in the same breath.
+            let mut round_prompt = 0_u64;
+            let mut round_completion = 0_u64;
+            let mut round_cached = 0_u64;
 
             loop {
                 let delta = match self.next_delta(&mut rx).await {
@@ -261,9 +270,9 @@ impl Agent {
                                     "text": text,
                                     "purpose": "turn",
                                     "usage": {
-                                        "prompt_tokens": usage.prompt_tokens,
-                                        "completion_tokens": usage.completion_tokens,
-                                        "cached_tokens": usage.cached_tokens,
+                                        "prompt_tokens": round_prompt,
+                                        "completion_tokens": round_completion,
+                                        "cached_tokens": round_cached,
                                     },
                                 }),
                             )?;
@@ -295,6 +304,9 @@ impl Agent {
                         completion_tokens,
                         cached_tokens,
                     } => {
+                        round_prompt = prompt_tokens;
+                        round_completion = completion_tokens;
+                        round_cached = cached_tokens;
                         usage.prompt_tokens += prompt_tokens;
                         usage.completion_tokens += completion_tokens;
                         usage.cached_tokens += cached_tokens;
@@ -357,9 +369,9 @@ impl Agent {
                     "text": text,
                     "purpose": "turn",
                     "usage": {
-                        "prompt_tokens": usage.prompt_tokens,
-                        "completion_tokens": usage.completion_tokens,
-                        "cached_tokens": usage.cached_tokens,
+                        "prompt_tokens": round_prompt,
+                        "completion_tokens": round_completion,
+                        "cached_tokens": round_cached,
                     },
                 }),
             )?;
@@ -395,18 +407,22 @@ impl Agent {
                 match executed {
                     Ok(outcome) => {
                         let (output, truncated) = cap_tool_output(outcome.output);
-                        self.sink.append(
-                            kinds::TOOL_COMPLETED,
-                            &json!({
-                                "turn_id": request.turn_id,
-                                "call_id": call.id,
-                                "output": output,
-                                "truncated": truncated,
-                                "exit_code": outcome.exit_code,
-                                "duration_ms": started.elapsed().as_millis() as u64,
-                            }),
-                        )?;
-                        messages.push(message::tool_result(call, output)?);
+                        let mut completed = json!({
+                            "turn_id": request.turn_id,
+                            "call_id": call.id,
+                            "output": output,
+                            "truncated": truncated,
+                            "exit_code": outcome.exit_code,
+                            "duration_ms": started.elapsed().as_millis() as u64,
+                        });
+                        // a picture the tool produced is part of what it said, so the log
+                        // carries it: the transcript draws it and the next turn's history
+                        // still has it.
+                        if !outcome.images.is_empty() {
+                            completed["images"] = json!(outcome.images);
+                        }
+                        self.sink.append(kinds::TOOL_COMPLETED, &completed)?;
+                        messages.push(message::tool_result(call, output, &outcome.images)?);
                     }
                     Err(error) => {
                         self.sink.append(
@@ -418,7 +434,7 @@ impl Agent {
                                 "class": "tool_error",
                             }),
                         )?;
-                        messages.push(message::tool_result(call, format!("error: {error}"))?);
+                        messages.push(message::tool_result(call, format!("error: {error}"), &[])?);
                     }
                 }
             }
@@ -512,7 +528,11 @@ impl Agent {
                         },
                         str::to_owned,
                     );
-                    messages.push(message::tool_result(call, content)?);
+                    let images: Vec<sa_proto::session::ImageAttachment> =
+                        event.payload.get("images").map_or_else(Vec::new, |value| {
+                            serde_json::from_value(value.clone()).unwrap_or_default()
+                        });
+                    messages.push(message::tool_result(call, content, &images)?);
                 }
                 _ => {}
             }
@@ -559,6 +579,10 @@ fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
             // work on a machine that has none of them.
             "- prefer the built-in tools: read a file before editing it, search with \
              grep and find, and change code with edit rather than rewriting the file\n\
+             - you can see images: `read` returns a `png`, `jpeg`, `gif` or `webp` file as \
+             the picture itself, so read a screenshot, a diagram or a photo to look at it \
+             rather than asking what it shows. an image the operator names in a prompt is \
+             already attached to that prompt, so look at it there\n\
              - use bash for what no built-in tool does: running the project's tests, \
              builds and its own commands\n\
              - every edit and write reports what the language server says about the \

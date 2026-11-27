@@ -880,3 +880,61 @@ async fn openspec_needs_a_tree() {
         .expect_err("no tree");
     assert!(err.contains("no openspec/ directory"), "{err}");
 }
+
+/// a picture is not text. `read` hands the model the image itself, so a screenshot is
+/// something it looks at rather than a utf-8 error.
+#[tokio::test]
+async fn read_returns_an_image_as_a_picture() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    // a real png header, so the type is taken from the bytes and not from the name.
+    let png: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    std::fs::write(dir.path().join("shot.png"), png).expect("write");
+
+    let outcome = reg
+        .execute(call("read", &json!({"path": "shot.png"})))
+        .await
+        .expect("read");
+
+    assert_eq!(outcome.images.len(), 1, "the picture is the result");
+    assert!(
+        outcome.output.contains("shot.png") && outcome.output.contains("image/png"),
+        "the text names the file and its type: {:?}",
+        outcome.output
+    );
+    assert!(outcome.output.contains("KiB"), "{:?}", outcome.output);
+}
+
+/// the type comes from the bytes: a text file named `.png` is still text.
+#[tokio::test]
+async fn a_misnamed_text_file_is_still_text() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    std::fs::write(dir.path().join("notes.png"), "just prose\n").expect("write");
+
+    let outcome = reg
+        .execute(call("read", &json!({"path": "notes.png"})))
+        .await
+        .expect("read");
+
+    assert!(outcome.images.is_empty(), "no picture here");
+    assert!(
+        outcome.output.contains("just prose"),
+        "{:?}",
+        outcome.output
+    );
+}
+
+/// neither text nor a picture: say which, rather than reporting a decoding failure.
+#[tokio::test]
+async fn a_binary_that_is_neither_says_so() {
+    let dir = workspace();
+    let reg = registry(dir.path());
+    std::fs::write(dir.path().join("blob.bin"), [0xff, 0xfe, 0x00]).expect("write");
+
+    let err = reg
+        .execute(call("read", &json!({"path": "blob.bin"})))
+        .await
+        .expect_err("neither text nor an image");
+    assert!(err.contains("neither text nor an image"), "{err}");
+}

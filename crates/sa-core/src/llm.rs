@@ -60,7 +60,10 @@ pub struct ToolCall {
 /// and the pairing rules; these only spare every call site rig's fallible identifiers.
 pub mod message {
     use super::{LlmError, ToolCall};
-    use rig_core::completion::message::{AssistantMessage, UserContent};
+    use rig_core::completion::message::{
+        AssistantMessage, DocumentSourceKind, Image, ImageMediaType, MimeType, ToolResultContent,
+        UserContent,
+    };
     use rig_core::completion::{AssistantContent, Message};
 
     #[must_use]
@@ -104,12 +107,34 @@ pub mod message {
     }
 
     /// the result of one tool call, addressed to the call that requested it.
-    pub fn tool_result(call: &ToolCall, content: impl Into<String>) -> Result<Message, LlmError> {
-        Ok(Message::tool_result(
-            super::rig_call_id(&call.id)?,
-            super::tool_name(&call.name)?,
-            content.into(),
-        ))
+    ///
+    /// any pictures the call produced ride beside its text: an image is a content part, so
+    /// this is the one way a model can be shown something in the middle of a turn.
+    pub fn tool_result(
+        call: &ToolCall,
+        content: impl Into<String>,
+        images: &[sa_proto::session::ImageAttachment],
+    ) -> Result<Message, LlmError> {
+        let mut parts = vec![ToolResultContent::text(content.into())];
+        parts.extend(images.iter().map(image_part));
+        Ok(Message::User {
+            content: vec![UserContent::tool_result(
+                super::rig_call_id(&call.id)?,
+                super::tool_name(&call.name)?,
+                parts,
+            )],
+        })
+    }
+
+    /// one attached picture, in rig's model. the bytes stay base64: the wire wants a data
+    /// url, and decoding them here to encode them again is a round trip for nothing.
+    fn image_part(image: &sa_proto::session::ImageAttachment) -> ToolResultContent {
+        ToolResultContent::Image(Image {
+            data: DocumentSourceKind::Base64(image.data.clone()),
+            media_type: ImageMediaType::from_mime_type(&image.media_type),
+            detail: None,
+            native: None,
+        })
     }
 
     fn tool_call(call: &ToolCall) -> Result<rig_core::completion::message::ToolCall, LlmError> {
@@ -862,7 +887,7 @@ mod tests {
         };
         let assistant = message::assistant_with_calls("calling", std::slice::from_ref(&call))
             .expect("assistant");
-        let result = message::tool_result(&call, "file body").expect("result");
+        let result = message::tool_result(&call, "file body", &[]).expect("result");
 
         // the result must name the call and the tool it answers, or the model re-issues it.
         let rendered = format!("{result:?}");

@@ -98,6 +98,23 @@ SHALL say so and name the file's length.
 - **WHEN** the next line would exceed the byte budget
 - **THEN** the window ends before it rather than returning half of it
 
+### Requirement: An image is read as a picture
+
+A file whose bytes are `png`, `jpeg`, `gif` or `webp` SHALL NOT be decoded as text. `read`
+SHALL return it as an image content part beside a line naming the file, its type and its
+size, so the model sees the picture rather than an error. The type SHALL be taken from the
+bytes, not from the file name.
+
+#### Scenario: A screenshot is looked at
+
+- **WHEN** `read` is called on a `png`
+- **THEN** the result carries the image and the model can describe it
+
+#### Scenario: A binary that is neither
+
+- **WHEN** `read` is called on a file that is not text and not an image
+- **THEN** the error says it is neither, rather than reporting a utf-8 failure
+
 ### Requirement: Write reports its change
 
 `write` SHALL create parent directories as needed and write the file. When the file already

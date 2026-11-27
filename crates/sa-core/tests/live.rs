@@ -100,6 +100,7 @@ async fn a_tool_call_and_its_result_round_trip() {
             arguments: calls[0].arguments.clone(),
         },
         "[package]\nname = \"sa\"\nversion = \"0.1.0\"",
+        &[],
     )
     .expect("result");
 

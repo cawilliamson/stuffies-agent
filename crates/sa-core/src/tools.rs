@@ -8,7 +8,9 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use base64::Engine as _;
 use command_group::AsyncCommandGroup;
+use rig_core::completion::message::{ImageMediaType, MimeType};
 
 use crate::agent::{BoxFuture, ToolExecutor, ToolOutcome};
 use crate::llm::{ToolCall, ToolSpec};
@@ -121,7 +123,7 @@ impl ToolRegistry {
             "grep" => self.grep(&args).await.map(text),
             "lsp" => self.lsp_call(&args).await.map(text),
             "openspec" => self.openspec_call(&args).await,
-            "read" => self.read(&args).await.map(text),
+            "read" => self.read(&args).await,
             "todo" => Self::todo(&args).map(text),
             "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
             "web_search" => {
@@ -135,9 +137,34 @@ impl ToolRegistry {
         }
     }
 
-    async fn read(&self, args: &Value) -> Result<String, ToolError> {
-        let path = self.resolve(required(args, "path")?)?;
-        let body = tokio::fs::read_to_string(&path).await?;
+    async fn read(&self, args: &Value) -> Result<ToolOutcome, ToolError> {
+        let raw = required(args, "path")?;
+        let path = self.resolve(raw)?;
+        let content = tokio::fs::read(&path).await?;
+        // a picture is not text, so it is handed to the model as itself and the model looks
+        // at it. the bytes are what makes it readable: decoding them to text here is what
+        // made a screenshot a utf-8 error.
+        if let Some(media_type) = ImageMediaType::sniff(&content) {
+            let size = content.len();
+            return Ok(ToolOutcome {
+                output: format!(
+                    "image: {raw} ({}, {})",
+                    media_type.to_mime_type(),
+                    bytes(size)
+                ),
+                exit_code: None,
+                // carried as the log's own shape, so the picture survives in the history the
+                // next turn is built from: a view that forgets what it looked at asks to see
+                // it again.
+                images: vec![sa_proto::session::ImageAttachment {
+                    media_type: media_type.to_mime_type().to_owned(),
+                    data: base64::engine::general_purpose::STANDARD.encode(&content),
+                    name: Some(raw.to_owned()),
+                }],
+            });
+        }
+        let body = String::from_utf8(content)
+            .map_err(|_| ToolError::Args(format!("{raw}: neither text nor an image")))?;
         // the hashed form is what makes a line addressable; the raw text is one flag away.
         let hashed = args
             .get("hashline")
@@ -155,7 +182,8 @@ impl ToolRegistry {
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(READ_LINES)
             .clamp(1, MAX_READ_LINES);
-        Ok(window(&body, offset, limit, hashed))
+        let windowed = window(&body, offset, limit, hashed);
+        Ok(text(windowed))
     }
 
     async fn write(&self, args: &Value) -> Result<String, ToolError> {
@@ -272,6 +300,7 @@ impl ToolRegistry {
         Ok(ToolOutcome {
             output: output.text,
             exit_code: Some(output.exit_code),
+            images: Vec::new(),
         })
     }
 
@@ -481,6 +510,7 @@ impl ToolRegistry {
         Ok(ToolOutcome {
             output,
             exit_code: status.code(),
+            images: Vec::new(),
         })
     }
 
@@ -630,7 +660,9 @@ impl ToolExecutor for ToolRegistry {
                     "Read a file as text, each line prefixed with `hhhhhh|`: the hash names that \
                      line for `edit`. Pass `hashline: false` for the raw text. Returns at most \
                      {READ_LINES} lines or {} KiB; when there is more, the last line says the \
-                     offset to continue from.",
+                     offset to continue from. An image (`png`, `jpeg`, `gif`, `webp`) is not \
+                     decoded: it is returned as the picture itself, so reading it is how you \
+                     look at a screenshot, a diagram or a photo.",
                     MAX_READ_BYTES / 1024
                 ),
                 json!({"type": "object", "properties": {"path": {"type": "string"}, "hashline": {"type": "boolean"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, "required": ["path"]}),
@@ -740,6 +772,16 @@ const fn text(output: String) -> ToolOutcome {
     ToolOutcome {
         output,
         exit_code: None,
+        images: Vec::new(),
+    }
+}
+
+/// a file size the way a person reads it, for the line that names a picture.
+fn bytes(size: usize) -> String {
+    if size >= 1024 * 1024 {
+        format!("{} MiB", size / (1024 * 1024))
+    } else {
+        format!("{} KiB", (size / 1024).max(1))
     }
 }
 
