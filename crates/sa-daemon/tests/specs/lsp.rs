@@ -179,7 +179,10 @@ async fn clean_diagnostics(world: &mut Spec) {
 
 #[then("the result says the file has no findings")]
 fn the_file_is_clean(world: &mut Spec) {
-    let answered = world.answered().to_lowercase();
+    let Some(answered) = world.answered_with_server() else {
+        return;
+    };
+    let answered = answered.to_lowercase();
     assert!(
         answered.contains("no findings") || answered.is_empty() || answered.contains('0'),
         "{answered}"

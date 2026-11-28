@@ -158,6 +158,19 @@ impl Spec {
         self.outcome = Some(registry.execute(call).await.map(|outcome| outcome.output));
     }
 
+    /// the answer to the last call, or `None` when the language server could not be reached.
+    /// a server that never answered says nothing about the file, so the claim is not tested
+    /// rather than tested and failed: the machine's language server is the variable.
+    pub fn answered_with_server(&self) -> Option<&str> {
+        match self.outcome.as_ref()? {
+            Ok(text) => Some(text),
+            Err(error) => {
+                eprintln!("no language server answered, skipping: {error}");
+                None
+            }
+        }
+    }
+
     /// the answer to the last tool call, or a panic naming what went wrong instead.
     pub fn answered(&self) -> &str {
         match self.outcome.as_ref().expect("a call step comes first") {

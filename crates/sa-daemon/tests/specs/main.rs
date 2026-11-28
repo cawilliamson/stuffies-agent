@@ -10,6 +10,7 @@
     clippy::needless_pass_by_value,
     clippy::assert_is_empty,
     clippy::panic,
+    clippy::print_stderr,
     clippy::too_many_lines
 )]
 
