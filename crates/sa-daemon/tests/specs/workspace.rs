@@ -14,6 +14,17 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// the store a checkpoint wrote: the one hashed directory under the root.
+fn store_of(world: &mut Spec) -> std::path::PathBuf {
+    let root = world.store_root();
+    std::fs::read_dir(&root)
+        .expect("store root")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.join("HEAD").exists())
+        .expect("a store")
+}
+
 /// a repository with one commit, so a checkpoint has something to store.
 fn repository(world: &mut Spec) {
     let root = world.ensure_dir();
@@ -205,8 +216,7 @@ fn a_failed_checkpoint(world: &mut Spec) {
     // the path, so there is no way for it to fail on a missing `.git`.
     world.ensure_dir();
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     world.error = Some(
         match sa_core::workspace::checkpoint(&root, &store, "s1", 1) {
             Ok(_) => "checkpointed".to_owned(),
@@ -224,8 +234,7 @@ fn the_failure_is_recorded(world: &mut Spec) {
 fn a_detached_turn_outside_a_repository(world: &mut Spec) {
     world.ensure_dir();
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     world.error = Some(
         match sa_core::workspace::checkpoint(&root, &store, "s1", 1) {
             Ok(_) => "checkpointed".to_owned(),
@@ -243,10 +252,10 @@ fn the_store_is_named_for_the_path(world: &mut Spec) {
 fn the_store_is_opened_with_git(world: &mut Spec) {
     repository(world);
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     sa_core::workspace::checkpoint(&root, &store, "s1", 1).expect("checkpoint");
-    world.rendered = Some(git(&store, &["log", "--all", "--oneline"]));
+    let inner = store_of(world);
+    world.rendered = Some(git(&inner, &["log", "--all", "--oneline"]));
 }
 
 #[then("the checkpoint commit and its tree are readable")]
@@ -263,8 +272,7 @@ fn symlinks_are_disabled(world: &mut Spec) {
     let target = root.join("target.txt");
     std::fs::write(&target, "x").expect("write");
     std::os::unix::fs::symlink(&target, root.join("link")).expect("symlink");
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     sa_core::workspace::checkpoint(&root, &store, "s1", 1).expect("checkpoint");
     let inner = std::fs::read_dir(&store)
         .expect("store")
@@ -285,8 +293,8 @@ fn symlinks_are_disabled(world: &mut Spec) {
 fn the_symlink_is_a_symlink(world: &mut Spec) {
     // the tree names the link as a link, whatever the machine's git configuration says.
     let tree = world.rendered.clone().unwrap_or_default();
-    let listed = sa_core::workspace::list_checkpoints(&world.root(), &world.root().join("store"))
-        .expect("list");
+    let store = world.store_root();
+    let listed = sa_core::workspace::list_checkpoints(&world.root(), &store).expect("list");
     assert!(!listed.is_empty(), "no checkpoint was written");
     assert!(
         tree.contains("120000") || tree.contains("link"),
@@ -300,8 +308,7 @@ fn no_git_binary(world: &mut Spec) {
     // unguarded, which is what the error says.
     world.ensure_dir();
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     world.rendered = Some(
         match sa_core::workspace::checkpoint(&root, &store, "s1", 1) {
             Ok(_) => "checkpointed".to_owned(),
@@ -319,22 +326,24 @@ fn the_turn_is_interrupted(world: &mut Spec) {
 fn a_checkpoint_is_inspected(world: &mut Spec) {
     repository(world);
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     sa_core::workspace::checkpoint(&root, &store, "s1", 1).expect("checkpoint");
-    let parents = git(&store, &["rev-list", "--count", "HEAD"]);
+    let inner = store_of(world);
+    // every checkpoint is a root commit: the store holds trees to restore, not a history.
+    let parents = git(&inner, &["rev-list", "--count", "--all"]);
     world.rendered = Some(parents.trim().to_owned());
 }
 
 #[then("it has no parent and its tree holds the worktree's files")]
 fn the_commit_has_no_parent(world: &mut Spec) {
-    let removed: usize = world
+    // one commit, reachable from one ref: a checkpoint is a tree to restore, not a history.
+    let commits: usize = world
         .rendered
         .clone()
         .unwrap_or_default()
         .parse()
         .unwrap_or(0);
-    assert!(removed >= 1, "nothing was expired");
+    assert_eq!(commits, 1, "the checkpoint has a parent: {commits} commits");
 }
 
 #[when("the worktree holds files excluded by its ignore files")]
@@ -343,8 +352,7 @@ fn an_ignored_file(world: &mut Spec) {
     world.write_file(".gitignore", "target/\n");
     world.write_file("target/generated.rs", "x\n");
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     sa_core::workspace::checkpoint(&root, &store, "s1", 1).expect("checkpoint");
     let inner = std::fs::read_dir(&store)
         .expect("store")
@@ -371,8 +379,7 @@ fn the_ignored_file_is_absent(world: &mut Spec) {
 fn an_eleventh_checkpoint(world: &mut Spec) {
     repository(world);
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     for n in 0..11 {
         sa_core::workspace::checkpoint(&root, &store, "s1", n).expect("checkpoint");
     }
@@ -402,8 +409,7 @@ fn the_oldest_is_gone(world: &mut Spec) {
 fn an_expired_checkpoint(world: &mut Spec) {
     repository(world);
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     sa_core::workspace::checkpoint(&root, &store, "s1", 1).expect("checkpoint");
     std::thread::sleep(std::time::Duration::from_secs(1));
     let removed = sa_core::workspace::expire_checkpoints(&store, std::time::Duration::from_secs(0));
@@ -425,8 +431,7 @@ fn the_expired_checkpoint_is_removed(world: &mut Spec) {
 fn a_checkpoint_is_rewound(world: &mut Spec) {
     repository(world);
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     sa_core::workspace::checkpoint(&root, &store, "s1", 1).expect("checkpoint");
     let id = sa_core::workspace::list_checkpoints(&root, &store)
         .expect("list")
@@ -448,8 +453,7 @@ fn the_files_are_restored(world: &mut Spec) {
 fn a_file_after_the_checkpoint(world: &mut Spec) {
     repository(world);
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     sa_core::workspace::checkpoint(&root, &store, "s1", 1).expect("checkpoint");
     let id = sa_core::workspace::list_checkpoints(&root, &store)
         .expect("list")
@@ -470,8 +474,7 @@ fn the_later_file_stays(world: &mut Spec) {
 fn an_ambiguous_rewind(world: &mut Spec) {
     repository(world);
     let root = world.root();
-    let store = root.join("store");
-    std::fs::create_dir_all(&store).expect("store root");
+    let store = world.store_root();
     for n in 0..2 {
         sa_core::workspace::checkpoint(&root, &store, "s1", n).expect("checkpoint");
     }

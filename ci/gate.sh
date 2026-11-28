@@ -33,7 +33,7 @@ if ! command -v cargo-outdated >/dev/null 2>&1; then
   echo "      nix develop -c ./ci/gate.sh" >&2
   exit 1
 fi
-# every dependency stays current (AGENTS.md: nothing is kept for compatibility). the ignore
+# every dependency stays current (design.md: nothing is kept for compatibility). the ignore
 # is deliberate: rig-core speaks reqwest 0.12 while rmcp speaks 0.13, so both are in the
 # tree on purpose and neither can be bumped on its own.
 cargo outdated --workspace --root-deps-only --exit-code 1 --ignore reqwest

@@ -22,6 +22,7 @@ infer.workspace = true
 ratatui-image.workspace = true
 ratatui.workspace = true
 sa-client.workspace = true
+gix = { version = "0.91", default-features = false, features = ["revision", "sha1"] }
 sa-proto.workspace = true
 serde_json.workspace = true
 termtree.workspace = true

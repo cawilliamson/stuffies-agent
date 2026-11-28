@@ -1646,37 +1646,33 @@ fn scrolled(name: &str, offset: usize, cap: usize) -> String {
 
 /// the branch and short commit of a directory, for the status bar: `main:6213c57`.
 ///
-/// absent outside a repository, and on a machine with no git installed, where the bar draws
-/// no segment at all rather than an empty one. a detached HEAD has no branch to name, so it
-/// shows the commit alone, and a branch with no commit yet shows the branch alone.
+/// absent outside a repository, where the bar draws no segment at all rather than an empty
+/// one. a detached HEAD has no branch to name, so it shows the commit alone, and a branch
+/// with no commit yet shows the branch alone.
 #[must_use]
 pub fn git_head(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    let branch = git(cwd, &["symbolic-ref", "--short", "HEAD"]);
-    let commit = git(cwd, &["rev-parse", "--short=7", "HEAD"]);
+    // the repository is read in this process: a client that shells out to git draws nothing
+    // on a machine without it, and the bar is not worth a subprocess per frame.
+    let repo = gix::discover(cwd).ok()?;
+    let branch = repo
+        .head_name()
+        .ok()
+        .flatten()
+        .map(|name| name.shorten().to_string());
+    let commit = repo
+        .head_id()
+        .ok()
+        .and_then(|id| id.shorten().ok())
+        .map(|prefix| prefix.to_string());
     match (branch, commit) {
         (Some(branch), Some(commit)) => Some(format!("{branch}:{commit}")),
         (Some(branch), None) => Some(branch),
         (None, Some(commit)) => Some(commit),
         (None, None) => None,
     }
-}
-
-/// one git answer for a directory, trimmed, or nothing when git refused or is not installed.
-fn git(cwd: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (!text.is_empty()).then_some(text)
 }
 
 /// one selectable row in a picker.

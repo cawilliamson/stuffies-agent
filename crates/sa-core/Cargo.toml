@@ -17,6 +17,7 @@ dom_query.workspace = true
 dom_smoothie.workspace = true
 directories.workspace = true
 futures-util.workspace = true
+gix = { version = "0.91", default-features = false, features = ["revision", "sha1"] }
 htmd.workspace = true
 ignore.workspace = true
 lspf.workspace = true

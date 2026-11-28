@@ -4,6 +4,26 @@ Why `sa` is shaped the way it is. Behaviour lives in `specs/`, and its scenarios
 by `cargo test`; this file holds the motivation, the alternatives that were rejected, and the
 decisions already settled. Where the two disagree, the specs are right.
 
+## the build goal: lean on the modules we already depend on
+
+This is a defining goal of the project, not a style preference. The project is pre-release
+and in early testing, so nothing is kept for compatibility, nothing is carried "for later",
+and no shim exists to protect a decision that has not shipped.
+
+- **lean into the dependencies.** `rig-core` and `rig-rmcp` are in the tree; the agent loop,
+  message model, conversation history, tool plumbing and provider wire should use what they
+  already implement rather than a hand-rolled equivalent beside it. The same holds for
+  `ratatui`, `crossterm`, `edtui` and every other dependency: if it ships the behaviour, our
+  version of that behaviour is a bug waiting to happen.
+- **our code is the difference, not the plumbing.** Anything a dependency can do correctly
+  is not our job. What stays ours is what nothing else knows: the event log, the daemon, the
+  turn state machine, the UI.
+- **delete before adding.** A second message type, a conversion layer between two shapes we
+  control, a helper that exists because a dependency's type was inconvenient: remove it
+  rather than maintain it.
+- **no legacy accommodation.** No dual code paths, no deprecated aliases, no migration
+  shims. Change the thing and fix the call sites.
+
 ## the workflow this exists for
 
 1. Start work on the laptop with a local daemon.
@@ -60,23 +80,23 @@ files, which is exactly what an agent writes. A commit over a tree built from th
 captures tracked and untracked files, changes nothing in place, and is removed by deleting a
 ref.
 
-### why the git binary and not `gix`
+### why `gix` and not the git binary
 
-This was `gix`, for two reasons: no subprocess per snapshot, and no inherited git
-configuration. The second reason was real but small — a checkpoint failed for a user who sets
-`user.name` per repository rather than globally — and it is answered by committing under sa's
-own identity rather than by owning an object writer. The first was never load-bearing: a
-checkpoint is taken before an unattended turn, not per tool call.
+This was the git binary, for one reason: git decides what a worktree holds — ignore rules,
+file modes, symlinks — and a checkpoint's only job is to record exactly that, so a second
+implementation of those rules risks a checkpoint that does not restore what the user had.
 
-What is left is a choice between git's implementation of the object format and ours. git
-decides what a worktree holds — ignore rules, file modes, symlinks — and a checkpoint's only
-job is to record exactly that. `gix` is a second implementation of those rules, 198 lines of
-tree plumbing here and about thirty crates, and every subtlety it gets slightly differently
-from git is a checkpoint that does not restore what the user had. The store is a real
-repository, written by git, and the tests check it by reading it back with git.
+Two things changed the answer. The binary is a runtime dependency the daemon is not supposed
+to have, and it costs a process per snapshot. And the risk that motivated it is now covered by
+the tests rather than by the choice of implementation: the scenarios read every checkpoint back
+with real git (`git log`, `git ls-tree`, `git rev-list`), so a store gix writes and git cannot
+read is a red build rather than a surprise at restore time.
 
-The cost is named and accepted: a machine with no git cannot checkpoint, and a checkpoint that
-cannot be taken aborts the unattended turn rather than letting it run unguarded.
+The rules are not re-derived. The walk uses the `ignore` crate, which is git's ignore
+semantics as a library, and the tree is written in git's own object format and sorted the way
+git sorts it. What stays ours is the snapshot walk, the commit, the refs and the store's
+bookkeeping — gix does not collect, so unreachable objects are pruned by walking `objects/`,
+which is safe because the store is ours and is never packed.
 
 ## why no permission system
 

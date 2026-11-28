@@ -26,6 +26,8 @@ pub struct Spec {
     /// where the daemon keeps what is its own: the database and the checkpoints. never the
     /// workspace, which is the whole point of the scenario that checks it.
     pub state: Option<tempfile::TempDir>,
+    /// where checkpoints are written, which is outside the workspace the same way.
+    pub store: Option<tempfile::TempDir>,
     /// the script the provider replays, consumed one stream at a time.
     pub script: Vec<Vec<Delta>>,
     pub models: Vec<ModelInfo>,
@@ -116,6 +118,14 @@ impl Spec {
                 provider.push(stream);
             }
         }
+    }
+
+    /// the checkpoint root: a directory of its own, never inside the workspace.
+    pub fn store_root(&mut self) -> PathBuf {
+        if self.store.is_none() {
+            self.store = Some(tempfile::tempdir().expect("store"));
+        }
+        self.store.as_ref().expect("store").path().to_path_buf()
     }
 
     pub fn state_dir(&self) -> PathBuf {
