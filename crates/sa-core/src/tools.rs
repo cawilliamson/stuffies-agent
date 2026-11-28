@@ -56,6 +56,9 @@ pub enum ToolError {
 
 pub struct ToolRegistry {
     workspace: PathBuf,
+    /// how long a command may run. the constant is the daemon's answer; a test that has to
+    /// see the timeout happen asks for a shorter one rather than waiting it out.
+    command_timeout: std::time::Duration,
     /// the mcp servers this daemon reached, if any. their tools are the model's too.
     mcp: Option<std::sync::Arc<crate::mcp::Hub>>,
     /// the language servers this daemon started, if any. they answer about the code.
@@ -67,6 +70,7 @@ impl ToolRegistry {
     pub const fn new(workspace: PathBuf) -> Self {
         Self {
             workspace,
+            command_timeout: std::time::Duration::from_secs(COMMAND_TIMEOUT_SECS),
             mcp: None,
             lsp: None,
         }
@@ -82,12 +86,25 @@ impl ToolRegistry {
     ) -> Self {
         Self {
             workspace,
+            command_timeout: std::time::Duration::from_secs(COMMAND_TIMEOUT_SECS),
             mcp: Some(mcp),
             lsp: Some(lsp),
         }
     }
 
-    /// canonicalises a caller-supplied path and refuses anything outside the workspace.
+    /// a registry whose commands are given a shorter budget, so a test can watch the timeout
+    /// happen rather than wait ten minutes for it.
+    #[must_use]
+    pub const fn with_command_timeout(mut self, budget: std::time::Duration) -> Self {
+        self.command_timeout = budget;
+        self
+    }
+
+    /// resolves a caller-supplied path against the workspace and refuses anything outside it.
+    ///
+    /// the check is made against the filesystem, not the text: a link inside the workspace
+    /// that points out of it is an escape, and a lexical check cannot see one. the path that
+    /// comes back is the lexical one, so a caller that writes sees the name it asked for.
     fn resolve(&self, raw: &str) -> Result<PathBuf, ToolError> {
         let joined = if Path::new(raw).is_absolute() {
             PathBuf::from(raw)
@@ -95,9 +112,10 @@ impl ToolRegistry {
             self.workspace.join(raw)
         };
         let normalised = normalise(&joined);
-        let root = normalise(&self.workspace);
-        if !normalised.starts_with(&root) {
-            return Err(ToolError::Escape(normalised.display().to_string()));
+        let root = real(&self.workspace);
+        let checked = real(&normalised);
+        if !checked.starts_with(&root) {
+            return Err(ToolError::Escape(checked.display().to_string()));
         }
         Ok(normalised)
     }
@@ -122,7 +140,6 @@ impl ToolRegistry {
             "goal_done" => Self::goal_done(&args, None).map(text),
             "grep" => self.grep(&args).await.map(text),
             "lsp" => self.lsp_call(&args).await.map(text),
-            "openspec" => self.openspec_call(&args).await,
             "read" => self.read(&args).await,
             "todo" => Self::todo(&args).map(text),
             "web_fetch" => crate::web::fetch(required(&args, "url")?).await.map(text),
@@ -272,36 +289,6 @@ impl ToolRegistry {
             }
             _ => String::new(),
         }
-    }
-
-    /// the openspec program, run in the workspace with the arguments as written. the tree's
-    /// format is the program's to define, so its answer is the answer.
-    async fn openspec_call(&self, args: &Value) -> Result<ToolOutcome, ToolError> {
-        let args = match args.get("args") {
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(|item| {
-                    item.as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| ToolError::Args("`args` must be strings".to_owned()))
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            Some(Value::String(line)) => split_args(line),
-            Some(other) => {
-                return Err(ToolError::Args(format!(
-                    "`args` must be a list of strings, got {other}"
-                )))
-            }
-            None => Vec::new(),
-        };
-        let output = crate::openspec::run(&self.workspace, &args)
-            .await
-            .map_err(|err| ToolError::Args(err.to_string()))?;
-        Ok(ToolOutcome {
-            output: output.text,
-            exit_code: Some(output.exit_code),
-            images: Vec::new(),
-        })
     }
 
     /// the queries an editor makes: what a symbol is, where it is defined, who uses it, and
@@ -499,12 +486,14 @@ impl ToolRegistry {
             Ok::<_, std::io::Error>((String::from_utf8_lossy(&bytes).into_owned(), status))
         };
 
-        let (output, status) = tokio::time::timeout(
-            std::time::Duration::from_secs(COMMAND_TIMEOUT_SECS),
-            collected,
-        )
-        .await
-        .map_err(|_| ToolError::Args(format!("timed out after {COMMAND_TIMEOUT_SECS}s")))??;
+        let (output, status) = tokio::time::timeout(self.command_timeout, collected)
+            .await
+            .map_err(|_| {
+                ToolError::Args(format!(
+                    "timed out after {}s",
+                    self.command_timeout.as_secs()
+                ))
+            })??;
         killer.disarm();
 
         Ok(ToolOutcome {
@@ -643,18 +632,6 @@ impl ToolExecutor for ToolRegistry {
                 json!({"type": "object", "properties": {"action": {"type": "string"}, "path": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "new_name": {"type": "string"}}, "required": ["action"]}),
             ),
             spec(
-                "openspec",
-                "Run the `openspec` program in the workspace and return what it printed. \
-                 `args` is the program's own arguments, as a list: `[\"list\", \"--specs\"]` \
-                 for the capability inventory, `[\"list\"]` for the open changes, \
-                 `[\"show\", \"<name>\"]` for one item, `[\"validate\"]` for what is \
-                 malformed, `[\"status\", \"<change>\"]` for one change's artifact state. The \
-                 exit code is reported, so a failed validation reads as a failure. A workspace \
-                 without an `openspec/` directory, or a machine without the program, fails the \
-                 call naming which is missing.",
-                json!({"type": "object", "properties": {"args": {"type": "array", "items": {"type": "string"}}}, "required": ["args"]}),
-            ),
-            spec(
                 "read",
                 &format!(
                     "Read a file as text, each line prefixed with `hhhhhh|`: the hash names that \
@@ -733,38 +710,6 @@ impl ToolExecutor for ToolRegistry {
             self.call(&call).await.map_err(|e| e.to_string())
         })
     }
-}
-
-/// splits a command line the way a shell would for the simple case: whitespace between
-/// arguments, single or double quotes around one that contains it.
-fn split_args(line: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut started = false;
-    for ch in line.chars() {
-        match (quote, ch) {
-            (Some(open), close) if open == close => quote = None,
-            (None, '\'' | '"') => {
-                quote = Some(ch);
-                started = true;
-            }
-            (None, ch) if ch.is_whitespace() => {
-                if started {
-                    args.push(std::mem::take(&mut current));
-                    started = false;
-                }
-            }
-            (_, ch) => {
-                current.push(ch);
-                started = true;
-            }
-        }
-    }
-    if started {
-        args.push(current);
-    }
-    args
 }
 
 /// wraps plain text output as a tool outcome.
@@ -966,6 +911,32 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
+/// the path a symlink chain actually names.
+///
+/// a path that does not exist yet cannot hide a link, so the longest existing prefix is what
+/// the filesystem is asked about and the remainder is appended as written. a path nothing on
+/// disk can resolve is answered lexically, which is the best that can be said about it.
+fn real(path: &Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&existing) {
+            let mut out = real;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => return normalise(path),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,6 +958,21 @@ mod tests {
             registry.resolve("/etc/passwd"),
             Err(ToolError::Escape(_))
         ));
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn a_link_that_points_out_is_an_escape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("secret"), "s").expect("write");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).expect("symlink");
+
+        let registry = ToolRegistry::new(dir.path().to_path_buf());
+        assert!(registry.resolve("escape/secret").is_err());
+        // and a link that stays inside is not.
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("self")).expect("symlink");
+        assert!(registry.resolve("self/secret").is_ok());
     }
 }
 

@@ -291,22 +291,9 @@ pub const HELP_COMMANDS: &str = "\
 /mcp — list the mcp servers and their tools
 /model <name> — switch the model for this tab
 /new — open a tab
-/openspec <command> — read the workspace's spec tree; /openspec for the list
 /pwd — print the working directory
 /resume — reopen a session that was closed
 /rewind <id> — restore the workspace to a checkpoint";
-
-/// what `/openspec` does, and the calls worth knowing. the program's own arguments are passed
-/// through, so this is a shortlist rather than the surface.
-pub const HELP_OPENSPEC: &str = "\
-/openspec <args> — run the openspec program in this workspace and show what it printed
-
-  /openspec list            the open changes and their task progress
-  /openspec list --specs    the capabilities the specs define
-  /openspec show <name>     one spec or change
-  /openspec validate        what is malformed
-
-the arguments go to the program as written; `openspec --help` lists the rest.";
 
 /// a gap between text deltas longer than this is a stall, not generation: the clock stops
 /// for it, so thinking and tool time never dilute the figure.

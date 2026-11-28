@@ -194,6 +194,41 @@ fn a_relocated_session_is_not_scanned_for_open_turns() {
 }
 
 #[test]
+fn an_interrupted_session_still_reports_its_open_turn() {
+    let store = Store::open_in_memory().expect("store");
+    session(&store, "s1");
+    store
+        .append_event("s1", "turn.started", &json!({"turn_id": "t1"}))
+        .expect("append");
+    // a daemon that died mid-turn leaves the session interrupted with its turn still open.
+    store
+        .set_session_state("s1", SessionState::Interrupted)
+        .expect("interrupt");
+    let open = store.open_turns().expect("open turns");
+    assert_eq!(
+        open.len(),
+        1,
+        "a dead turn was hidden by the session's state"
+    );
+    assert_eq!(open[0].turn_id, "t1");
+}
+
+#[test]
+fn a_payload_from_a_newer_writer_is_refused() {
+    let store = Store::open_in_memory().expect("store");
+    session(&store, "s1");
+    // the write path stamps v: 1. a newer daemon writing v: 2 is saying something this
+    // build cannot read, and guessing at it is worse than stopping.
+    store
+        .append_event("s1", "turn.started", &json!({"turn_id": "t1", "v": 2}))
+        .expect("append");
+    let err = store
+        .events_since("s1", 0, 10)
+        .expect_err("a newer payload was read anyway");
+    assert!(err.to_string().contains("payload version"), "{err}");
+}
+
+#[test]
 fn reopening_a_file_store_keeps_the_log_consistent() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("sa.db");

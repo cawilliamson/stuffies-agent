@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use sa_core::llm::{Delta, Provider, ScriptedProvider};
+use sa_core::llm::{Delta, Provider, ScriptedProvider, ToolCall};
 use sa_daemon::{run, Config};
 use serde_json::{json, Value};
 use tokio::net::UnixStream;
@@ -528,6 +528,116 @@ async fn a_stalled_stream_is_interrupted_by_the_turn_timeout() {
         .expect("cause")
         .to_owned();
     assert!(cause.contains("timeout"), "unexpected cause: {cause}");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// a provider that asks for one `bash` call and then never answers again, so the turn is
+/// alive and waiting on the tool when the turn timeout fires.
+struct ToolThenHang {
+    asked: std::sync::atomic::AtomicBool,
+}
+
+impl Provider for ToolThenHang {
+    fn stream(&self, _request: sa_core::llm::ChatRequest) -> sa_core::llm::StreamFuture<'_> {
+        Box::pin(async {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            if self.asked.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                // leaked, so the channel never closes and the second round-trip stalls.
+                let _leaked = Box::leak(Box::new(tx));
+                return Ok(rx);
+            }
+            let _ = tx
+                .send(Delta::ToolCall(ToolCall {
+                    id: "c1".to_owned(),
+                    name: "bash".to_owned(),
+                    arguments: json!({"command": "sleep 60"}).to_string(),
+                }))
+                .await;
+            let _ = tx
+                .send(Delta::Done {
+                    stop_reason: "tool_calls".to_owned(),
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    cached_tokens: 0,
+                })
+                .await;
+            Ok(rx)
+        })
+    }
+}
+
+/// a turn that dies with a tool in flight must still pair the call it announced: the agent's
+/// future is gone, so nothing else can close it.
+#[tokio::test]
+async fn a_turn_that_times_out_mid_call_closes_the_call_it_announced() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = Config::at(dir.path());
+    cfg.turn_timeout_secs = 1;
+    let socket = cfg.socket_path.clone();
+
+    let (stop, wait) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        run(
+            cfg,
+            Arc::new(ToolThenHang {
+                asked: std::sync::atomic::AtomicBool::new(false),
+            }),
+            async move {
+                let _ = wait.await;
+            },
+        )
+        .await
+        .expect("daemon");
+    });
+    for _ in 0..500 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let stream = UnixStream::connect(&socket).await.expect("connect");
+    let mut client = Framed::new(stream, LinesCodec::new_with_max_length(1024 * 1024));
+    let hello = json!({"jsonrpc":"2.0","id":0,"method":"hello",
+                       "params":{"protocol":1,"client":"t","client_version":"0"}});
+    client.send(hello.to_string()).await.expect("hello");
+    let _ = client.next().await.expect("hello response").expect("frame");
+
+    let session = create(&mut client, &dir.path().display().to_string()).await;
+    call(
+        &mut client,
+        2,
+        "turn.start",
+        json!({"session_id": session, "prompt": "run the long thing", "detach": true}),
+    )
+    .await;
+
+    wait_for_kind(&mut client, &session, "turn.interrupted").await;
+
+    let replay = call(
+        &mut client,
+        3,
+        "events.replay",
+        json!({"session_id": session, "from_seq": 0, "limit": 5000}),
+    )
+    .await;
+    let events = replay["result"]["events"]
+        .as_array()
+        .expect("events")
+        .clone();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "tool.requested" && event["payload"]["call_id"] == "c1"),
+        "the call was announced"
+    );
+    let closed = events
+        .iter()
+        .find(|event| event["kind"] == "tool.failed" && event["payload"]["call_id"] == "c1")
+        .expect("the call the timeout abandoned must have a terminal event");
+    assert_eq!(closed["payload"]["class"], "interrupted");
 
     let _ = stop.send(());
     let _ = handle.await;

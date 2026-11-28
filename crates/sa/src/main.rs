@@ -38,9 +38,12 @@ async fn main() -> ExitCode {
             "--standalone runs the backend in this process; `daemon` already is the backend"
                 .to_owned(),
         ),
-        Some(Command::Daemon) => run(Config::from_env(), commands::provider(), shutdown_signal())
-            .await
-            .map_err(|e| e.to_string()),
+        Some(Command::Daemon) => match commands::provider() {
+            Ok(provider) => run(Config::from_env(), provider, shutdown_signal())
+                .await
+                .map_err(|e| e.to_string()),
+            Err(message) => Err(message),
+        },
         Some(Command::Ping) => ping(parsed.standalone).await,
         Some(Command::Rpc { stdio }) => {
             if stdio {
@@ -56,11 +59,7 @@ async fn main() -> ExitCode {
         Some(Command::Sessions) => commands::sessions(parsed.standalone).await,
         Some(Command::Lsp) => commands::lsp(parsed.standalone).await,
         Some(Command::Mcp) => commands::mcp(parsed.standalone).await,
-        Some(Command::Openspec { args }) => commands::openspec(&args).await,
         Some(Command::Context { dir }) => commands::context(dir),
-        Some(Command::Export { session, format }) => {
-            commands::export(parsed.standalone, session, &format).await
-        }
     };
 
     match result {
@@ -223,7 +222,6 @@ mod tests {
             Command::Daemon,
             Command::Lsp,
             Command::Mcp,
-            Command::Openspec { args: Vec::new() },
             Command::Ping,
             Command::Sessions,
         ] {

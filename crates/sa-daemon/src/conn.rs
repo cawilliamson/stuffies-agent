@@ -107,16 +107,28 @@ async fn serve_inner(
             }
         };
 
-        let request: Request = match serde_json::from_str(&line) {
-            Ok(request) => request,
+        // two different answers, and a client can tell them apart: a line that is not json
+        // is a parse error, while a line that is json but not a request this protocol
+        // defines (a missing or wrong `jsonrpc`, no `method`, an id of the wrong shape) is
+        // an invalid request.
+        let value: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
             Err(err) => {
                 let error = RpcError::new(code::PARSE_ERROR, format!("parse error: {err}"));
                 let _ = framed.send(encode(&Response::err(None, error))?).await;
                 return Err(ConnError::Framing(err.to_string()));
             }
         };
+        let request: Request = match serde_json::from_value(value) {
+            Ok(request) => request,
+            Err(err) => {
+                let error = RpcError::new(code::INVALID_REQUEST, format!("invalid request: {err}"));
+                let _ = framed.send(encode(&Response::err(None, error))?).await;
+                return Err(ConnError::Framing(err.to_string()));
+            }
+        };
 
-        if let Some(response) = dispatcher.handle(&mut state, request).await {
+        if let Some(response) = dispatcher.handle(&mut state, request) {
             framed
                 .send(encode(&response)?)
                 .await

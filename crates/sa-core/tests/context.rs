@@ -136,8 +136,8 @@ fn only_an_advertised_effort_is_ever_sent() {
     );
     assert_eq!(
         manager.reasoning_effort("silent", Some("high")).as_deref(),
-        Some("high"),
-        "an explicit choice is honoured even when nothing was discovered"
+        None,
+        "a model that advertises nothing has nothing known to accept it"
     );
     assert_eq!(
         manager.reasoning_effort("silent", None),
@@ -350,7 +350,9 @@ fn manager_scripted(
     models: Vec<ModelInfo>,
     script: Vec<Vec<Delta>>,
 ) -> (Arc<Manager>, Arc<ScriptedProvider>) {
-    let store = Store::open(&dir.join("sa.db")).expect("store");
+    // in memory: these tests are about what the manager does with the log, and a file store
+    // only adds a commit per append.
+    let store = Store::open_in_memory().expect("store");
     let scripted = Arc::new(ScriptedProvider::new(script));
     let provider: Arc<dyn Provider> = scripted.clone();
     let manager = Arc::new(Manager::new(
@@ -453,5 +455,160 @@ async fn a_compaction_folds_the_old_turns_once() {
         scripted.seen_requests().len(),
         1,
         "one summarisation, not one per turn"
+    );
+}
+
+/// the folded range advances: a second compaction summarises from where the first one
+/// reached, and records that, rather than claiming the whole log again.
+#[tokio::test]
+async fn a_second_compaction_folds_from_where_the_first_reached() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // a window the retained turns fit inside, so there is something to advance to: each
+    // turn costs about 400 tokens against a 2000-token budget for the kept tail.
+    let (manager, _scripted) = manager_scripted(
+        dir.path(),
+        vec![model("small", Some(4_000), &[])],
+        vec![summary_stream(), summary_stream()],
+    );
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+
+    let append_turns = |from: usize, to: usize| {
+        for n in from..to {
+            manager
+                .append(
+                    &session,
+                    sa_proto::session::kinds::TURN_STARTED,
+                    &json!({"prompt": format!("step {n}")}),
+                )
+                .expect("append");
+            manager
+                .append(
+                    &session,
+                    sa_proto::session::kinds::TOOL_COMPLETED,
+                    &json!({"output": "y".repeat(1_600)}),
+                )
+                .expect("append");
+        }
+    };
+    append_turns(0, 9);
+
+    manager
+        .maybe_compact(&session, "small")
+        .await
+        .expect("compaction")
+        .expect("the first compaction folds something");
+    let first = manager
+        .store()
+        .last_event_of_kind(&session, &[sa_proto::session::kinds::COMPACTION_APPLIED])
+        .expect("read")
+        .expect("a compaction event");
+    let first_to = first.payload["to_seq"].as_u64().expect("to_seq");
+    assert_eq!(first.payload["from_seq"], json!(1), "it starts at the top");
+
+    // more turns, then the view is over the trigger again and the next compaction has
+    // somewhere new to reach.
+    append_turns(9, 11);
+    manager
+        .maybe_compact(&session, "small")
+        .await
+        .expect("compaction")
+        .expect("the second compaction folds the turns the first one did not");
+
+    let second = manager
+        .store()
+        .last_event_of_kind(&session, &[sa_proto::session::kinds::COMPACTION_APPLIED])
+        .expect("read")
+        .expect("a second compaction event");
+    let second_to = second.payload["to_seq"].as_u64().expect("to_seq");
+    assert!(
+        second_to > first_to,
+        "the range advanced: {first_to} then {second_to}"
+    );
+    assert_eq!(
+        second.payload["from_seq"],
+        json!(first_to + 1),
+        "it folds from where the last one reached, not from the top again"
+    );
+}
+
+/// a session's cost is the whole log, not its newest events: the figure was summed over one
+/// window, so a long session under-reported itself without saying so.
+#[tokio::test]
+async fn usage_sums_every_completed_call_in_the_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (manager, _scripted) = manager_scripted(dir.path(), Vec::new(), Vec::new());
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+
+    // one more than a single read of the log returns, so the sum has to read past the first
+    // page rather than stopping at it.
+    let calls = sa_core::manager::USAGE_PAGE + 1;
+    for _ in 0..calls {
+        manager
+            .append(
+                &session,
+                sa_proto::session::kinds::LLM_COMPLETED,
+                &json!({
+                    "purpose": "turn",
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1, "cached_tokens": 1},
+                }),
+            )
+            .expect("append");
+    }
+
+    let usage = manager.usage(&session).expect("usage");
+    assert_eq!(
+        usage.prompt_tokens,
+        calls as u64 * 2,
+        "every call is counted"
+    );
+    assert_eq!(usage.completion_tokens, calls as u64);
+    assert_eq!(
+        usage.cached_tokens, calls as u64,
+        "the cached share is counted separately"
+    );
+    assert!(
+        usage.cost_micros.is_none(),
+        "an unpriced endpoint claims nothing"
+    );
+}
+
+/// a single turn larger than the model's whole window is the one case compaction cannot
+/// rescue: folding cannot make one turn smaller, so the caller is told rather than sending a
+/// prompt the endpoint will reject.
+#[tokio::test]
+async fn one_turn_larger_than_the_window_is_reported() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (manager, _scripted) = manager_scripted(
+        dir.path(),
+        vec![model("small", Some(100), &[])],
+        vec![summary_stream()],
+    );
+    let session = manager
+        .create_session(dir.path().to_str().expect("utf8"), None, "test")
+        .expect("create")
+        .session_id;
+    manager
+        .append(
+            &session,
+            sa_proto::session::kinds::TURN_STARTED,
+            &json!({"prompt": "x".repeat(4_000)}),
+        )
+        .expect("append");
+
+    let err = manager
+        .maybe_compact(&session, "small")
+        .await
+        .expect_err("one turn cannot fit");
+    let rendered = err.to_string();
+    assert!(rendered.contains("one turn needs"), "{rendered}");
+    assert!(
+        rendered.contains("-32009") || rendered.contains("32009"),
+        "{rendered}"
     );
 }

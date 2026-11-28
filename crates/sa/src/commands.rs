@@ -1,9 +1,9 @@
-//! the user-facing commands: run, attach, export, sessions (spec 14, v1.1).
+//! the user-facing commands: run, attach, sessions (spec 14, v1.1).
 
 use std::io::{BufRead, IsTerminal, Write};
 
 use sa_client::Client;
-use sa_core::llm::{MissingProvider, OpenAiProvider, Provider};
+use sa_core::llm::{OpenAiProvider, Provider};
 use serde_json::{json, Value};
 
 type Result<T> = std::result::Result<T, String>;
@@ -18,23 +18,22 @@ fn socket() -> std::path::PathBuf {
     crate::cli::socket_path()
 }
 
-/// the model provider, from the environment. a build with no credentials still starts: every
-/// turn fails with a message rather than the whole mode refusing to run.
-pub fn provider() -> std::sync::Arc<dyn Provider> {
-    match OpenAiProvider::from_env() {
-        Ok(provider) => std::sync::Arc::new(provider),
-        Err(err) => {
-            eprintln!("sa: no model credentials ({err}); turns will fail");
-            std::sync::Arc::new(MissingProvider)
-        }
-    }
+/// the model provider, from the environment. a daemon with no credentials is a service that
+/// cannot do the one thing it exists for, so it refuses to start and names what it wanted
+/// rather than accepting connections and failing every turn afterwards.
+pub fn provider() -> Result<std::sync::Arc<dyn Provider>> {
+    OpenAiProvider::from_env()
+        .map(|provider| std::sync::Arc::new(provider) as std::sync::Arc<dyn Provider>)
+        .map_err(|err| {
+            format!("no model credentials ({err}); set OPENAI_API_TOKEN or SA_TOKEN_FILE")
+        })
 }
 
 /// the byte stream to the backend: a socket to the daemon, or one end of a socketpair whose
 /// other end is this same process (spec 4.4).
 pub async fn stream(standalone: bool) -> Result<tokio::net::UnixStream> {
     if standalone {
-        return sa_daemon::standalone(sa_daemon::Config::from_env(), provider())
+        return sa_daemon::standalone(sa_daemon::Config::from_env(), provider()?)
             .await
             .map_err(|e| e.to_string());
     }
@@ -225,18 +224,6 @@ async fn create_session(client: &mut Client) -> Result<String> {
         .ok_or_else(|| "session.create returned no id".to_owned())
 }
 
-async fn most_recent_session(client: &mut Client) -> Result<Option<String>> {
-    let response = client
-        .call("session.list", json!({}))
-        .await
-        .map_err(|e| format!("session.list failed: {e}"))?;
-    Ok(response
-        .as_array()
-        .and_then(|sessions| sessions.first())
-        .and_then(|s| s["id"].as_str())
-        .map(str::to_owned))
-}
-
 /// the active session already rooted at this directory, so opening `sa` where a session
 /// is running returns to it instead of starting a second one over the same files.
 async fn session_for_cwd(client: &mut Client) -> Result<Option<String>> {
@@ -317,30 +304,6 @@ pub fn context(dir: Option<String>) -> Result<()> {
     Ok(())
 }
 
-// ---- openspec -----------------------------------------------------------
-
-/// runs the openspec program in the current directory. the tree's format is the program's to
-/// define, so this passes the arguments through and reports what it said: no daemon, no
-/// session and no second implementation.
-pub async fn openspec(args: &[String]) -> Result<()> {
-    let cwd = std::path::PathBuf::from(cwd()?);
-    let output = sa_core::openspec::run(&cwd, args)
-        .await
-        .map_err(|err| err.to_string())?;
-    if !output.text.is_empty() {
-        println!("{}", output.text);
-    }
-    // a non-zero exit is what makes this usable in a pre-commit hook.
-    if !output.ok() {
-        return Err(format!(
-            "{} exited {}",
-            sa_core::openspec::PROGRAM,
-            output.exit_code
-        ));
-    }
-    Ok(())
-}
-
 // ---- sessions -----------------------------------------------------------
 
 pub async fn sessions(standalone: bool) -> Result<()> {
@@ -363,17 +326,33 @@ pub async fn sessions_with(client: &mut Client) -> Result<()> {
         println!("no sessions");
         return Ok(());
     }
-    println!("{:<38} {:<10} {:<8} TITLE", "ID", "STATE", "EFFORT");
+    println!(
+        "{:<38} {:<10} {:<8} {:<6} TITLE",
+        "ID", "STATE", "EFFORT", "AGE"
+    );
     for session in sessions {
         println!(
-            "{:<38} {:<10} {:<8} {}",
+            "{:<38} {:<10} {:<8} {:<6} {}",
             session["id"].as_str().unwrap_or("-"),
             session["state"].as_str().unwrap_or("-"),
             session["effort"].as_str().unwrap_or("-"),
+            age(session["updated_at"].as_i64().unwrap_or_default()),
             session["title"].as_str().unwrap_or("-"),
         );
     }
     Ok(())
+}
+
+/// how long since the session last changed, in the shortest unit that reads as an age. a
+/// session is resumed by recency, so the age is the part of the row that decides it.
+fn age(changed: i64) -> String {
+    let seconds = (sa_core::store::now_seconds() - changed).max(0);
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
 }
 
 // ---- lsp ----------------------------------------------------------------
@@ -520,6 +499,12 @@ pub async fn run_once_with(client: &mut Client, prompt: &str) -> Result<()> {
             let matches = params["payload"]["turn_id"].as_str() == Some(turn_id.as_str());
             if matches || turn_id.is_empty() {
                 println!();
+                // a turn that did not reach its own end is a failure the exit status has to
+                // carry: a script watching `sa run` sees nothing else.
+                if kind == "turn.interrupted" {
+                    let cause = params["payload"]["cause"].as_str().unwrap_or("interrupted");
+                    return Err(format!("turn interrupted: {cause}"));
+                }
                 return Ok(());
             }
         }
@@ -893,94 +878,6 @@ pub async fn attach(
     Ok(())
 }
 
-// ---- export -------------------------------------------------------------
-
-/// how many events one replay page asks for.
-const REPLAY_PAGE: usize = 5000;
-
-/// every event of a session, page by page. a long session runs past any single replay
-/// limit, and exporting the first page of it is worse than not exporting it at all.
-async fn replay_all(client: &mut Client, session_id: &str, mut page: Value) -> Result<Vec<Value>> {
-    let mut events: Vec<Value> = Vec::new();
-    let mut from_seq = 0;
-    loop {
-        events.extend(page["events"].as_array().cloned().unwrap_or_default());
-        if page["more"].as_bool() != Some(true) {
-            return Ok(events);
-        }
-        let next = page["next_seq"].as_u64().unwrap_or(from_seq);
-        if next <= from_seq {
-            return Ok(events);
-        }
-        from_seq = next;
-        page = client
-            .call(
-                "events.replay",
-                json!({"session_id": session_id, "from_seq": from_seq, "limit": REPLAY_PAGE}),
-            )
-            .await
-            .map_err(|e| format!("replay failed: {e}"))?;
-    }
-}
-
-pub async fn export(standalone: bool, session: Option<String>, format: &str) -> Result<()> {
-    let mut client = connect(standalone).await?;
-    export_with(&mut client, session, format).await
-}
-
-/// as [`export`], over a client the caller already holds.
-pub async fn export_with(client: &mut Client, session: Option<String>, format: &str) -> Result<()> {
-    let session_id = match session {
-        Some(id) => id,
-        None => most_recent_session(client)
-            .await?
-            .ok_or_else(|| "no sessions to export".to_owned())?,
-    };
-
-    let replay = client
-        .call(
-            "events.replay",
-            json!({"session_id": session_id, "from_seq": 0, "limit": REPLAY_PAGE}),
-        )
-        .await
-        .map_err(|e| format!("replay failed: {e}"))?;
-    let events = replay_all(client, &session_id, replay).await?;
-
-    if format == "markdown" {
-        println!("# session {session_id}\n");
-        for event in &events {
-            let kind = event["kind"].as_str().unwrap_or_default();
-            let payload = &event["payload"];
-            match kind {
-                "turn.started" => {
-                    println!(
-                        "## you\n\n{}\n",
-                        payload["prompt"].as_str().unwrap_or_default()
-                    );
-                }
-                "llm.completed" => {
-                    let text = payload["text"].as_str().unwrap_or_default();
-                    if !text.is_empty() {
-                        println!("## sa\n\n{text}\n");
-                    }
-                }
-                "tool.requested" => {
-                    println!("> tool: {}", payload["tool"].as_str().unwrap_or_default());
-                }
-                _ => {}
-            }
-        }
-    } else {
-        for event in &events {
-            println!(
-                "{}",
-                serde_json::to_string(event).map_err(|e| e.to_string())?
-            );
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -1034,40 +931,6 @@ mod tests {
                     {
                         break;
                     }
-                }
-            }
-            seen
-        });
-        (Client::from_stream(ours), handle)
-    }
-
-    /// as [`daemon`], but answers in the order it was given, so a method called twice can
-    /// be answered differently the second time.
-    fn daemon_ordered(
-        replies: Vec<(&'static str, Value)>,
-    ) -> (Client, tokio::task::JoinHandle<Vec<Value>>) {
-        let (ours, theirs) = UnixStream::pair().expect("socketpair");
-        let handle = tokio::spawn(async move {
-            let (read, mut write) = theirs.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let mut seen = Vec::new();
-            let mut served = 0usize;
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(request) = serde_json::from_str::<Value>(&line) else {
-                    break;
-                };
-                seen.push(request.clone());
-                let result = replies
-                    .get(served)
-                    .map_or_else(|| json!({}), |(_, value)| value.clone());
-                served += 1;
-                let reply = json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
-                if write
-                    .write_all(format!("{reply}\n").as_bytes())
-                    .await
-                    .is_err()
-                {
-                    break;
                 }
             }
             seen
@@ -1172,19 +1035,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_most_recent_session_is_the_first_listed() {
-        let list = json!([{"id": "newest"}, {"id": "older"}]);
-        let (mut client, _server) = daemon(vec![("session.list", list)]);
-        assert_eq!(
-            most_recent_session(&mut client).await.expect("list"),
-            Some("newest".to_owned())
-        );
-
-        let (mut client, _server) = daemon(vec![("session.list", json!([]))]);
-        assert_eq!(most_recent_session(&mut client).await.expect("list"), None);
-    }
-
-    #[tokio::test]
     async fn creating_a_session_reports_the_id_or_the_failure() {
         let (mut client, _server) = daemon(vec![("session.create", json!({"session_id": "abc"}))]);
         assert_eq!(create_session(&mut client).await, Ok("abc".to_owned()));
@@ -1247,66 +1097,6 @@ mod tests {
         assert_eq!(
             started["params"]["detach"], true,
             "a one-shot turn is detached"
-        );
-    }
-
-    #[tokio::test]
-    async fn exporting_writes_the_session_in_either_format() {
-        let replay = json!({"events": [
-            {"kind": "turn.started", "payload": {"prompt": "hello"}},
-            {"kind": "llm.completed", "payload": {"text": "hi"}},
-            {"kind": "tool.requested", "payload": {"tool": "bash"}},
-        ]});
-        for format in ["markdown", "jsonl"] {
-            let (mut client, _server) = daemon(vec![
-                ("session.list", json!([{"id": "s1"}])),
-                ("events.replay", replay.clone()),
-            ]);
-            export_with(&mut client, None, format)
-                .await
-                .expect("export");
-            export_with(&mut client, Some("s1".to_owned()), format)
-                .await
-                .expect("export by id");
-        }
-    }
-    #[tokio::test]
-    async fn an_export_reads_every_page_of_a_long_session() {
-        // the regression: export asked for one page of 5000 and ignored `more`, so a long
-        // session was exported truncated with nothing to say it had been.
-        let (mut client, server) = daemon_ordered(vec![
-            (
-                "events.replay",
-                json!({
-                    "events": [{"kind": "turn.started", "payload": {"prompt": "one"}}],
-                    "more": true,
-                    "next_seq": 1,
-                }),
-            ),
-            (
-                "events.replay",
-                json!({
-                    "events": [{"kind": "llm.completed", "payload": {"text": "two"}}],
-                    "more": false,
-                    "next_seq": 2,
-                }),
-            ),
-        ]);
-
-        export_with(&mut client, Some("s1".to_owned()), "jsonl")
-            .await
-            .expect("export");
-
-        drop(client);
-        let seen = server.await.expect("server");
-        let replays: Vec<&Value> = seen
-            .iter()
-            .filter(|request| request["method"] == "events.replay")
-            .collect();
-        assert_eq!(replays.len(), 2, "the second page must be fetched");
-        assert_eq!(
-            replays[1]["params"]["from_seq"], 1,
-            "the next page continues from where the last one stopped"
         );
     }
 

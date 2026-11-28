@@ -28,4 +28,14 @@ tracing.workspace = true
 workspace = true
 
 [dev-dependencies]
+cucumber = "0.23"
+rusqlite.workspace = true
 tempfile = "3"
+
+# the spec tree is executed, not read: an undefined step is a skipped step is a failure,
+# so a scenario that makes a claim nothing implements cannot pass. the harness lives here
+# because this crate is the only one that can see both the core and the daemon.
+[[test]]
+name = "specs"
+path = "tests/specs/main.rs"
+harness = false

@@ -208,10 +208,15 @@ impl Provider for StalledProvider {
 
 struct CancellingSink {
     cancelled: std::sync::atomic::AtomicBool,
+    events: Mutex<Vec<(String, Value)>>,
 }
 
 impl EventSink for CancellingSink {
-    fn append(&self, _kind: &str, _payload: &Value) -> Result<u64, StoreError> {
+    fn append(&self, kind: &str, payload: &Value) -> Result<u64, StoreError> {
+        self.events
+            .lock()
+            .map_err(|_| StoreError::Lock)?
+            .push((kind.to_owned(), payload.clone()));
         Ok(0)
     }
 
@@ -224,6 +229,7 @@ impl EventSink for CancellingSink {
 async fn escape_interrupts_a_stalled_turn_without_waiting_for_a_delta() {
     let sink = Arc::new(CancellingSink {
         cancelled: std::sync::atomic::AtomicBool::new(false),
+        events: Mutex::new(Vec::new()),
     });
     let agent = Agent::new(
         Arc::new(StalledProvider),
@@ -581,6 +587,7 @@ async fn escape_abandons_a_running_tool_instead_of_waiting_for_it() {
     ]);
     let sink = Arc::new(CancellingSink {
         cancelled: std::sync::atomic::AtomicBool::new(false),
+        events: Mutex::new(Vec::new()),
     });
     let agent = Agent::new(
         Arc::new(provider) as Arc<dyn Provider>,
@@ -607,6 +614,18 @@ async fn escape_abandons_a_running_tool_instead_of_waiting_for_it() {
     assert!(
         elapsed < std::time::Duration::from_secs(2),
         "a hanging tool must be abandoned, not awaited: took {elapsed:?}"
+    );
+
+    // the call was announced, so it must also be closed: a replay that shows a call which
+    // never ended is a transcript nobody can read.
+    let events = sink.events.lock().expect("events");
+    let closed = events
+        .iter()
+        .find(|(kind, payload)| kind == "tool.failed" && payload["call_id"] == "c1")
+        .expect("the abandoned call must have a terminal event");
+    assert_eq!(
+        closed.1["class"], "interrupted",
+        "a dropped call is an interruption, not a tool error"
     );
 }
 
@@ -984,6 +1003,118 @@ async fn a_continued_turn_carries_on_the_answer_that_was_cut_off() {
             Some(rig_core::completion::Message::Assistant(_))
         ),
         "the conversation ends on the answer being continued"
+    );
+}
+
+#[tokio::test]
+async fn a_continued_turn_stops_asking_to_continue_after_its_first_request() {
+    // the flag says "carry on the assistant message the transcript ends on". after a tool
+    // call the transcript ends on the result, so a later round-trip that still carried it
+    // asked the endpoint to continue the wrong thing.
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            Delta::ToolCall(ToolCall {
+                id: "call_abc".to_owned(),
+                name: "read".to_owned(),
+                arguments: json!({"path": "main.rs"}).to_string(),
+            }),
+            Delta::Done {
+                stop_reason: "tool_calls".to_owned(),
+                prompt_tokens: 5,
+                completion_tokens: 5,
+                cached_tokens: 0,
+            },
+        ],
+        vec![
+            Delta::Text("carried on".to_owned()),
+            Delta::Done {
+                stop_reason: "stop".to_owned(),
+                prompt_tokens: 5,
+                completion_tokens: 5,
+                cached_tokens: 0,
+            },
+        ],
+    ]));
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::new(RecordingSink::default()) as Arc<dyn EventSink>,
+    );
+
+    let mut request = request();
+    request.continue_final = true;
+    request.history = vec![
+        stored(1, "turn.started", json!({"prompt": "write a haiku"})),
+        stored(
+            2,
+            "llm.completed",
+            json!({"text": "an old pond", "stop_reason": "cancelled", "purpose": "turn"}),
+        ),
+    ];
+
+    agent.run_turn(request).await.expect("turn");
+
+    let seen = provider.seen_requests();
+    assert_eq!(seen.len(), 2, "the agent continues after the tool call");
+    assert!(
+        seen[0].continue_final,
+        "the first request continues the interrupted answer"
+    );
+    assert!(
+        !seen[1].continue_final,
+        "a later round-trip ends on a tool result, so it must not ask to continue"
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_repeated_from_an_earlier_turn_is_still_history() {
+    // the dedupe keyed on the prompt text, so a turn that asked the same thing twice lost
+    // the earlier one from the model's view. the turn's own event is the one to drop, and
+    // its id says which that is.
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![
+        Delta::Text("done".to_owned()),
+        Delta::Done {
+            stop_reason: "stop".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            cached_tokens: 0,
+        },
+    ]]));
+    let agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        Arc::new(FixedTool),
+        Arc::new(RecordingSink::default()) as Arc<dyn EventSink>,
+    );
+
+    let mut request = request();
+    request.turn_id = "t2".to_owned();
+    request.prompt = "run the tests".to_owned();
+    request.history = vec![
+        stored(
+            1,
+            "turn.started",
+            json!({"turn_id": "t1", "prompt": "run the tests"}),
+        ),
+        stored(
+            2,
+            "llm.completed",
+            json!({"text": "they pass", "stop_reason": "stop", "purpose": "turn"}),
+        ),
+        stored(
+            3,
+            "turn.started",
+            json!({"turn_id": "t2", "prompt": "run the tests"}),
+        ),
+    ];
+
+    agent.run_turn(request).await.expect("turn");
+
+    let seen = provider.seen_requests();
+    let texts = user_texts(&seen[0].messages);
+    assert_eq!(
+        texts.iter().filter(|text| *text == "run the tests").count(),
+        2,
+        "the earlier turn's prompt is history and this turn's is the request: {texts:?}"
     );
 }
 

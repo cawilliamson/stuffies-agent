@@ -43,23 +43,10 @@ pub enum Command {
     },
     /// run the daemon in the foreground
     Daemon,
-    /// dump a session as jsonl or markdown
-    Export {
-        #[arg(long)]
-        session: Option<String>,
-        #[arg(long, default_value = "markdown")]
-        format: String,
-    },
     /// list the language servers, whether each is installed, and whether it is running
     Lsp,
     /// list the configured mcp servers, their tools and their state
     Mcp,
-    /// run the openspec program in this directory
-    Openspec {
-        /// the program's own arguments, passed through as written
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
     /// handshake and ping the daemon
     Ping,
     /// relay the daemon socket over stdin/stdout (spec 4.2)

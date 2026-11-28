@@ -694,7 +694,7 @@ fn stop_reason(reason: Option<rig_core::completion::FinishReason>, has_calls: bo
 }
 
 /// the token, from the environment or from the file `SA_TOKEN_FILE` names.
-fn token_from_env() -> Result<String, LlmError> {
+pub fn token_from_env() -> Result<String, LlmError> {
     if let Ok(token) = std::env::var("OPENAI_API_TOKEN") {
         let token = token.trim().to_owned();
         if !token.is_empty() {
@@ -713,7 +713,8 @@ fn token_from_env() -> Result<String, LlmError> {
 /// a secret manager writes `KEY=value` lines, which is why the value is taken out of the
 /// line here rather than by a shell: the daemon is the only thing that has to know the
 /// format.
-fn token_from_file(raw: &str) -> Option<String> {
+#[must_use]
+pub fn token_from_file(raw: &str) -> Option<String> {
     let mut bare = None;
     for line in raw.lines() {
         let line = line.trim();
@@ -738,16 +739,6 @@ fn token_from_file(raw: &str) -> Option<String> {
     bare
 }
 
-/// stands in when no credentials are configured. the daemon still starts, so session
-/// listing and replay work; only turns fail.
-pub struct MissingProvider;
-
-impl Provider for MissingProvider {
-    fn stream(&self, _request: ChatRequest) -> StreamFuture<'_> {
-        Box::pin(async { Err(LlmError::NoCredentials) })
-    }
-}
-
 /// a provider that replays a fixed script. used by every test that must not touch the network.
 pub struct ScriptedProvider {
     script: std::sync::Mutex<std::collections::VecDeque<Vec<Delta>>>,
@@ -762,6 +753,14 @@ impl ScriptedProvider {
             script: std::sync::Mutex::new(script.into_iter().collect()),
             seen: std::sync::Mutex::new(Vec::new()),
             models: Vec::new(),
+        }
+    }
+
+    /// adds a stream to the script. a scenario that drives more than one turn feeds them as
+    /// it goes rather than declaring them before the first has run.
+    pub fn push(&self, stream: Vec<Delta>) {
+        if let Ok(mut script) = self.script.lock() {
+            script.push_back(stream);
         }
     }
 

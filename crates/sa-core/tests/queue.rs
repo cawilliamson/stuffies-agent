@@ -172,6 +172,25 @@ async fn dequeue_hands_everything_back_and_empties_the_queue() {
 }
 
 #[tokio::test]
+async fn taking_back_an_empty_queue_writes_nothing() {
+    // escape at an idle prompt takes back a queue that is already empty. that is not a
+    // change, so it must not write an event: it used to append one on every escape.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let session_id = session(&manager, dir.path());
+
+    let before = payloads(&manager, &session_id, kinds::TURN_QUEUED).len();
+    let taken = manager.dequeue(&session_id).expect("dequeue");
+    assert!(taken.steering.is_empty() && taken.follow_up.is_empty());
+    assert_eq!(
+        payloads(&manager, &session_id, kinds::TURN_QUEUED).len(),
+        before,
+        "an empty queue is not a change"
+    );
+}
+
+#[tokio::test]
 async fn a_follow_up_runs_as_the_next_turn_after_this_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let provider = Arc::new(GatedProvider::new());

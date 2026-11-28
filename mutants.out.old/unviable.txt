@@ -1,7 +1,0 @@
-crates/sa-proto/src/error.rs:51:9: replace RpcError::with_data -> Self with Default::default()
-crates/sa-proto/src/error.rs:57:9: replace RpcError::method_not_found -> Self with Default::default()
-crates/sa-proto/src/rpc.rs:20:9: replace <impl Serialize for JsonRpc>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())
-crates/sa-proto/src/rpc.rs:26:9: replace <impl Deserialize<'de> for JsonRpc>::deserialize -> Result<Self, D::Error> with Ok(Default::default())
-crates/sa-proto/src/rpc.rs:86:9: replace Response::ok -> Self with Default::default()
-crates/sa-proto/src/rpc.rs:96:9: replace Response::err -> Self with Default::default()
-crates/sa-proto/src/session.rs:33:9: replace SessionState::parse -> Option<Self> with Some(Default::default())

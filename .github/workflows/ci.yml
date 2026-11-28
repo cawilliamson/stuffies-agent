@@ -6,14 +6,54 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v27
+      # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # v27
+      - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
       - name: gate
         run: nix develop -c ./ci/gate.sh
+
+  # a passing suite only proves tests run. this proves they assert, and it
+  # is too slow for a hook, so it lands here on the diff the pull request
+  # introduces.
+  mutants:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # a mutation run over a large diff can take a while; a hung one must not
+    # hold the queue.
+    timeout-minutes: 60
+    steps:
+      # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # v27
+      - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # the diff is against the branch this one targets, so that ref has to
+      # be here.
+      - name: fetch the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin \
+            "$BASE_REF:refs/remotes/origin/$BASE_REF"
+      - name: mutants
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: nix develop -c ./ci/mutants.sh "origin/$BASE_REF"

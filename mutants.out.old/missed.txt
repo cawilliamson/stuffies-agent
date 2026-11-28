@@ -1,3 +1,0 @@
-crates/sa-proto/src/lib.rs:13:38: replace * with +
-crates/sa-proto/src/lib.rs:13:38: replace * with /
-crates/sa-proto/src/error.rs:66:9: replace <impl std::fmt::Display for RpcError>::fmt -> std::fmt::Result with Ok(Default::default())

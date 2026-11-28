@@ -200,6 +200,32 @@ async fn malformed_json_is_a_parse_error() {
 }
 
 #[tokio::test]
+async fn a_json_frame_that_is_not_a_request_is_an_invalid_request() {
+    let daemon = TestDaemon::start().await;
+
+    for line in [
+        // the wrong dialect.
+        r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#,
+        // no jsonrpc member at all.
+        r#"{"id":1,"method":"ping"}"#,
+        // no method to call.
+        r#"{"jsonrpc":"2.0","id":1}"#,
+    ] {
+        // one connection per case: the daemon answers and closes on a bad frame.
+        let mut framed = daemon.connect().await;
+        framed.send(line.to_owned()).await.expect("send");
+        let raw = framed.next().await.expect("a frame").expect("valid frame");
+        let response: Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(
+            response["error"]["code"], -32600,
+            "{line} is valid json, so it is an invalid request: {response}"
+        );
+    }
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
 async fn shutdown_removes_the_socket() {
     let daemon = TestDaemon::start().await;
     let socket = daemon.socket.clone();

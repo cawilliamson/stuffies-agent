@@ -1,8 +1,8 @@
 # design
 
-Why `sa` is shaped the way it is. Behaviour lives in `openspec/specs/`; this file holds the
-motivation, the alternatives that were rejected, and the decisions already settled. Where the
-two disagree, the specs are right.
+Why `sa` is shaped the way it is. Behaviour lives in `specs/`, and its scenarios are executed
+by `cargo test`; this file holds the motivation, the alternatives that were rejected, and the
+decisions already settled. Where the two disagree, the specs are right.
 
 ## the workflow this exists for
 
@@ -108,7 +108,7 @@ server must not be load-bearing, and a lease that expires is a lease that can ex
 
 `rig-core`, `rig-rmcp`, `lspf`, `ratatui` and the rest already implement the protocol, the
 process supervision and the layout, and where a program owns a format — `git` for the
-checkpoint store, `openspec` for the spec tree — the program is what we call rather than
+checkpoint store — the program is what we call rather than
 reimplement. Anything a dependency does correctly is not our job. What stays ours is what
 nothing else knows: the event log, the daemon, the turn state machine, the checkpoint store's
 placement, and the UI.
@@ -159,5 +159,5 @@ The specs describe behaviour; the order the surfaces are wanted is history rathe
 requirement. v1.0 through v1.3 are built: the daemon, the event log, the model client, the
 tools, the checkpoint store, goal mode, the line client and the terminal front end. v2.0 (web
 surface), v3.0 (knowledge) and v4.0 (remote handoff) are the open changes under
-`openspec/changes/`. v5.0 is packaging: the systemd unit, a Nix module, auto-spawn under a
+`docs/changes/`. v5.0 is packaging: the systemd unit, a Nix module, auto-spawn under a
 bind lock, blob garbage collection and an optional `session.purge`.

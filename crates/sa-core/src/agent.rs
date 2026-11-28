@@ -216,6 +216,11 @@ impl Agent {
 
         // a turn runs until the model answers or the operator interrupts it: no iteration
         // cap, so a long job is never cut short.
+        //
+        // `continue_final` describes the transcript the turn opened with: it ends on the
+        // assistant message the operator asked to carry on. that is true of the first request
+        // and of no later one, because every later round-trip ends on a tool result.
+        let mut continue_final = request.continue_final;
         loop {
             if self.sink.is_cancelled() {
                 return Err(AgentError::Cancelled);
@@ -236,12 +241,13 @@ impl Agent {
                     tools: self.tools.specs(),
                     max_tokens: request.max_tokens,
                     reasoning_effort: request.reasoning_effort.clone(),
-                    continue_final: request.continue_final,
+                    continue_final,
                 }))
                 .await
             else {
                 return Err(AgentError::Cancelled);
             };
+            continue_final = false;
             let mut rx = streamed?;
 
             let mut text = String::new();
@@ -402,6 +408,18 @@ impl Agent {
                     .until_cancelled(self.tools.execute_streaming(call.clone(), &stream))
                     .await
                 else {
+                    // the future is dropped, and a process tool is killed with it, but the
+                    // call was announced: every request gets exactly one terminal event, or
+                    // a replay shows a call that never ended.
+                    self.sink.append(
+                        kinds::TOOL_FAILED,
+                        &json!({
+                            "turn_id": request.turn_id,
+                            "call_id": call.id,
+                            "error": "cancelled before the tool finished",
+                            "class": "interrupted",
+                        }),
+                    )?;
                     return Err(AgentError::Cancelled);
                 };
                 match executed {
@@ -472,7 +490,12 @@ impl Agent {
             match event.kind.as_str() {
                 kinds::TURN_STARTED => {
                     if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
-                        if prompt != request.prompt {
+                        // this turn's own event is already in the history it was built from,
+                        // and its prompt is the request's last message. comparing the text
+                        // instead dropped an earlier turn whose prompt happened to repeat.
+                        let own = event.payload.get("turn_id").and_then(Value::as_str)
+                            == Some(request.turn_id.as_str());
+                        if !own {
                             messages.push(message::user(prompt));
                         }
                     }
@@ -570,7 +593,7 @@ fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
         let _ = writeln!(tools_text, "- {}: {}", tool.name, tool.description);
     }
 
-    let mut sections = vec![
+    let sections = vec![
         Section::new("tools", tools_text),
         Section::new(
             "rules",
@@ -593,23 +616,6 @@ fn system_prompt(tools: &[ToolSpec], workspace: &str) -> SystemPrompt {
              - keep replies short",
         ),
     ];
-    // the spec tree is the project's own statement of what it does, so the model is told it
-    // is there before it changes behaviour. announced only when the tree and the program that
-    // owns it are both present: a tree nobody can read is not worth a paragraph. nothing is
-    // run here, so the prompt costs no subprocess.
-    if crate::openspec::available(std::path::Path::new(workspace)).is_some() {
-        sections.push(Section::new(
-            "openspec",
-            "This workspace carries an openspec tree at `openspec/`, and the `openspec` program \
-             is installed. The specs under `openspec/specs/<capability>/spec.md` are the source \
-             of truth for what this project does; a change under `openspec/changes/<name>/` \
-             proposes against them, in `proposal.md`, `design.md`, `tasks.md` and delta specs. \
-             Read the spec a change touches before changing behaviour, and change the spec in \
-             the same turn as the code. The `openspec` tool runs the program in the workspace: \
-             `list --specs` for the capability inventory, `list` for the open changes, `show \
-             <name>` for one item, `validate` for what is malformed.",
-        ));
-    }
 
     SystemPrompt {
         role: format!(

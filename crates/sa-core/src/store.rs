@@ -18,6 +18,11 @@ pub const BLOB_THRESHOLD: usize = 64 * 1024;
 
 const SCHEMA_VERSION: i64 = 3;
 
+/// the payload version this build writes, and the newest it can read. every payload carries
+/// its own version so a reader can refuse one it does not understand rather than guess at a
+/// field that has moved.
+pub const PAYLOAD_VERSION: u64 = 1;
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("sqlite: {0}")]
@@ -32,6 +37,15 @@ pub enum StoreError {
     SessionNotFound(String),
     #[error("unknown session state: {0}")]
     UnknownState(String),
+    #[error(
+        "{kind} event {seq} was written by payload version {version}; this build reads {expected}"
+    )]
+    PayloadVersion {
+        kind: String,
+        seq: u64,
+        version: u64,
+        expected: u64,
+    },
     #[error("blob missing: {0}")]
     MissingBlob(String),
 }
@@ -338,6 +352,7 @@ impl Store {
         for row in rows {
             let (sid, seq, kind, raw, at) = row?;
             let mut payload: Value = serde_json::from_str(&raw)?;
+            check_version(&kind, seq, &payload)?;
             expand(&conn, &mut payload)?;
             events.push(Event {
                 session_id: sid,
@@ -414,6 +429,7 @@ impl Store {
             None => Ok(None),
             Some((sid, seq, kind, raw, at)) => {
                 let mut payload: Value = serde_json::from_str(&raw)?;
+                check_version(&kind, seq, &payload)?;
                 expand(&conn, &mut payload)?;
                 Ok(Some(Event {
                     session_id: sid,
@@ -466,12 +482,16 @@ impl Store {
         Ok(pending)
     }
 
-    /// sessions whose last turn event is a start, not a terminal (spec 5.6).
+    /// sessions whose last turn event is a start, not a terminal (spec 5.6). the state a
+    /// session is in says nothing about whether a turn of it is still open: a daemon that
+    /// died mid-turn leaves one behind whatever state the session was last set to, and a
+    /// sweep that only looked at active sessions would never clean it up. the one exception
+    /// is a session handed to another host: its turn belongs to that host now.
     pub fn open_turns(&self) -> Result<Vec<OpenTurn>, StoreError> {
         use sa_proto::session::kinds;
 
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT id FROM sessions WHERE state = 'active'")?;
+        let mut stmt = conn.prepare("SELECT id FROM sessions WHERE state != 'relocated'")?;
         let ids: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<_, _>>()?;
@@ -584,6 +604,22 @@ fn spill(conn: &Connection, value: &mut Value) -> Result<(), StoreError> {
         }
         _ => Ok(()),
     }
+}
+
+/// refuses a payload written by a newer version than this build reads. every payload says
+/// which version wrote it, so a field that moved is a gap rather than a wrong answer.
+fn check_version(kind: &str, seq: i64, payload: &Value) -> Result<(), StoreError> {
+    if let Some(version) = payload.get("v").and_then(Value::as_u64) {
+        if version > PAYLOAD_VERSION {
+            return Err(StoreError::PayloadVersion {
+                kind: kind.to_owned(),
+                seq: u64::try_from(seq).unwrap_or(u64::MAX),
+                version,
+                expected: PAYLOAD_VERSION,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// re-inlines blob references on read.

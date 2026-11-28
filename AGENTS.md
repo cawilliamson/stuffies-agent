@@ -1,9 +1,27 @@
 # stuffies-agent
 
 A daemon-first coding agent. The daemon owns session state; the terminal client, one-shot
-CLI and web surface are disposable clients of it. The behaviour lives in
-`openspec/specs/`, the reasoning in `docs/design.md`, and the open work in
-`openspec/changes/`.
+CLI and web surface are disposable clients of it. The behaviour lives in `specs/`, the
+reasoning in `docs/design.md`, and the open work in `docs/changes/`.
+
+## the spec is executable
+
+`specs/` holds Gherkin, and `crates/sa-core/tests/specs.rs` runs it under `cargo test` with
+`fail_on_skipped`. A scenario whose steps are not written is a skipped step, and a skipped
+step is a failure: a claim nothing implements cannot pass. There is no prose specification
+beside the code, because a second statement of the same behaviour is a second thing to keep
+true.
+
+`@allow.skipped` is the one exception, and it is a debt marker rather than a permission: it
+says a scenario is written and not yet executed. The tag is removed when its steps land.
+
+What that means when changing behaviour:
+
+- one requirement per behaviour a test could name, and scenarios that describe an observable
+  wire or filesystem effect rather than an intention
+- change the scenario in the same turn as the code, or the build is red
+- `./ci/gate.sh` before calling a change done, and again against `sa daemon` rather than only
+  `sa --standalone`
 
 ## the build goal: lean on the modules we already depend on
 
@@ -49,9 +67,8 @@ left it, plus the edits they wanted. A recovery point that lives in their `.git`
 
 Nothing of ours may need an external program to work. The token is read from its file in
 rust and the tools are built in. A language server, an MCP server, the shell the agent's own
-commands run in, `git` for the checkpoint store and a project's own tools such as `openspec`
-are the exceptions, because they are the things the agent is fronting rather than utilities
-it depends on.
+commands run in and `git` for the checkpoint store are the exceptions, because they are the
+things the agent is fronting rather than utilities it depends on.
 
 bash is the fallback, not the default. A built-in tool is bounded, structured and needs
 nothing installed; the shell is for what no built-in tool does, such as running a project's
@@ -60,8 +77,8 @@ tests. When a new need appears, the answer is a tool, not a command line.
 ## ordering
 
 Alphabetical, everywhere a collection is written down: tool specs, slash commands, help
-text, enum variants, match arms over a fixed set, config keys, imports, `openspec/specs`
-listings, test fixtures. If a list can be sorted without changing behaviour, it is sorted.
+text, enum variants, match arms over a fixed set, config keys, imports, `specs` listings,
+test fixtures. If a list can be sorted without changing behaviour, it is sorted.
 
 The exceptions are the ones where order carries meaning, and they are narrow: a wire
 protocol that defines the sequence, a dependency's own required order, a ranking or a

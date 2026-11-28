@@ -94,6 +94,13 @@ pub async fn fetch(url: &str) -> Result<String, ToolError> {
     Ok(format!("url: {url}\nstatus: {status}\n\n{markdown}"))
 }
 
+/// the endpoint a search is sent to. it is overridable so a scenario about an empty result
+/// needs no network, the same way the model endpoint is.
+fn search_endpoint() -> String {
+    std::env::var("SA_SEARCH_ENDPOINT")
+        .unwrap_or_else(|_| "https://html.duckduckgo.com/html/".to_owned())
+}
+
 /// searches the web and returns the hits as a numbered list.
 pub async fn search(query: &str, limit: usize) -> Result<String, ToolError> {
     let query = query.trim();
@@ -102,7 +109,7 @@ pub async fn search(query: &str, limit: usize) -> Result<String, ToolError> {
     }
     let limit = limit.clamp(1, MAX_RESULTS);
     let response = client()?
-        .get("https://html.duckduckgo.com/html/")
+        .get(search_endpoint())
         .query(&[("q", query)])
         .send()
         .await

@@ -133,7 +133,8 @@ fn sanitise(raw: &str) -> String {
 }
 
 /// expands `${VAR}` from the environment, which is how credentials are kept out of the file.
-fn expand(value: &str) -> String {
+#[must_use]
+pub fn expand(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     while let Some(start) = rest.find("${") {

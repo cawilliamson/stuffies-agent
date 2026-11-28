@@ -321,15 +321,33 @@ impl Config {
     }
 
     /// the built-in servers with the configured ones laid over them. a configured entry of
-    /// the same name replaces the built-in one, so a command or an argument can be corrected
-    /// without restating the file types.
+    /// the same name corrects the built-in one rather than replacing it: what an operator
+    /// changes is the command or an argument, and the file types the server already claims
+    /// are not restated. an entry that does state them overrides them.
     #[must_use]
     pub fn load_default() -> Self {
-        let mut merged = Self::builtin();
-        if let Ok(configured) = Self::load(&config_path()) {
-            for (name, entry) in configured.servers {
-                merged.servers.insert(name, entry);
+        let Ok(configured) = Self::load(&config_path()) else {
+            return Self::builtin();
+        };
+        Self::merged(Self::builtin(), configured)
+    }
+
+    /// a configured table laid over the built-in one. an entry of the same name corrects the
+    /// built-in one rather than replacing it: what an operator changes is the command or an
+    /// argument, and the file types the server already claims are not restated.
+    #[must_use]
+    pub fn merged(builtin: Self, configured: Self) -> Self {
+        let mut merged = builtin;
+        for (name, mut entry) in configured.servers {
+            if let Some(builtin) = merged.servers.get(&name) {
+                if entry.file_types.is_empty() {
+                    entry.file_types.clone_from(&builtin.file_types);
+                }
+                if entry.root_markers.is_empty() {
+                    entry.root_markers.clone_from(&builtin.root_markers);
+                }
             }
+            merged.servers.insert(name, entry);
         }
         merged
     }

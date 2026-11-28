@@ -71,23 +71,31 @@ impl Dispatcher {
         self.started.elapsed().as_secs()
     }
 
-    /// handles one request. returns `None` for notifications, which are never answered.
-    pub async fn handle(&self, conn: &mut ConnState, req: Request) -> Option<Response> {
-        if req.is_notification() {
+    /// handles one request. a frame without an id is a notification: json-rpc says it is
+    /// performed and never answered. returning before the dispatch made it a silent no-op,
+    /// which is the one failure mode a fire-and-forget caller cannot see.
+    pub fn handle(&self, conn: &mut ConnState, req: Request) -> Option<Response> {
+        let notification = req.is_notification();
+        let response = self.dispatch(conn, req);
+        if notification {
+            // nobody is waiting for it, so an error is recorded rather than sent.
+            if let Some(error) = &response.error {
+                tracing::debug!(%error, "notification failed");
+            }
             return None;
         }
-        Some(self.dispatch(conn, req).await)
+        Some(response)
     }
 
-    async fn dispatch(&self, conn: &mut ConnState, req: Request) -> Response {
+    fn dispatch(&self, conn: &mut ConnState, req: Request) -> Response {
         let id = req.id.clone();
-        match self.call(conn, req).await {
+        match self.call(conn, req) {
             Ok(result) => Response::ok(id, result),
             Err(error) => Response::err(id, error),
         }
     }
 
-    async fn call(&self, conn: &mut ConnState, req: Request) -> Result<Value, RpcError> {
+    fn call(&self, conn: &mut ConnState, req: Request) -> Result<Value, RpcError> {
         if !conn.handshaken {
             if req.method != "hello" {
                 return Err(RpcError::new(
@@ -120,7 +128,6 @@ impl Dispatcher {
             "model.effort" => self.model_effort(&params),
             "model.list" => self.model_list(),
             "model.select" => self.model_select(&params),
-            "openspec.run" => self.openspec_run(&params).await,
             "ping" => self.ping(),
             "session.attach" => self.session_attach(&params),
             "session.create" => self.session_create(conn, &params),
@@ -430,14 +437,17 @@ impl Dispatcher {
                 let id = model.id;
                 let context_limit = model.context_limit;
                 let effort_levels = model.effort_levels;
-                json!({
+                let mut entry = json!({
                     "id": id,
-                    // absent when the endpoint did not say, so a client shows no guess.
-                    "context_limit": context_limit,
                     "capabilities": ["tools", "streaming"],
                     // the endpoint's own values, in its own order. empty means none.
                     "effort_levels": effort_levels,
-                })
+                });
+                // absent when the endpoint did not say, so a client shows no guess.
+                if let Some(limit) = context_limit {
+                    entry["context_limit"] = json!(limit);
+                }
+                entry
             })
             .collect::<Vec<_>>()))
     }
@@ -515,22 +525,6 @@ impl Dispatcher {
             .collect::<Vec<_>>()))
     }
 
-    /// the openspec program, run in the session's workspace with the arguments as written.
-    /// the tree's format is the program's to define, so its answer is the answer: this is the
-    /// one place a request waits on a child process.
-    async fn openspec_run(&self, params: &Value) -> Result<Value, RpcError> {
-        let session_id = string_field(params, "session_id")?;
-        let args = string_list(params, "args");
-        let workspace = self
-            .manager
-            .session_workspace(&session_id)
-            .map_err(crate::manager::ManagerError::into_rpc)?;
-        let output = crate::openspec::run(&workspace, &args)
-            .await
-            .map_err(|err| RpcError::new(code::INVALID_PARAMS, err.to_string()))?;
-        Ok(json!({"exit_code": output.exit_code, "output": output.text}))
-    }
-
     fn model_effort(&self, params: &Value) -> Result<Value, RpcError> {
         let session_id = string_field(params, "session_id")?;
         let effort = string_field(params, "effort")?;
@@ -582,22 +576,6 @@ impl Dispatcher {
 fn parse<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, RpcError> {
     serde_json::from_value(params.clone())
         .map_err(|e| RpcError::new(code::INVALID_PARAMS, format!("bad params: {e}")))
-}
-
-/// a list of strings, or nothing when the member is absent: a program with no arguments is
-/// a legitimate call.
-fn string_list(params: &Value, key: &str) -> Vec<String> {
-    params
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn string_field(params: &Value, key: &str) -> Result<String, RpcError> {

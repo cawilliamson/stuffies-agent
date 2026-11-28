@@ -8,6 +8,7 @@ yanked = "deny"
 ignore = [
   "RUSTSEC-2024-0320", # yaml-rust: syntect's syntax definitions, via edtui and tui-markdown
   "RUSTSEC-2025-0141", # bincode: syntect's compiled-set format, same two dependents
+  "RUSTSEC-2026-0542", # humantime: wraps chrono; the spec harness's cucumber pulls it in
   "RUSTSEC-2026-0543", # chrono: rmcp's timestamps; nothing else here asks for it
 ]
 

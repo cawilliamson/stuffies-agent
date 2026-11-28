@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dependency-rule gate. see openspec/specs/engineering-constraints/spec.md.
+# dependency-rule gate. see specs/engineering-constraints.feature.
 set -euo pipefail
 
 fail() { echo "check-deps: $*" >&2; exit 1; }

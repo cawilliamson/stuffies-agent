@@ -39,6 +39,9 @@ pub const COMPACTION_RETAIN: f64 = 0.50;
 pub const VIEW_EVENTS: usize = 100_000;
 /// rough token estimate. ponytail: four characters per token, no tokeniser dependency.
 pub const CHARS_PER_TOKEN: u64 = 4;
+/// how many events one read of the log asks for, so summing a session's cost reads the whole
+/// log without holding all of it in memory at once.
+pub const USAGE_PAGE: usize = 5_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManagerError {
@@ -418,7 +421,12 @@ impl Manager {
         // level would silently pick whatever the endpoint happens to list first.
         let chosen = chosen?;
         let levels = self.effort_levels(model);
-        if levels.is_empty() || levels.iter().any(|level| level == chosen) {
+        // nothing advertised means nothing is known about what the endpoint accepts, and
+        // sending a value would be claiming it does. the server's own default applies.
+        if levels.is_empty() {
+            return None;
+        }
+        if levels.iter().any(|level| level == chosen) {
             return Some(chosen.to_owned());
         }
         // a stored level the model no longer offers.
@@ -475,9 +483,14 @@ impl Manager {
     ) -> Result<Vec<SessionSummary>, ManagerError> {
         let mut sessions = self.store.list_sessions(include_deleted)?;
         for session in &mut sessions {
-            // the effort a turn will actually use, not a blank where none was stored.
+            // the effort a turn will actually use, not a blank where none was stored: the
+            // turn falls back to the daemon's default model, so the listing has to as well
+            // or it reports less than the next turn will do.
             if session.effort.as_deref().unwrap_or_default().is_empty() {
-                let model = session.model.clone().unwrap_or_default();
+                let model = session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| self.default_model());
                 session.effort = self.default_effort_for(&model);
             }
         }
@@ -620,7 +633,6 @@ impl Manager {
     }
 
     pub fn usage(&self, id: &str) -> Result<Usage, ManagerError> {
-        let (events, _) = self.store.events_since(id, 0, 100_000)?;
         let mut usage = Usage {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -628,19 +640,30 @@ impl Manager {
             // the endpoint prices nothing, so nothing is claimed: absent, not zero.
             cost_micros: None,
         };
-        for event in events {
-            if event.kind != kinds::LLM_COMPLETED {
-                continue;
+        // the whole log, a page at a time. one window of the newest events silently
+        // under-reported a session that ran past it.
+        let mut from_seq = 0;
+        loop {
+            let (events, more) = self.store.events_since(id, from_seq, USAGE_PAGE)?;
+            let Some(last) = events.last() else { break };
+            for event in &events {
+                if event.kind != kinds::LLM_COMPLETED {
+                    continue;
+                }
+                let Some(u) = event.payload.get("usage") else {
+                    continue;
+                };
+                usage.prompt_tokens += u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
+                usage.completion_tokens += u
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                usage.cached_tokens += u.get("cached_tokens").and_then(Value::as_u64).unwrap_or(0);
             }
-            let Some(u) = event.payload.get("usage") else {
-                continue;
-            };
-            usage.prompt_tokens += u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
-            usage.completion_tokens += u
-                .get("completion_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            usage.cached_tokens += u.get("cached_tokens").and_then(Value::as_u64).unwrap_or(0);
+            if !more {
+                break;
+            }
+            from_seq = last.seq;
         }
         Ok(usage)
     }
@@ -781,9 +804,11 @@ impl Manager {
                 // a replayed session reads the same as the live one.
                 "images": images,
                 "model": model,
-                "effort": effort,
                 "detach": detach,
             });
+            if let Some(effort) = &effort {
+                payload["effort"] = json!(effort);
+            }
             if let Some(client) = request.client {
                 payload["client"] = json!(client);
             }
@@ -818,6 +843,7 @@ impl Manager {
                 .run_turn(
                     session,
                     turn,
+                    seq,
                     prompt,
                     images,
                     row,
@@ -839,6 +865,9 @@ impl Manager {
         self: Arc<Self>,
         session_id: String,
         turn_id: String,
+        // the seq of this turn's `turn.started`, so a turn that dies mid-call can close
+        // exactly the calls it announced.
+        started_seq: u64,
         prompt: String,
         images: Vec<sa_proto::session::ImageAttachment>,
         row: SessionRow,
@@ -956,6 +985,13 @@ impl Manager {
         )
         .await
         else {
+            // the agent's future is gone, so it cannot close the call it was waiting on.
+            self.close_pending_calls(
+                &session_id,
+                started_seq,
+                &turn_id,
+                "the turn timed out before the tool finished",
+            );
             let _ = self.append(
                 &session_id,
                 kinds::TURN_INTERRUPTED,
@@ -970,25 +1006,26 @@ impl Manager {
 
         let completed = match outcome {
             Ok(outcome) => {
-                let _ = self.append(
-                    &session_id,
-                    kinds::TURN_COMPLETED,
-                    &json!({
-                        "turn_id": turn_id,
-                        "finish_reason": outcome.finish_reason,
-                        "usage": {
-                            "prompt_tokens": outcome.usage.prompt_tokens,
-                            "completion_tokens": outcome.usage.completion_tokens,
-                            "cached_tokens": outcome.usage.cached_tokens,
-                        },
-                        // what the model's view costs now, against the window it has. the
-                        // figure is the prompt the endpoint counted, not an estimate.
-                        "context": {
-                            "tokens": self.context_used(&session_id),
-                            "limit": self.context_limit(&model),
-                        },
-                    }),
-                );
+                let mut payload = json!({
+                    "turn_id": turn_id,
+                    "finish_reason": outcome.finish_reason,
+                    "usage": {
+                        "prompt_tokens": outcome.usage.prompt_tokens,
+                        "completion_tokens": outcome.usage.completion_tokens,
+                        "cached_tokens": outcome.usage.cached_tokens,
+                    },
+                    // what the model's view costs now, against the window it has. the
+                    // figure is the prompt the endpoint counted, not an estimate.
+                    "context": {
+                        "tokens": self.context_used(&session_id),
+                    },
+                });
+                // a window the endpoint never advertised is absent, not null: a client
+                // that reads null shows a limit it was never told.
+                if let Some(limit) = self.context_limit(&model) {
+                    payload["context"]["limit"] = json!(limit);
+                }
+                let _ = self.append(&session_id, kinds::TURN_COMPLETED, &payload);
                 true
             }
             Err(err) => {
@@ -1038,17 +1075,25 @@ impl Manager {
 
     /// takes back everything queued, so a client can put it back in the editor (spec 3.7).
     pub fn dequeue(&self, session_id: &str) -> Result<sa_proto::session::QueueState, ManagerError> {
-        let state = {
+        let taken = {
             let mut inner = self.lock()?;
-            inner
-                .queues
-                .remove(session_id)
-                .map_or_else(sa_proto::session::QueueState::default, |queue| {
-                    queue.state()
-                })
+            inner.queues.remove(session_id).map(|queue| queue.state())
         };
-        self.append(session_id, kinds::TURN_QUEUED, &json!(state))?;
-        Ok(state)
+        // nothing queued is not a change, so it writes nothing: that is what an escape at an
+        // idle prompt does, and it used to append an event nobody asked for.
+        let Some(taken) = taken else {
+            return Ok(sa_proto::session::QueueState::default());
+        };
+        if !taken.steering.is_empty() || !taken.follow_up.is_empty() {
+            // the caller gets what was taken; the log records the queue as it now is, which
+            // is empty. recording the taken text said the queue still held it.
+            self.append(
+                session_id,
+                kinds::TURN_QUEUED,
+                &json!(sa_proto::session::QueueState::default()),
+            )?;
+        }
+        Ok(taken)
     }
 
     /// takes one queued message back out, so a client can edit it or drop it (spec 3.7).
@@ -1195,6 +1240,13 @@ impl Manager {
     /// says so rather than spending the rest of the session circling the same wall.
     pub const GOAL_MAX_NUDGES: u32 = 20;
 
+    /// the line the workspace gate prints only when every check passed.
+    const GATE_OK: &str = "gate: ok";
+
+    /// how far back the loop looks for a green gate. a gate older than this ran before work
+    /// that has since changed, so it says nothing about the tree as it stands.
+    const GATE_WINDOW: usize = 500;
+
     /// the goal loop's state, derived from the log rather than held beside it: the last thing
     /// that was asked for, and whatever ended it afterwards.
     pub fn goal_status(&self, session_id: &str) -> Result<GoalStatus, ManagerError> {
@@ -1271,7 +1323,11 @@ impl Manager {
     /// the log, so a nudge that was already spent is never spent twice, even across a restart.
     fn nudge_goal(&self, session_id: &str) -> Option<String> {
         let status = self.goal_status(session_id).ok()?;
-        if !status.active {
+        // a goal the agent closed on its own stays closed only when the gate went green after
+        // it was set: claiming done on a tree the gate has not passed is the failure the loop
+        // exists to catch, and the transcript already carries the evidence either way.
+        let owed = !status.active && status.summary.is_some() && !self.gate_is_green(session_id);
+        if !status.active && !owed {
             return None;
         }
         if status.iterations >= status.max_iterations {
@@ -1289,7 +1345,34 @@ impl Manager {
             &json!({"iteration": iteration, "max_iterations": status.max_iterations}),
         )
         .ok()?;
-        Some(nudge_text(&status.text, iteration, status.max_iterations))
+        Some(if owed {
+            gate_text(&status.text, iteration, status.max_iterations)
+        } else {
+            nudge_text(&status.text, iteration, status.max_iterations)
+        })
+    }
+
+    /// whether the workspace gate ran green since the goal was set. the gate prints its own
+    /// success line and the transcript is where that line lives, so the loop reads the log
+    /// rather than keeping a flag that could disagree with it.
+    fn gate_is_green(&self, session_id: &str) -> bool {
+        let Ok(Some(set)) = self
+            .store
+            .last_event_of_kind(session_id, &[kinds::GOAL_SET])
+        else {
+            return false;
+        };
+        let Ok(events) = self.store.events_tail(session_id, Self::GATE_WINDOW) else {
+            return false;
+        };
+        events.iter().any(|event| {
+            event.seq > set.seq
+                && event.kind == kinds::TOOL_COMPLETED
+                && event.payload["exit_code"].as_i64() == Some(0)
+                && event.payload["output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains(Self::GATE_OK))
+        })
     }
 
     // ---- compaction --------------------------------------------------
@@ -1395,14 +1478,30 @@ impl Manager {
             .filter(|(_, e)| e.kind == kinds::TURN_STARTED)
             .map(|(index, _)| index)
             .collect();
-        if starts.len() <= COMPACTION_RETAIN_TURNS {
-            return Ok(None);
-        }
         // what each event costs the model's view, so the tail a candidate keeps is one
         // lookup rather than a rescan.
         let mut suffix = vec![0_u64; events.len() + 1];
         for index in (0..events.len()).rev() {
             suffix[index] = suffix[index + 1].saturating_add(replayed_tokens(&events[index]));
+        }
+        // folding cannot make a single turn smaller, so a turn that is on its own larger
+        // than the whole window is the one case compaction cannot rescue. the caller is told
+        // rather than sending a prompt the endpoint will reject.
+        for (index, start) in starts.iter().enumerate() {
+            let end = starts.get(index + 1).copied().unwrap_or(events.len());
+            let cost = suffix[*start].saturating_sub(suffix[end]);
+            if cost > limit {
+                return Err(ManagerError::Rpc(RpcError::new(
+                    code::CONTEXT_EXHAUSTED,
+                    format!(
+                        "one turn needs {cost} tokens and this model's window is {limit}; \
+                         compacting cannot make it fit"
+                    ),
+                )));
+            }
+        }
+        if starts.len() <= COMPACTION_RETAIN_TURNS {
+            return Ok(None);
         }
         let budget = (limit as f64 * COMPACTION_RETAIN) as u64;
         // the newest turn that may be summarised: the last `COMPACTION_RETAIN_TURNS` are kept
@@ -1499,7 +1598,10 @@ impl Manager {
             session_id,
             kinds::COMPACTION_APPLIED,
             &json!({
-                "from_seq": 1,
+                // what this compaction folded, not the whole log: a second one starts where
+                // the last reached, so the event has to say so or a reader cannot tell them
+                // apart (spec 10.4).
+                "from_seq": done_to.saturating_add(1),
                 "to_seq": to_seq,
                 "summary": summary,
                 "tokens_before": before,
@@ -1562,6 +1664,26 @@ impl Manager {
     }
 
     // ---- recovery ----------------------------------------------------
+
+    /// appends `tool.failed` for every call the turn announced and never closed, so a turn
+    /// abandoned mid-call still pairs every request with a terminal event (spec 9.7).
+    fn close_pending_calls(&self, session_id: &str, after_seq: u64, turn_id: &str, reason: &str) {
+        let Ok(pending) = self.store.unmatched_tool_calls(session_id, after_seq) else {
+            return;
+        };
+        for call_id in pending {
+            let _ = self.append(
+                session_id,
+                kinds::TOOL_FAILED,
+                &json!({
+                    "turn_id": turn_id,
+                    "call_id": call_id,
+                    "error": reason,
+                    "class": "interrupted",
+                }),
+            );
+        }
+    }
 
     /// appends a terminal event for every turn that died with the daemon (spec 5.6).
     pub fn recover(&self) -> Result<usize, ManagerError> {
@@ -1627,7 +1749,8 @@ fn nudge_text(goal: &str, iteration: u32, max: u32) -> String {
     out.push_str(
         "Do not report exploratory progress (\"investigated\", \"explored as far as possible\") \
          as an outcome. Either keep working toward the goal, or -- when it is genuinely solved \
-         -- call the goal_done tool with a one-line summary of the result. If a blocker makes \
+         -- call the goal_done tool with a one-line summary of the result, after \
+         `./ci/gate.sh` ends with `gate: ok`. If a blocker makes \
          the goal impossible, call goal_done and say exactly what blocks it.\n",
     );
     if iteration > 1 {
@@ -1642,6 +1765,16 @@ fn nudge_text(goal: &str, iteration: u32, max: u32) -> String {
         );
     }
     out
+}
+
+/// what the loop says when the agent called `goal_done` on a tree the gate has not passed.
+/// the claim is not rejected, it is not yet earned: the summary stands and the work continues.
+fn gate_text(goal: &str, iteration: u32, max: u32) -> String {
+    format!(
+        "Nudge {iteration} of {max}. You called goal_done, but `./ci/gate.sh` has not passed \
+         since this goal was set. Run it, fix everything it reports, and run it again until it \
+         ends with `gate: ok`. The goal is: {goal}\n"
+    )
 }
 
 /// the last component of a working directory: what a session is called when nothing has

@@ -21,11 +21,20 @@ impl Daemon {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("daemon.sock");
 
+        // a placeholder token, so the backend starts: it refuses to run without one, and the
+        // suite stays hermetic whatever the shell that started it exported. no turn here
+        // reaches an endpoint, so the value never matters.
+        let token = dir.path().join("token");
+        std::fs::write(&token, "test-token").expect("write token");
         let child = Command::new(SA)
             .arg("daemon")
             .env("SA_SOCKET", &socket)
             .env("XDG_RUNTIME_DIR", dir.path())
             .env("SA_STATE_DIR", dir.path().join("state"))
+            .env("SA_TOKEN_FILE", &token)
+            // a closed port, so a turn fails on the connection rather than the internet.
+            .env("OPENAI_API_ENDPOINT", "http://127.0.0.1:1/v1")
+            .env_remove("OPENAI_API_TOKEN")
             .stderr(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
@@ -102,11 +111,16 @@ fn ping_cli_fails_when_the_daemon_is_absent() {
 fn standalone_ping_needs_no_daemon() {
     let dir = tempfile::tempdir().expect("tempdir");
     let missing = dir.path().join("nope.sock");
+    let token = dir.path().join("token");
+    std::fs::write(&token, "test-token").expect("write token");
 
     let out = Command::new(SA)
         .args(["--standalone", "ping"])
         .env("SA_SOCKET", &missing)
         .env("SA_STATE_DIR", dir.path().join("state"))
+        .env("SA_TOKEN_FILE", &token)
+        .env("OPENAI_API_ENDPOINT", "http://127.0.0.1:1/v1")
+        .env_remove("OPENAI_API_TOKEN")
         .output()
         .expect("run sa --standalone ping");
 
@@ -156,12 +170,17 @@ fn standalone_daemon_is_refused() {
 fn standalone_does_not_accumulate_sessions() {
     let dir = tempfile::tempdir().expect("tempdir");
     let missing = dir.path().join("nope.sock");
+    let token = dir.path().join("token");
+    std::fs::write(&token, "test-token").expect("write token");
 
     for _ in 0..2 {
         let out = Command::new(SA)
             .args(["--standalone", "sessions"])
             .env("SA_SOCKET", &missing)
             .env("SA_STATE_DIR", dir.path().join("state"))
+            .env("SA_TOKEN_FILE", &token)
+            .env("OPENAI_API_ENDPOINT", "http://127.0.0.1:1/v1")
+            .env_remove("OPENAI_API_TOKEN")
             .output()
             .expect("run sa --standalone sessions");
         assert!(
@@ -283,6 +302,32 @@ fn no_subcommand_attaches_to_the_most_recent_session() {
     );
 }
 
+/// a turn that never reached its own end is a failure, and the exit status is the only way
+/// a script watching `sa run` learns that.
+#[test]
+fn run_cli_exits_nonzero_when_the_turn_fails() {
+    let daemon = Daemon::start();
+    let work = tempfile::tempdir().expect("workdir");
+
+    let out = Command::new(SA)
+        .args(["run", "-p", "hello"])
+        .env("SA_SOCKET", &daemon.socket)
+        .current_dir(work.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run sa run");
+
+    assert!(
+        !out.status.success(),
+        "a failed turn must exit non-zero: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("turn interrupted"), "{stderr}");
+    // the cause is named, so a script can tell a failed turn from a failed client.
+    assert!(stderr.contains("llm"), "the cause is named: {stderr}");
+}
+
 #[test]
 fn opening_sa_where_a_session_runs_returns_to_that_session() {
     let daemon = Daemon::start();
@@ -320,78 +365,4 @@ fn opening_sa_where_a_session_runs_returns_to_that_session() {
         !third.contains(&id),
         "a new directory must not reuse {id}: {third}"
     );
-}
-
-/// the program owns the tree's format, so the command passes the arguments through and needs
-/// neither a daemon nor a session: the tree belongs to the directory it sits in (spec 14).
-fn openspec_installed() -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join("openspec").is_file())
-    })
-}
-
-fn spec_tree() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().join("openspec/specs/cli");
-    std::fs::create_dir_all(&root).expect("specs");
-    std::fs::write(
-        root.join("spec.md"),
-        "# cli\n\n## Purpose\n\nThe command surface, described at the length the program \
-         asks for so the purpose is not a stub.\n\n## Requirements\n\n\
-         ### Requirement: Command surface\n\nEvery subcommand is a client.\n\n\
-         #### Scenario: A subcommand runs\n\n- **WHEN** a subcommand runs\n\
-         - **THEN** it reaches the daemon\n",
-    )
-    .expect("spec");
-    dir
-}
-
-#[test]
-fn openspec_runs_the_program_in_this_directory() {
-    if !openspec_installed() {
-        return;
-    }
-    let dir = spec_tree();
-    let out = Command::new(SA)
-        .args(["openspec", "list", "--specs"])
-        .current_dir(dir.path())
-        .env("SA_SOCKET", dir.path().join("nope.sock"))
-        .output()
-        .expect("run sa openspec list");
-    assert!(
-        out.status.success(),
-        "the listing must not need a daemon: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("cli"), "{stdout}");
-}
-
-#[test]
-fn openspec_reports_the_programs_exit_code() {
-    if !openspec_installed() {
-        return;
-    }
-    let dir = spec_tree();
-    let out = Command::new(SA)
-        .args(["openspec", "nonsense"])
-        .current_dir(dir.path())
-        .output()
-        .expect("run sa openspec nonsense");
-    assert!(!out.status.success(), "a bad subcommand must fail");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("exited"), "{stderr}");
-}
-
-#[test]
-fn openspec_says_so_when_there_is_no_tree() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let out = Command::new(SA)
-        .arg("openspec")
-        .current_dir(dir.path())
-        .output()
-        .expect("run sa openspec");
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no openspec/ directory in"), "{stderr}");
 }

@@ -679,6 +679,10 @@ pub fn prune_checkpoints(
     for (name, _, _) in &refs[..refs.len() - keep] {
         store_git(&store, &["update-ref", "-d", name])?;
     }
+    // the refs are gone but the objects behind them are not. the store is shared by every
+    // session in the workspace, so collecting now is what makes a pruned checkpoint stop
+    // costing disk; nothing else ever reaches those commits again.
+    store_git(&store, &["gc", "--prune=now", "--quiet"])?;
     Ok(())
 }
 

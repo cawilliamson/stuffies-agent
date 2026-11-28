@@ -101,6 +101,21 @@ fn payloads(manager: &Arc<Manager>, session_id: &str, kind: &str) -> Vec<Value> 
         .collect()
 }
 
+/// the transcript's record of a gate that passed: its own success line, and a zero exit.
+fn green_gate(manager: &Arc<Manager>, session_id: &str) {
+    manager
+        .append(
+            session_id,
+            kinds::TOOL_COMPLETED,
+            &json!({
+                "call_id": "gate",
+                "output": "==> format\n==> test\n\ngate: ok\n",
+                "exit_code": 0,
+            }),
+        )
+        .expect("append");
+}
+
 /// lets the turn that is already in flight finish, and waits for the manager to settle it.
 async fn release_running_turn(provider: &Arc<GatedProvider>) {
     provider.entered.notified().await;
@@ -181,6 +196,8 @@ async fn calling_goal_done_ends_the_loop() {
     manager
         .append(&id, kinds::GOAL_DONE, &json!({"summary": "shipped"}))
         .expect("append");
+    // and the gate ran green first, which is what earns the claim.
+    green_gate(&manager, &id);
     run_turn(&manager, &provider, &id, "start").await;
 
     assert!(
@@ -263,6 +280,55 @@ async fn a_second_goal_does_not_inherit_the_first_ones_nudges() {
     assert!(status.active);
     assert_eq!(status.text, "second");
     assert_eq!(status.iterations, 0, "the new goal inherited a nudge count");
+}
+
+#[tokio::test]
+async fn a_goal_closed_without_a_green_gate_is_nudged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let id = session(&manager, dir.path());
+    manager.set_goal(&id, "ship the thing", 5).expect("set");
+
+    // the agent says it is done, but nothing has run the gate since the goal was set.
+    manager
+        .append(&id, kinds::GOAL_DONE, &json!({"summary": "shipped"}))
+        .expect("append");
+    run_turn(&manager, &provider, &id, "start").await;
+
+    let nudges = payloads(&manager, &id, kinds::GOAL_NUDGED);
+    assert_eq!(
+        nudges.len(),
+        1,
+        "an unearned claim was accepted: {nudges:?}"
+    );
+    let started = payloads(&manager, &id, kinds::TURN_STARTED);
+    let prompt = started[1]["prompt"].as_str().unwrap_or_default();
+    assert!(prompt.contains("ci/gate.sh"), "{prompt}");
+}
+
+#[tokio::test]
+async fn a_gate_that_failed_does_not_earn_the_claim() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedProvider::new());
+    let manager = manager(dir.path(), &provider);
+    let id = session(&manager, dir.path());
+    manager.set_goal(&id, "ship the thing", 5).expect("set");
+
+    manager
+        .append(&id, kinds::GOAL_DONE, &json!({"summary": "shipped"}))
+        .expect("append");
+    // a red gate prints everything but its success line, and exits non-zero.
+    manager
+        .append(
+            &id,
+            kinds::TOOL_COMPLETED,
+            &json!({"call_id": "g1", "output": "gate: clippy failed\n", "exit_code": 1}),
+        )
+        .expect("append");
+    run_turn(&manager, &provider, &id, "start").await;
+
+    assert_eq!(payloads(&manager, &id, kinds::GOAL_NUDGED).len(), 1);
 }
 
 /// what the `goal_done` tool writes when a turn's sink is the session log.
